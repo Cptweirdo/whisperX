@@ -9,8 +9,11 @@
 > bespoke per platform and what can we share?**
 >
 > See also [`single-language-runtime-options.md`](./single-language-runtime-options.md)
-> for whether one language (C++, C#, Dart, …) could cover every dependency, and
-> [`pipeline-reference.md`](./pipeline-reference.md) for the per-stage spec.
+> for whether one language (C++, C#, Dart, …) could cover every dependency,
+> [`pipeline-reference.md`](./pipeline-reference.md) for the per-stage spec, and
+> the two delivery designs: [`flutter-migration.md`](./flutter-migration.md)
+> (all-Dart app) and [`cpp-core-spa-architecture.md`](./cpp-core-spa-architecture.md)
+> (C++ engine core + SPA/FFI adapters).
 
 ## The key split: two sharing models, not one
 
