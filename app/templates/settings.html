@@ -83,6 +83,33 @@
       </section>
 
       <section class="card">
+        <h2 class="card__h">Translation</h2>
+        {% include 'partials/_google_key.html' %}
+        <div class="set__divider" style="margin:18px 0"></div>
+        <form id="translation-service-form" hx-post="/settings/translation-service"
+              hx-target="#translation-service-status" hx-swap="innerHTML">
+          <div class="pref-row">
+            <div>
+              <div class="pref__title">Translation Service</div>
+              <div class="pref__desc">Which provider translates transcripts. Used by the
+                Translate action on a finished recording.</div>
+            </div>
+            <div class="pref__control">
+              <sl-select name="translation_service" value="{{ translation_service }}" style="min-width:220px">
+                {% for svc in translation_services %}
+                <sl-option value="{{ svc.id }}">{{ svc.label }}</sl-option>
+                {% endfor %}
+              </sl-select>
+            </div>
+          </div>
+          <div class="card__foot">
+            <span id="translation-service-status"></span>
+            <sl-button variant="primary" data-translation-save>Save</sl-button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card">
         <h2 class="card__h">Backup &amp; Restore</h2>
         {% include 'partials/_backup_card.html' %}
       </section>
@@ -118,6 +145,22 @@
     }
     const clear = e.target.closest('[data-hf-clear]');
     if (clear) { window.htmx?.trigger(clear.closest('form'), 'submit'); return; }
+    // Google Translation key card: mirrors the HF token card's delegated handlers.
+    const gsave = e.target.closest('[data-google-save]');
+    if (gsave) {
+      gsave.setAttribute('loading', '');
+      window.htmx?.trigger(document.getElementById('google-key-form'), 'submit');
+      return;
+    }
+    const gclear = e.target.closest('[data-google-clear]');
+    if (gclear) { window.htmx?.trigger(gclear.closest('form'), 'submit'); return; }
+    const tsave = e.target.closest('[data-translation-save]');
+    if (tsave) {
+      tsave.setAttribute('loading', '');
+      window.htmx?.trigger(document.getElementById('translation-service-form'), 'submit');
+      setTimeout(() => tsave.removeAttribute('loading'), 600);
+      return;
+    }
     const refresh = e.target.closest('[data-diarize-refresh]');
     if (refresh && !refresh.hasAttribute('disabled')) {
       refresh.setAttribute('loading', '');

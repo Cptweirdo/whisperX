@@ -27,6 +27,9 @@ GDRIVE_KEY = "google_drive_creds"
 # guaranteed non-mirrored, per-machine store already in use — and crucially it must
 # NOT live under the data dir, which is itself mirrored to Drive.
 GDRIVE_FOLDER_KEY = "google_drive_folder"
+# API key for the Google Cloud Translation API used by the translation service.
+# A secret, so it lives in the keyring alongside the HF token.
+GOOGLE_TRANSLATE_KEY = "google_translate_api_key"
 
 # The gated diarization model whose conditions must be accepted for diarization
 # to work. Kept here (not imported from pipeline) so this module stays import-cheap.
@@ -179,6 +182,45 @@ def delete_gdrive_folder() -> None:
         pass
 
 
+def set_google_api_key(key: str) -> None:
+    """Store the Google Translation API key in the OS keyring."""
+    key = (key or "").strip()
+    if not key:
+        raise ValueError("API key is empty.")
+    if not keyring_available():
+        raise SecretStoreUnavailable(_NO_BACKEND_MSG)
+    import keyring
+
+    try:
+        keyring.set_password(SERVICE, GOOGLE_TRANSLATE_KEY, key)
+    except Exception as exc:  # noqa: BLE001 - surface backend errors uniformly
+        raise SecretStoreUnavailable(f"{_NO_BACKEND_MSG} ({exc})") from exc
+
+
+def get_stored_google_api_key() -> str | None:
+    """Read the Google Translation API key from the keyring, or None if unset."""
+    if not keyring_available():
+        return None
+    import keyring
+
+    try:
+        return keyring.get_password(SERVICE, GOOGLE_TRANSLATE_KEY)
+    except Exception:  # noqa: BLE001 - treat any read failure as "not stored"
+        return None
+
+
+def delete_google_api_key() -> None:
+    """Remove the stored Google Translation API key (no-op if absent / no backend)."""
+    if not keyring_available():
+        return
+    import keyring
+
+    try:
+        keyring.delete_password(SERVICE, GOOGLE_TRANSLATE_KEY)
+    except Exception:  # noqa: BLE001 - PasswordDeleteError when absent, etc.
+        pass
+
+
 def resolve_hf_token() -> str | None:
     """The token in effect: the ``HF_TOKEN``/``HUGGINGFACE_TOKEN`` env var if set
     (it keeps precedence so an operator override always wins), else the keyring."""
@@ -186,6 +228,53 @@ def resolve_hf_token() -> str | None:
     if env:
         return env
     return get_stored_token()
+
+
+def resolve_google_api_key() -> str | None:
+    """The Google Translation API key in effect: the ``GOOGLE_TRANSLATE_API_KEY``
+    env var if set (an operator override always wins), else the keyring."""
+    env = os.environ.get("GOOGLE_TRANSLATE_API_KEY")
+    if env:
+        return env
+    return get_stored_google_api_key()
+
+
+def verify_google_api_key(key: str) -> tuple[bool, str]:
+    """Live-check a Google Translation API key.
+
+    Hits the (free, cheap) supported-languages endpoint to confirm the key is
+    valid and the Translation API is enabled for it. Returns ``(ok, detail)``
+    where ``detail`` is a user-facing message.
+    """
+    key = (key or "").strip()
+    if not key:
+        return False, "Enter an API key to continue."
+
+    import json
+    from urllib.error import HTTPError, URLError
+    from urllib.parse import urlencode
+    from urllib.request import urlopen
+
+    url = (
+        "https://translation.googleapis.com/language/translate/v2/languages?"
+        + urlencode({"key": key})
+    )
+    try:
+        with urlopen(url, timeout=15) as resp:  # noqa: S310 - fixed https host
+            json.loads(resp.read())
+    except HTTPError as exc:
+        if exc.code in (400, 401, 403):
+            return False, (
+                "Invalid or unauthorized API key. Check the key and that the "
+                "Cloud Translation API is enabled for its project."
+            )
+        return False, f"Couldn't verify key: {exc}"
+    except URLError as exc:
+        return False, f"Couldn't reach Google: {exc.reason}"
+    except Exception as exc:  # noqa: BLE001 - other/parse
+        return False, f"Couldn't verify key: {exc}"
+
+    return True, "Key verified — translation is ready."
 
 
 def verify_token(token: str) -> tuple[bool, str]:
