@@ -7,6 +7,10 @@
 > macOS pipeline ([`MACOS_INSTALLER.md`](../MACOS_INSTALLER.md) /
 > `packaging/macos/`). It answers one question: **across all targets, what is
 > bespoke per platform and what can we share?**
+>
+> See also [`single-language-runtime-options.md`](./single-language-runtime-options.md)
+> for whether one language (C++, C#, Dart, …) could cover every dependency, and
+> [`pipeline-reference.md`](./pipeline-reference.md) for the per-stage spec.
 
 ## The key split: two sharing models, not one
 
