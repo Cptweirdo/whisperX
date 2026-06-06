@@ -1593,13 +1593,14 @@ def _choose_port() -> int:
     port so a relaunch (or a leftover process) never blocks startup."""
     import socket
 
+    host = os.environ.get("HOST", "127.0.0.1")
     preferred = int(os.environ.get("PORT", "5000"))
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         try:
-            sock.bind(("127.0.0.1", preferred))
+            sock.bind((host, preferred))
             return preferred
         except OSError:
-            sock.bind(("127.0.0.1", 0))
+            sock.bind((host, 0))
             return sock.getsockname()[1]
 
 
@@ -1607,6 +1608,7 @@ if __name__ == "__main__":
     import signal
 
     signal.signal(signal.SIGTERM, lambda *_: (_shutdown(), os._exit(0)))
+    host = os.environ.get("HOST", "127.0.0.1")
     port = _choose_port()
     # Publish the port we actually bound (PORT may have been taken) so a wrapping
     # launcher/Tauri shell knows where to point the webview.
@@ -1615,8 +1617,8 @@ if __name__ == "__main__":
         import webbrowser
 
         threading.Timer(1.5, lambda: webbrowser.open(f"http://127.0.0.1:{port}/")).start()
-    logger.info("Serving on http://127.0.0.1:%d", port)
+    logger.info("Serving on http://%s:%d", host, port)
     try:
-        app.run(host="127.0.0.1", port=port, threaded=True)
+        app.run(host=host, port=port, threaded=True)
     finally:
         _shutdown()
