@@ -43,6 +43,7 @@ class JobQueue:
         except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
             logger.exception("Session %s failed", session_id)
             self._store.mark_error(session_id, str(exc))
-            self._publish(session_id, {"status": "error"})
+            # Carry the message so the client can surface it in the failure toast.
+            self._publish(session_id, {"status": "error", "error": str(exc)})
         else:
             self._publish(session_id, {"status": "done"})

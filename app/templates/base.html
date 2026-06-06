@@ -67,6 +67,9 @@
           const d = JSON.parse(e.data);
           if (d.status === 'done' || d.status === 'error') {
             es.close();
+            // Toast the outcome so a user who scrolled away or is looking at
+            // another card still learns the background job finished/failed.
+            notifyJobTerminal(box.dataset.sessionName, d.status, d.error);
             window.htmx?.ajax('GET', `/sessions/${id}/status`, { target: box, swap: 'outerHTML' });
             // Let page-specific UI (e.g. the New Recording dialog footer) react.
             box.dispatchEvent(new CustomEvent('job:terminal',
@@ -94,6 +97,27 @@
       document.body.append(alert);
       customElements.whenDefined('sl-alert').then(() => alert.toast());
       return alert;
+    }
+
+    // Escape user-supplied text (recording names, error messages) before it goes
+    // into a toast's innerHTML.
+    function escapeHtml(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    // Toast a finished/failed background transcription. Success auto-dismisses;
+    // a failure stays sticky (and shows the error) so it isn't missed.
+    function notifyJobTerminal(name, status, error) {
+      const label = name ? `<strong>${escapeHtml(name)}</strong>` : 'Your recording';
+      if (status === 'done') {
+        notify({ variant: 'success', closable: true, duration: 6000,
+          html: `<sl-icon slot="icon" name="check-circle"></sl-icon> ${label} finished transcribing.` });
+      } else {
+        const detail = error ? `: ${escapeHtml(error)}` : '.';
+        notify({ variant: 'danger', closable: true, duration: Infinity,
+          html: `<sl-icon slot="icon" name="exclamation-octagon"></sl-icon> ${label} failed${detail}` });
+      }
     }
 
     // Global model-load state over Server-Sent Events. The active Whisper model

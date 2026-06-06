@@ -626,7 +626,8 @@ def create_session():
         model=model,
     )
     _queue.submit(session_id)
-    return render_template("_status.html", state="queued", job_id=session_id)
+    return render_template("_status.html", state="queued", job_id=session_id,
+                           name=file.filename)
 
 
 @app.get("/models")
@@ -683,7 +684,8 @@ def session_status(session_id: str):
     if status in ("queued", "running"):
         device_label = pipeline.DEVICE_LABELS.get(_manager.device, _manager.device)
         return render_template("_status.html", state=status, job_id=session_id,
-                               device_label=device_label, stage=row.get("stage"))
+                               device_label=device_label, stage=row.get("stage"),
+                               name=row.get("filename"))
     if status == "error":
         return render_template("_status.html", state="error", job_id=session_id, error=row["error"])
     # done
