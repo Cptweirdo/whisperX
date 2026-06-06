@@ -143,6 +143,7 @@ def _card(row: dict) -> dict:
         "diarized": bool(row.get("diarized")),
         "num_segments": row.get("num_segments") or 0,
         "status": row["status"],
+        "translations": row.get("translations") or {},
     }
 
 
@@ -1019,6 +1020,7 @@ def view_session(session_id: str):
         abort(404)
     if row["status"] != "done":
         return redirect("/")
+    source = row.get("language") or ""
     return render_template(
         "transcript.html",
         session=_card(row),
@@ -1026,6 +1028,15 @@ def view_session(session_id: str):
         can_undo=_sessions.edit_history_len(session_id) > 0,
         formats=[f for f in pipeline.OUTPUT_FORMATS
                  if os.path.exists(_sessions.artifact_path(session_id, f))],
+        google_key_set=bool(secret_store.resolve_google_api_key()),
+        source_lang=source,
+        source_label=_lang_display(source)["native"] if source else "Original",
+        # Targets exclude the source language; the menu/JS adds native names for
+        # any already-translated tag not in this list via `lang_names`.
+        target_languages=[l for l in TRANSLATION_LANGUAGES if l["code"] != source],
+        lang_names={l["code"]: l["native"] for l in TRANSLATION_LANGUAGES},
+        # Translation artifacts: json overlay + srt/vtt/txt (see translate_job).
+        translation_formats=["srt", "vtt", "txt", "json"],
     )
 
 
@@ -1368,6 +1379,37 @@ _LANG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
 def _valid_lang(lang: str) -> bool:
     """A safe BCP-47-ish language tag (also guards translation file paths)."""
     return bool(_LANG_RE.match(lang or ""))
+
+
+# Curated target languages for the transcript translate picker. Each carries an
+# English name and the language's own native name (shown in the dropdown / add
+# dialog, scholastic-style). The list is intentionally short and common; Google
+# Translate supports far more, but a tidy menu beats an exhaustive one.
+TRANSLATION_LANGUAGES = [
+    {"code": "en", "name": "English", "native": "English"},
+    {"code": "es", "name": "Spanish", "native": "Español"},
+    {"code": "fr", "name": "French", "native": "Français"},
+    {"code": "de", "name": "German", "native": "Deutsch"},
+    {"code": "it", "name": "Italian", "native": "Italiano"},
+    {"code": "pt", "name": "Portuguese", "native": "Português"},
+    {"code": "pt-BR", "name": "Portuguese (Brazil)", "native": "Português (BR)"},
+    {"code": "nl", "name": "Dutch", "native": "Nederlands"},
+    {"code": "ru", "name": "Russian", "native": "Русский"},
+    {"code": "ja", "name": "Japanese", "native": "日本語"},
+    {"code": "ko", "name": "Korean", "native": "한국어"},
+    {"code": "zh", "name": "Chinese", "native": "中文"},
+    {"code": "ar", "name": "Arabic", "native": "العربية"},
+    {"code": "hi", "name": "Hindi", "native": "हिन्दी"},
+]
+_LANG_BY_CODE = {lang["code"]: lang for lang in TRANSLATION_LANGUAGES}
+
+
+def _lang_display(code: str) -> dict:
+    """{code, name, native} for a tag, falling back to the bare code uppercased."""
+    if code in _LANG_BY_CODE:
+        return _LANG_BY_CODE[code]
+    label = (code or "").upper() or "Original"
+    return {"code": code, "name": label, "native": label}
 
 
 @app.post("/sessions/<session_id>/translate")

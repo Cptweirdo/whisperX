@@ -18,6 +18,22 @@
   <div class="tr__scroll">
     <a class="tr__back" href="/"><sl-icon name="arrow-left"></sl-icon> ALL RECORDINGS</a>
     <div class="tr__hero-meta">
+      {# Translate chip + dropdown — switches the transcript body between the
+         original and any translated language (rendered via /translation/<lang>). #}
+      <div class="lang-pick" id="lang-pick">
+        <button class="trans-chip" id="trans-chip" type="button" aria-haspopup="true" aria-expanded="false">
+          <sl-icon name="translate"></sl-icon>
+          <span id="trans-chip-label">Translate</span>
+          <sl-icon class="caret" name="chevron-down"></sl-icon>
+        </button>
+        <div class="lang-menu" id="lang-menu" hidden>
+          <div class="lang-menu__head">Translation</div>
+          <div id="lang-menu-items"></div>
+          <button class="lang-opt lang-opt--enroll" id="add-translation" type="button">
+            <sl-icon name="plus-lg"></sl-icon> Add a translation…
+          </button>
+        </div>
+      </div>
       <span class="chip">{{ "Diarized" if session.diarized else "Transcript" }}</span>
       <span class="tr__hero-date">{{ session.date }} · {{ session.dur }}</span>
     </div>
@@ -34,6 +50,16 @@
       {% if not session.diarized %} · no speaker labels{% endif %}.
     </p>
     <div class="tr__hr"></div>
+
+    {# Shown only while viewing a translation (filled/toggled by the controller). #}
+    <div class="tr__tx-note" id="tx-note" hidden>
+      <sl-icon name="translate"></sl-icon>
+      <span><span id="tx-note-lang"></span> · machine translation</span>
+      <span class="muted">— segment-level sync only</span>
+    </div>
+    <div class="tr__downloads" id="tx-downloads" hidden>
+      <span class="dl-label">Download</span>
+    </div>
 
     <div class="tr__body" id="tr-body">
       {{ transcript|safe }}
@@ -68,6 +94,48 @@
 
 {% block dialogs %}
 {% include 'partials/_rename_modal.html' %}
+
+<sl-dialog id="add-translation-modal" label="Add a translation" style="--width:560px">
+  {% if not google_key_set %}
+  <p class="enroll-hint">
+    Translation needs a Google Translation API key.
+    <a href="/settings">Add one in Settings</a> to enable it.
+  </p>
+  {% endif %}
+  <p class="enroll-hint">
+    This recording is in <b>{{ source_label }}</b>. Pick a language to translate into —
+    translations are stored separately and never change the original.
+  </p>
+  <div class="enroll-list" id="enroll-list">
+    {% for lang in target_languages %}
+    <button class="enroll-row" type="button" data-code="{{ lang.code }}">
+      <span class="add-radio"></span>
+      <div>
+        <div class="enroll-row__native">{{ lang.native }}</div>
+        <div class="enroll-row__name">{{ lang.name }}</div>
+      </div>
+      <span class="enroll-row__tag" data-added hidden>Added</span>
+    </button>
+    {% endfor %}
+  </div>
+  <div slot="footer" style="display:flex;gap:14px;justify-content:flex-end">
+    <sl-button variant="default" id="add-cancel">Cancel</sl-button>
+    <sl-button variant="primary" id="add-confirm" {% if not google_key_set %}disabled{% endif %}>
+      <sl-icon slot="prefix" name="translate"></sl-icon> Translate
+    </sl-button>
+  </div>
+</sl-dialog>
+
+<script id="tx-data" type="application/json">
+  {{ {
+    "sessionId": session.id,
+    "translations": session.translations,
+    "langNames": lang_names,
+    "sourceLabel": source_label,
+    "formats": translation_formats,
+    "googleKeySet": google_key_set,
+  } | tojson }}
+</script>
 <sl-dialog id="speaker-modal" label="Speaker name" style="--width:440px">
   <form id="speaker-form" hx-post="/sessions/{{ session.id }}/speakers" hx-swap="none">
     <input type="hidden" name="speaker" id="speaker-key">
@@ -243,6 +311,9 @@
     // Block while a save is mid-flight: that save's swapBody will replace the body
     // (this element included), so entering edit now would be clobbered.
     if (editing || pending) return;
+    // Translations are a read-only view of a separate overlay; edits here would
+    // wrongly POST against the original transcript. The controller sets this flag.
+    if (body.dataset.readonly) return;
     editing = el;
     original = el.innerHTML;
     el.textContent = el.dataset.text || el.innerText;
@@ -369,6 +440,250 @@
       .forEach(el => { el.dataset.name = label; });
     modal.hide();
   });
+})();
+</script>
+
+<script>
+// Translation controller.
+// The backend translates a *finished* transcript into one or more target
+// languages on demand (POST /translate), runs it in the background, and pushes
+// progress over SSE. Each language is stored as a separate overlay; the rendered
+// body is fetched from /translation/<lang>. This wires:
+//   • the header Translate chip + dropdown (Original + each translation),
+//   • the Add-a-translation modal (POST /translate),
+//   • live progress over /translate/events (shared openSSE from sse.js),
+//   • switching the #tr-body between Original and a translation,
+//   • per-translation download links.
+// Word-level highlight only exists on the Original; translations carry
+// segment-level timing only (word order differs across languages).
+(function () {
+  const data = JSON.parse(document.getElementById('tx-data').textContent);
+  const sessionId = data.sessionId;
+  const langNames = data.langNames || {};
+  const formats = data.formats || [];
+  const translations = data.translations || {};  // code -> {status, service, error?}
+
+  const body = document.getElementById('tr-body');
+  const origBody = body.innerHTML;  // cached Original, restored when switching back
+  const chip = document.getElementById('trans-chip');
+  const chipLabel = document.getElementById('trans-chip-label');
+  const menu = document.getElementById('lang-menu');
+  const menuItems = document.getElementById('lang-menu-items');
+  const txNote = document.getElementById('tx-note');
+  const txNoteLang = document.getElementById('tx-note-lang');
+  const downloads = document.getElementById('tx-downloads');
+
+  const modal = document.getElementById('add-translation-modal');
+  const addBtn = document.getElementById('add-translation');
+  const confirmBtn = document.getElementById('add-confirm');
+  const cancelBtn = document.getElementById('add-cancel');
+  const enrollList = document.getElementById('enroll-list');
+
+  let active = null;   // null = Original, else a language code
+  let pick = null;     // language selected in the add modal
+  let es = null;       // the open EventSource, if any
+
+  const nativeOf = (code) => langNames[code] || (code || '').toUpperCase();
+  const isRunning = () => Object.values(translations).some((t) => t && t.status === 'running');
+
+  // ---- dropdown menu --------------------------------------------------------
+  function renderMenu() {
+    const rows = [];
+    // Original
+    rows.push(`
+      <button class="lang-opt" type="button" data-code="">
+        <div>
+          <div class="lang-opt__native">${escapeHtml(data.sourceLabel)}</div>
+          <div class="lang-opt__name">Original · spoken language</div>
+        </div>
+        ${active === null
+          ? '<span class="lang-opt__check"><sl-icon name="check-lg"></sl-icon></span>'
+          : '<span class="lang-opt__tag">Source</span>'}
+      </button>`);
+    // Translations
+    for (const code of Object.keys(translations)) {
+      const st = translations[code] || {};
+      let trail;
+      if (st.status === 'done') {
+        trail = active === code
+          ? '<span class="lang-opt__check"><sl-icon name="check-lg"></sl-icon></span>'
+          : `<span class="lang-opt__tag">${escapeHtml(code.toUpperCase())}</span>`;
+      } else if (st.status === 'running') {
+        trail = '<span class="lang-opt__stat running"><span class="spin"><sl-icon name="arrow-repeat"></sl-icon></span> Translating</span>';
+      } else {
+        trail = '<span class="lang-opt__stat error"><sl-icon name="exclamation-triangle"></sl-icon> Failed</span>';
+      }
+      const name = st.status === 'done' ? 'Translated'
+        : st.status === 'running' ? 'In progress' : (st.error || 'Translation failed');
+      rows.push(`
+        <button class="lang-opt" type="button" data-code="${escapeHtml(code)}" data-status="${escapeHtml(st.status || '')}">
+          <div>
+            <div class="lang-opt__native">${escapeHtml(nativeOf(code))}</div>
+            <div class="lang-opt__name">${escapeHtml(name)}</div>
+          </div>
+          ${trail}
+        </button>`);
+    }
+    menuItems.innerHTML = rows.join('');
+    // mark already-added languages in the add modal
+    enrollList.querySelectorAll('.enroll-row').forEach((row) => {
+      const added = !!translations[row.dataset.code];
+      row.classList.toggle('is-added', added);
+      const tag = row.querySelector('[data-added]');
+      if (tag) tag.hidden = !added;
+    });
+  }
+
+  function updateChip() {
+    chipLabel.textContent = active ? nativeOf(active) : 'Translate';
+    chip.classList.toggle('is-on', active !== null);
+  }
+
+  function openMenu() { renderMenu(); menu.hidden = false; chip.setAttribute('aria-expanded', 'true'); }
+  function closeMenu() { menu.hidden = true; chip.setAttribute('aria-expanded', 'false'); }
+
+  chip.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.hidden ? openMenu() : closeMenu();
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.hidden && !e.target.closest('#lang-pick')) closeMenu();
+  });
+
+  menuItems.addEventListener('click', (e) => {
+    const opt = e.target.closest('.lang-opt');
+    if (!opt) return;
+    const code = opt.dataset.code;
+    closeMenu();
+    if (!code) { showOriginal(); return; }
+    if ((translations[code] || {}).status === 'done') selectTranslation(code);
+    // running/error rows are non-actionable
+  });
+
+  // ---- view switching -------------------------------------------------------
+  function showOriginal() {
+    active = null;
+    body.innerHTML = origBody;
+    delete body.dataset.readonly;
+    txNote.hidden = true;
+    downloads.hidden = true;
+    window.rebuildSegs && window.rebuildSegs();
+    updateChip();
+  }
+
+  async function selectTranslation(code) {
+    try {
+      const resp = await fetch(`/sessions/${sessionId}/translation/${encodeURIComponent(code)}`);
+      if (!resp.ok) throw new Error(await resp.text());
+      body.innerHTML = await resp.text();
+      body.dataset.readonly = '1';
+      active = code;
+      txNoteLang.textContent = nativeOf(code);
+      txNote.hidden = false;
+      renderDownloads(code);
+      window.rebuildSegs && window.rebuildSegs();
+      updateChip();
+    } catch (err) {
+      notify({ variant: 'danger', closable: true,
+        html: '<sl-icon slot="icon" name="exclamation-octagon"></sl-icon> Could not load that translation.' });
+    }
+  }
+
+  function renderDownloads(code) {
+    const links = formats.map((fmt) =>
+      `<a class="dl-chip" href="/sessions/${sessionId}/translation/${encodeURIComponent(code)}/download/${fmt}" download>${fmt}</a>`
+    ).join('');
+    downloads.innerHTML = '<span class="dl-label">Download</span>' + links;
+    downloads.hidden = false;
+  }
+
+  // ---- add a translation ----------------------------------------------------
+  addBtn.addEventListener('click', () => {
+    closeMenu();
+    pick = null;
+    enrollList.querySelectorAll('.enroll-row').forEach((r) => r.classList.remove('enroll-row--sel'));
+    if (data.googleKeySet) confirmBtn.removeAttribute('disabled');
+    modal.show();
+  });
+  cancelBtn.addEventListener('click', () => modal.hide());
+
+  enrollList.addEventListener('click', (e) => {
+    const row = e.target.closest('.enroll-row');
+    if (!row || row.classList.contains('is-added')) return;
+    pick = row.dataset.code;
+    enrollList.querySelectorAll('.enroll-row').forEach((r) =>
+      r.classList.toggle('enroll-row--sel', r === row));
+  });
+
+  confirmBtn.addEventListener('click', async () => {
+    if (!pick) {
+      notify({ variant: 'warning', closable: true,
+        html: '<sl-icon slot="icon" name="exclamation-triangle"></sl-icon> Pick a language first.' });
+      return;
+    }
+    confirmBtn.setAttribute('loading', '');
+    try {
+      const resp = await fetch(`/sessions/${sessionId}/translate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'target_language=' + encodeURIComponent(pick),
+      });
+      if (!resp.ok) throw new Error((await resp.text()) || 'Translation could not start.');
+      const out = await resp.json();
+      translations[out.lang] = { status: out.status, service: out.service };
+      active = out.lang;  // auto-switch to it once the SSE 'done' arrives
+      renderMenu();
+      updateChip();
+      ensureStream();
+      modal.hide();
+      notify({ variant: 'primary', closable: true,
+        html: `<sl-icon slot="icon" name="translate"></sl-icon> Translating into ${escapeHtml(nativeOf(out.lang))}…` });
+    } catch (err) {
+      notify({ variant: 'danger', closable: true,
+        html: '<sl-icon slot="icon" name="exclamation-octagon"></sl-icon> ' + escapeHtml(err.message || 'Could not start translation.') });
+    } finally {
+      confirmBtn.removeAttribute('loading');
+    }
+  });
+
+  // ---- live progress (SSE) --------------------------------------------------
+  // The stream emits the full status map on connect, then per-language deltas,
+  // and the server closes it after a terminal (done/error) event. EventSource
+  // auto-reconnects, so we explicitly close once nothing is running to avoid an
+  // idle reconnect loop; ensureStream() reopens when a new translation starts.
+  function ensureStream() {
+    if (es) return;
+    es = openSSE(`/sessions/${sessionId}/translate/events`, (d, src) => {
+      if (d.translations) {
+        Object.assign(translations, d.translations);
+      } else if (d.lang) {
+        translations[d.lang] = Object.assign({}, translations[d.lang], d);
+        delete translations[d.lang].lang;
+        if (d.status === 'done') {
+          notify({ variant: 'success', closable: true,
+            html: `<sl-icon slot="icon" name="check-circle"></sl-icon> ${escapeHtml(nativeOf(d.lang))} translation ready.` });
+          if (active === d.lang) selectTranslation(d.lang);
+        } else if (d.status === 'error') {
+          notify({ variant: 'danger', closable: true,
+            html: `<sl-icon slot="icon" name="exclamation-octagon"></sl-icon> ${escapeHtml(nativeOf(d.lang))} translation failed.` });
+          if (active === d.lang) { active = null; updateChip(); }
+        }
+      }
+      renderMenu();
+      updateChip();
+      if (!isRunning()) { src.close(); es = null; }
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // ---- boot -----------------------------------------------------------------
+  renderMenu();
+  updateChip();
+  if (isRunning()) ensureStream();  // resume watching an in-flight translation
 })();
 </script>
 {% endblock %}
