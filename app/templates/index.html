@@ -312,6 +312,12 @@
 
     cancelBtn.addEventListener('click', () => {
       if (cancelBtn.dataset.mode === 'done') { location.href = '/'; return; }
+      // If a job is in-flight, cancel it before closing.
+      const inFlight = document.querySelector('#dialog-status [data-sse-session]');
+      if (inFlight) {
+        const id = inFlight.dataset.sseSession;
+        fetch('/sessions/' + id + '/delete', { method: 'POST' }).catch(() => {});
+      }
       dialog.hide();
     });
 
