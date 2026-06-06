@@ -23,11 +23,14 @@ RESULT_FILE = f"{ARTIFACT_BASENAME}.json"
 # Per-session edit overlay: edited segments + capped delta history. Absent until
 # the first edit; the original RESULT_FILE is never mutated.
 EDITS_FILE = f"{ARTIFACT_BASENAME}.edits.json"
+# Per-language translation overlay, e.g. transcript.translation.es.json. One file
+# per target language; the original transcript is never mutated.
+TRANSLATION_BASENAME = f"{ARTIFACT_BASENAME}.translation"
 
 _COLUMNS = (
     "id", "filename", "audio_filename", "status", "stage", "error", "options",
     "language", "diarized", "model", "num_segments", "duration",
-    "created_at", "updated_at",
+    "translations", "created_at", "updated_at",
 )
 
 _SCHEMA = """
@@ -44,6 +47,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model         TEXT,
     num_segments  INTEGER,
     duration      REAL,
+    translations  TEXT,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -84,6 +88,8 @@ class SessionStore:
         cols = {r["name"] for r in self._db.execute("PRAGMA table_info(sessions)")}
         if "stage" not in cols:
             self._db.execute("ALTER TABLE sessions ADD COLUMN stage TEXT")
+        if "translations" not in cols:
+            self._db.execute("ALTER TABLE sessions ADD COLUMN translations TEXT")
 
     @property
     def db_path(self) -> str:
@@ -255,6 +261,68 @@ class SessionStore:
             self._write_edits(session_id, new_segments, new_history)
             return new_segments
 
+    # --- translations (per-language overlay; original never mutated) ----
+    def translation_path(self, session_id: str, lang: str) -> str:
+        return os.path.join(
+            self.session_dir(session_id), f"{TRANSLATION_BASENAME}.{lang}.json"
+        )
+
+    def load_translation(self, session_id: str, lang: str) -> Optional[dict]:
+        path = self.translation_path(session_id, lang)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def save_translation(self, session_id: str, lang: str, payload: dict) -> None:
+        """Atomically write a translation overlay (tmp + os.replace)."""
+        path = self.translation_path(session_id, lang)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
+
+    def get_translations(self, session_id: str) -> dict:
+        """Map of target-lang -> {status, service, error?} for this session."""
+        row = self.get(session_id)
+        return (row or {}).get("translations") or {}
+
+    def set_translation_status(
+        self,
+        session_id: str,
+        lang: str,
+        status: str,
+        *,
+        service: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> dict:
+        """Upsert one language's translation status in the ``translations`` JSON
+        column (read-modify-write under the lock). Returns the full map."""
+        with self._lock, self._db:
+            row = self._db.execute(
+                "SELECT translations FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            current = {}
+            if row is not None and row["translations"]:
+                try:
+                    current = json.loads(row["translations"])
+                except (ValueError, TypeError):
+                    current = {}
+            entry = current.get(lang, {})
+            entry["status"] = status
+            if service is not None:
+                entry["service"] = service
+            if error is not None:
+                entry["error"] = error
+            elif status != "error":
+                entry.pop("error", None)
+            current[lang] = entry
+            self._db.execute(
+                "UPDATE sessions SET translations=?, updated_at=? WHERE id=?",
+                (json.dumps(current), _now(), session_id),
+            )
+        return current
+
     # --- writes ---------------------------------------------------------
     def create(self, session_id: str, filename: str, audio_filename: str,
                options: dict, model: Optional[str] = None) -> None:
@@ -425,6 +493,11 @@ def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
             d["options"] = json.loads(d["options"])
         except (ValueError, TypeError):
             d["options"] = {}
+    if d.get("translations"):
+        try:
+            d["translations"] = json.loads(d["translations"])
+        except (ValueError, TypeError):
+            d["translations"] = {}
     if d.get("diarized") is not None:
         d["diarized"] = bool(d["diarized"])
     return d

@@ -71,6 +71,11 @@ def _word_spans(seg: dict) -> str:
         attrs = ""
         if start is not None and end is not None:
             attrs = f' data-start="{float(start):.3f}" data-end="{float(end):.3f}"'
+        # A translation view marks segments whose source text changed (or were never
+        # translated): they fall back to the original text, flagged as provisional.
+        if seg.get("stale"):
+            return (f'<span class="seg seg--untranslated"{attrs} '
+                    f'title="Not translated yet">{escape(text)}</span> ')
         return f'<span class="seg"{attrs}>{escape(text)}</span> '
 
     out = []

@@ -8,9 +8,11 @@ Config: put HF_TOKEN (and optional WHISPERX_* overrides) in app/.env.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -67,6 +69,9 @@ from app import backup as backup_pkg  # noqa: E402
 from app import diarize_model  # noqa: E402
 from app import pipeline  # noqa: E402
 from app import secret_store  # noqa: E402
+from app import translate_job  # noqa: E402
+from app import translation_overlay  # noqa: E402
+from app.translation import DEFAULT_SERVICE, SERVICES  # noqa: E402
 from app.sse import Broker, sse_response  # noqa: E402
 from app.jobs import JobQueue  # noqa: E402
 from app.edits import distinct_speakers, next_speaker_key  # noqa: E402
@@ -154,6 +159,7 @@ def _card(row: dict) -> dict:
         "diarized": bool(row.get("diarized")),
         "num_segments": row.get("num_segments") or 0,
         "status": row["status"],
+        "translations": row.get("translations") or {},
     }
 
 
@@ -279,6 +285,10 @@ def _on_stage(session_id: str, stage: str) -> None:
 
 
 _queue = JobQueue(_sessions, run_session, broker=_broker)
+
+# Translation runs on its own (network-bound) executor so it never blocks the
+# single-worker transcription queue. State is durable on the session row.
+_translate_queue = translate_job.TranslationQueue(_sessions, broker=_broker)
 
 _requeue_ids = _sessions.reconcile_startup()
 if _requeue_ids:
@@ -775,6 +785,14 @@ def _diarize_card_ctx(notice: str | None = None, notice_ok: bool = True) -> dict
     }
 
 
+def _google_key_ctx(notice: str = "", notice_ok: bool = True) -> dict:
+    return {
+        "key_set": bool(secret_store.resolve_google_api_key()),
+        "notice": notice,
+        "notice_ok": notice_ok,
+    }
+
+
 @app.get("/settings")
 def settings():
     return render_template(
@@ -782,6 +800,11 @@ def settings():
         active="settings",
         default_language=_sessions.get_setting("default_language", ""),
         models=_manager.status(),
+        translation_service=_sessions.get_setting("translation_service", DEFAULT_SERVICE),
+        translation_services=[
+            {"id": name, "label": cls.label} for name, cls in SERVICES.items()
+        ],
+        google_key=_google_key_ctx(),
         **_diarize_card_ctx(),
         **_backup_ctx(),
     )
@@ -946,6 +969,48 @@ def settings_hf_token_clear():
                            notice=notice, notice_ok=True)
 
 
+@app.post("/settings/google-key")
+def settings_google_key():
+    """Verify + store the Google Translation API key; re-render the key card."""
+    key = request.form.get("google_key", "").strip()
+    ok, detail = secret_store.verify_google_api_key(key)
+    if not ok:
+        return render_template("partials/_google_key.html",
+                               **_google_key_ctx(notice=detail, notice_ok=False))
+    try:
+        secret_store.set_google_api_key(key)
+    except secret_store.SecretStoreUnavailable as exc:
+        return render_template("partials/_google_key.html",
+                               **_google_key_ctx(notice=str(exc), notice_ok=False))
+    return render_template("partials/_google_key.html",
+                           **_google_key_ctx(notice="Key saved and verified.",
+                                             notice_ok=True))
+
+
+@app.post("/settings/google-key/clear")
+def settings_google_key_clear():
+    """Remove the stored Google Translation API key; translation is disabled."""
+    secret_store.delete_google_api_key()
+    key_set = bool(secret_store.resolve_google_api_key())  # env override may apply
+    notice = ("Cleared the stored key, but GOOGLE_TRANSLATE_API_KEY is still set "
+              "in the environment." if key_set
+              else "Key cleared. Translation is now disabled.")
+    return render_template("partials/_google_key.html",
+                           **_google_key_ctx(notice=notice, notice_ok=True))
+
+
+@app.post("/settings/translation-service")
+def settings_translation_service():
+    """Persist the chosen translation service (only 'google' valid for now)."""
+    service = request.form.get("translation_service", "").strip()
+    if service not in SERVICES:
+        abort(400, "Unknown translation service.")
+    _sessions.set_setting("translation_service", service)
+    return (
+        '<span class="frag frag--ok"><sl-icon name="check-circle"></sl-icon> Saved</span>'
+    )
+
+
 @app.post("/settings/diarize-model/refresh")
 def settings_diarize_refresh():
     """Download the latest pyannote pipeline from HF into the data dir and switch
@@ -982,6 +1047,7 @@ def view_session(session_id: str):
         abort(404)
     if row["status"] != "done":
         return redirect("/")
+    source = row.get("language") or ""
     return render_template(
         "transcript.html",
         session=_card(row),
@@ -989,6 +1055,15 @@ def view_session(session_id: str):
         can_undo=_sessions.edit_history_len(session_id) > 0,
         formats=[f for f in pipeline.OUTPUT_FORMATS
                  if os.path.exists(_sessions.artifact_path(session_id, f))],
+        google_key_set=bool(secret_store.resolve_google_api_key()),
+        source_lang=source,
+        source_label=_lang_display(source)["native"] if source else "Original",
+        # Targets exclude the source language; the menu/JS adds native names for
+        # any already-translated tag not in this list via `lang_names`.
+        target_languages=[l for l in TRANSLATION_LANGUAGES if l["code"] != source],
+        lang_names={l["code"]: l["native"] for l in TRANSLATION_LANGUAGES},
+        # Translation artifacts: json overlay + srt/vtt/txt (see translate_job).
+        translation_formats=["srt", "vtt", "txt", "json"],
     )
 
 
@@ -1326,6 +1401,140 @@ def download(session_id: str, fmt: str):
     if not os.path.exists(path):
         abort(404)
     return send_file(path, as_attachment=True)
+
+
+_LANG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
+
+
+def _valid_lang(lang: str) -> bool:
+    """A safe BCP-47-ish language tag (also guards translation file paths)."""
+    return bool(_LANG_RE.match(lang or ""))
+
+
+# Curated target languages for the transcript translate picker. Each carries an
+# English name and the language's own native name (shown in the dropdown / add
+# dialog, scholastic-style). The list is intentionally short and common; Google
+# Translate supports far more, but a tidy menu beats an exhaustive one.
+TRANSLATION_LANGUAGES = [
+    {"code": "en", "name": "English", "native": "English"},
+    {"code": "es", "name": "Spanish", "native": "Español"},
+    {"code": "fr", "name": "French", "native": "Français"},
+    {"code": "de", "name": "German", "native": "Deutsch"},
+    {"code": "it", "name": "Italian", "native": "Italiano"},
+    {"code": "pt", "name": "Portuguese", "native": "Português"},
+    {"code": "pt-BR", "name": "Portuguese (Brazil)", "native": "Português (BR)"},
+    {"code": "nl", "name": "Dutch", "native": "Nederlands"},
+    {"code": "ru", "name": "Russian", "native": "Русский"},
+    {"code": "ja", "name": "Japanese", "native": "日本語"},
+    {"code": "ko", "name": "Korean", "native": "한국어"},
+    {"code": "zh", "name": "Chinese", "native": "中文"},
+    {"code": "ar", "name": "Arabic", "native": "العربية"},
+    {"code": "hi", "name": "Hindi", "native": "हिन्दी"},
+]
+_LANG_BY_CODE = {lang["code"]: lang for lang in TRANSLATION_LANGUAGES}
+
+
+def _lang_display(code: str) -> dict:
+    """{code, name, native} for a tag, falling back to the bare code uppercased."""
+    if code in _LANG_BY_CODE:
+        return _LANG_BY_CODE[code]
+    label = (code or "").upper() or "Original"
+    return {"code": code, "name": label, "native": label}
+
+
+@app.post("/sessions/<session_id>/translate")
+def translate_session(session_id: str):
+    """Queue a background translation of a finished transcript into a target language."""
+    row = _sessions.get(session_id)
+    if row is None:
+        abort(404)
+    if row["status"] != "done":
+        abort(409, "Transcript is not ready to translate.")
+    target = request.form.get("target_language", "").strip()
+    if not _valid_lang(target):
+        abort(400, "Invalid target language.")
+    if not secret_store.resolve_google_api_key():
+        abort(400, "Add a Google Translation API key in Settings first.")
+    service = _sessions.get_setting("translation_service", DEFAULT_SERVICE)
+    if service not in SERVICES:
+        service = DEFAULT_SERVICE
+    _translate_queue.submit(session_id, target, service)
+    return jsonify({"lang": target, "status": "running", "service": service})
+
+
+@app.get("/sessions/<session_id>/translate/events")
+def translate_events(session_id: str):
+    """SSE stream of translation progress for one session.
+
+    Emits the current per-language status map on connect (durable, so a
+    reconnecting client is correct), then live deltas; closes on a terminal
+    ``done``/``error`` event for the language being watched.
+    """
+    if _sessions.get(session_id) is None:
+        abort(404)
+
+    def initial():
+        return {"translations": _sessions.get_translations(session_id)}
+
+    return sse_response(
+        _broker,
+        translate_job.channel(session_id),
+        initial=initial,
+        terminal=lambda e: e.get("status") in ("done", "error"),
+    )
+
+
+@app.get("/sessions/<session_id>/translation/<lang>")
+def view_translation(session_id: str, lang: str):
+    """Rendered translated transcript for one language (htmx fragment / JSON)."""
+    if _sessions.get(session_id) is None or not _valid_lang(lang):
+        abort(404)
+    overlay = _sessions.load_translation(session_id, lang)
+    if overlay is None:
+        abort(404)
+    # Join the translated strings onto the *current* original: structure, speaker and
+    # turn grouping come from the live transcript, so reassignments/renames show here.
+    result = _sessions.load_result(session_id) or {}
+    orig = _sessions.current_segments(session_id, result.get("segments", []))
+    segs = translation_overlay.apply_overlay(orig, overlay)
+    if request.args.get("format") == "json":
+        return jsonify({"target_language": lang, "segments": segs})
+    view = {"segments": segs, "language": lang}
+    return render_transcript(view, _sessions.get_speaker_names(session_id))
+
+
+@app.get("/sessions/<session_id>/translation/<lang>/download/<fmt>")
+def download_translation(session_id: str, lang: str, fmt: str):
+    """Generate the translation export on demand from the joined segments, so it
+    reflects the current speakers (reassignments) and the original-text fallback for
+    any segment edited since translation."""
+    if fmt not in pipeline.OUTPUT_FORMATS or not _valid_lang(lang):
+        abort(404)
+    overlay = _sessions.load_translation(session_id, lang)
+    if overlay is None:
+        abort(404)
+    result = _sessions.load_result(session_id) or {}
+    orig = _sessions.current_segments(session_id, result.get("segments", []))
+    segs = translation_overlay.apply_overlay(orig, overlay)
+
+    name = f"transcript.translation.{lang}.{fmt}"
+    tmpdir = tempfile.mkdtemp(prefix="wx-tr-")
+    out_path = os.path.join(tmpdir, name)
+    if fmt == "json":
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({"target_language": lang, "segments": segs}, f, ensure_ascii=False)
+    else:
+        from whisperx.utils import get_writer
+
+        # get_writer strips the last dotted suffix off the stem (os.path.splitext);
+        # the language tag looks like that suffix, so feed a throwaway ".x" to eat,
+        # leaving the final name transcript.translation.<lang>.<fmt>.
+        stem = os.path.join(tmpdir, f"transcript.translation.{lang}.x")
+        writer = get_writer(fmt, tmpdir)
+        writer({"segments": segs, "language": lang}, stem, pipeline.WRITER_OPTIONS)
+    if not os.path.exists(out_path):
+        abort(404)
+    return send_file(out_path, as_attachment=True, download_name=name)
 
 
 @app.get("/sessions/<session_id>/export.md")

@@ -1,0 +1,38 @@
+{# Google Translation API key control for Settings. Swapped in place (outerHTML)
+   by the /settings/google-key endpoints. The key secret is never sent back to
+   the client — only whether one is stored. The base.html htmx:configRequest hook
+   forwards the <sl-input> value from the wrapping <form>. #}
+<div id="google-key-card">
+  <div class="pref-row">
+    <div>
+      <div class="pref__title">Google Translation API Key</div>
+      <div class="pref__desc">
+        Required to translate transcripts with Google Translate. Create an API key
+        in Google Cloud with the Cloud Translation API enabled.
+        Stored in your OS keyring — never in plaintext. Status:
+        <strong>{{ 'set' if key_set else 'not set' }}</strong>.
+        Changing it takes effect immediately, no restart needed.
+      </div>
+    </div>
+    <div class="pref__control">
+      <form id="google-key-form" hx-post="/settings/google-key" hx-target="#google-key-card" hx-swap="outerHTML">
+        <sl-input name="google_key" type="password" password-toggle autocomplete="off"
+                  placeholder="{{ 'AIza•••• (stored)' if key_set else 'AIzaSy…' }}"
+                  style="min-width:300px"></sl-input>
+      </form>
+      <div style="display:flex;gap:10px;margin-top:10px;justify-content:flex-end">
+        {% if key_set %}
+        <form hx-post="/settings/google-key/clear" hx-target="#google-key-card" hx-swap="outerHTML">
+          <sl-button size="small" variant="default" data-google-clear>Clear</sl-button>
+        </form>
+        {% endif %}
+        <sl-button size="small" variant="primary" data-google-save>Verify &amp; Save</sl-button>
+      </div>
+    </div>
+  </div>
+  {% if notice %}
+  <div class="frag {{ 'frag--ok' if notice_ok else 'frag--err' }}" style="margin-top:8px;justify-content:flex-end">
+    <sl-icon name="{{ 'check-circle' if notice_ok else 'exclamation-triangle' }}"></sl-icon> {{ notice }}
+  </div>
+  {% endif %}
+</div>
