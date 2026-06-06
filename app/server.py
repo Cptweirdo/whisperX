@@ -241,7 +241,7 @@ def _warm_models() -> None:
         logger.exception("Active model load failed")
 
 
-def run_session(session_id: str) -> None:
+def run_session(session_id: str, cancel_event=None) -> None:
     """Execute the pipeline for a session and persist results + metadata."""
     row = _sessions.get(session_id)
     if row is None:
@@ -259,6 +259,7 @@ def run_session(session_id: str) -> None:
         max_speakers=opts.get("max_speakers"),
         progress=lambda s: _on_stage(session_id, s),
         on_duration=lambda d: _sessions.mark_duration(session_id, d),
+        cancel_event=cancel_event,
     )
     _sessions.mark_done(
         session_id,
@@ -1569,6 +1570,7 @@ def export_markdown(session_id: str):
 
 @app.post("/sessions/<session_id>/delete")
 def delete_session(session_id: str):
+    _queue.cancel(session_id)  # no-op if not running; signals the thread to stop
     if not _sessions.delete(session_id):
         abort(404)
     # htmx swaps the row out on a 200 empty body (it skips 204 No Content).
