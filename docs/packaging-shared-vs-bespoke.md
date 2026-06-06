@@ -13,7 +13,9 @@
 > [`pipeline-reference.md`](./pipeline-reference.md) for the per-stage spec, and
 > the two delivery designs: [`flutter-migration.md`](./flutter-migration.md)
 > (all-Dart app) and [`cpp-core-spa-architecture.md`](./cpp-core-spa-architecture.md)
-> (C++ engine core + SPA/FFI adapters).
+> (C++ engine core + SPA/FFI adapters) — the latter's *how* lives in
+> [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md) (strangler-fig
+> migration, DB compatibility, test/timing suite, build tooling).
 
 ## The key split: two sharing models, not one
 

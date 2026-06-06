@@ -226,6 +226,7 @@ functions directly from the existing pytest oracle.
 
 ## 11. References
 
+- **Migration plan (the *how*)**: [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md) — strangler-fig via pybind11, session-DB compatibility, headless test + timing suite, build tooling
 - Pipeline spec: [`pipeline-reference.md`](./pipeline-reference.md)
 - Why C++ is the substrate: [`single-language-runtime-options.md`](./single-language-runtime-options.md)
 - Alternative delivery: [`flutter-migration.md`](./flutter-migration.md)
