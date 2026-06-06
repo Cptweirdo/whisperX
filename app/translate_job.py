@@ -16,7 +16,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from app import pipeline, secret_store
+from app import secret_store, translation_overlay
 from app.translation import get_translator
 
 logger = logging.getLogger(__name__)
@@ -59,24 +59,18 @@ def run_translation(
             [s.get("text", "") for s in segments], target_lang
         )
 
-        out_segments = [
-            {
-                "start": s.get("start"),
-                "end": s.get("end"),
-                "speaker": s.get("speaker"),
-                "text": text,
-            }
-            for s, text in zip(segments, translated_text)
-        ]
+        # Structure-locked overlay: store only the translated strings keyed by each
+        # source segment's start time. Segments/speaker/turns come from the current
+        # original at render time, so speaker reassignment propagates to every
+        # language and exports are generated on demand (see server.download_translation).
         payload = {
-            "version": 1,
+            "version": 2,
             "target_language": target_lang,
             "service": service,
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "segments": out_segments,
+            "entries": translation_overlay.build_entries(segments, translated_text),
         }
         store.save_translation(session_id, target_lang, payload)
-        _write_artifacts(store, session_id, target_lang, out_segments)
     except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
         logger.exception("Translation of %s -> %s failed", session_id, target_lang)
         store.set_translation_status(session_id, target_lang, "error", error=str(exc))
@@ -85,24 +79,6 @@ def run_translation(
 
     store.set_translation_status(session_id, target_lang, "done")
     publish(_event(target_lang, "done"))
-
-
-def _write_artifacts(store, session_id: str, lang: str, segments: list) -> None:
-    """Write srt/vtt/txt artifacts for the translation (json is the overlay)."""
-    import os
-
-    from whisperx.utils import get_writer
-
-    output_dir = store.session_dir(session_id)
-    # The writer derives the output name by stripping the last dotted suffix off
-    # the basename we pass (os.path.splitext). The language tag itself looks like
-    # that suffix, so add a throwaway ".x" for splitext to eat instead, leaving
-    # the final name transcript.translation.<lang>.<fmt>.
-    stem = os.path.join(output_dir, f"transcript.translation.{lang}.x")
-    result = {"segments": segments, "language": lang}
-    for fmt in ("srt", "vtt", "txt"):
-        writer = get_writer(fmt, output_dir)
-        writer(result, stem, pipeline.WRITER_OPTIONS)
 
 
 class TranslationQueue:

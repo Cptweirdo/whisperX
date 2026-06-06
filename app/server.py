@@ -8,9 +8,11 @@ Config: put HF_TOKEN (and optional WHISPERX_* overrides) in app/.env.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -68,6 +70,7 @@ from app import diarize_model  # noqa: E402
 from app import pipeline  # noqa: E402
 from app import secret_store  # noqa: E402
 from app import translate_job  # noqa: E402
+from app import translation_overlay  # noqa: E402
 from app.translation import DEFAULT_SERVICE, SERVICES  # noqa: E402
 from app.sse import Broker, sse_response  # noqa: E402
 from app.jobs import JobQueue  # noqa: E402
@@ -1483,27 +1486,52 @@ def view_translation(session_id: str, lang: str):
     """Rendered translated transcript for one language (htmx fragment / JSON)."""
     if _sessions.get(session_id) is None or not _valid_lang(lang):
         abort(404)
-    payload = _sessions.load_translation(session_id, lang)
-    if payload is None:
+    overlay = _sessions.load_translation(session_id, lang)
+    if overlay is None:
         abort(404)
+    # Join the translated strings onto the *current* original: structure, speaker and
+    # turn grouping come from the live transcript, so reassignments/renames show here.
+    result = _sessions.load_result(session_id) or {}
+    orig = _sessions.current_segments(session_id, result.get("segments", []))
+    segs = translation_overlay.apply_overlay(orig, overlay)
     if request.args.get("format") == "json":
-        return jsonify(payload)
-    view = {"segments": payload.get("segments", []), "language": lang}
+        return jsonify({"target_language": lang, "segments": segs})
+    view = {"segments": segs, "language": lang}
     return render_transcript(view, _sessions.get_speaker_names(session_id))
 
 
 @app.get("/sessions/<session_id>/translation/<lang>/download/<fmt>")
 def download_translation(session_id: str, lang: str, fmt: str):
+    """Generate the translation export on demand from the joined segments, so it
+    reflects the current speakers (reassignments) and the original-text fallback for
+    any segment edited since translation."""
     if fmt not in pipeline.OUTPUT_FORMATS or not _valid_lang(lang):
         abort(404)
-    if fmt == "json":
-        path = _sessions.translation_path(session_id, lang)
-    else:
-        path = os.path.join(_sessions.session_dir(session_id),
-                            f"transcript.translation.{lang}.{fmt}")
-    if not os.path.exists(path):
+    overlay = _sessions.load_translation(session_id, lang)
+    if overlay is None:
         abort(404)
-    return send_file(path, as_attachment=True)
+    result = _sessions.load_result(session_id) or {}
+    orig = _sessions.current_segments(session_id, result.get("segments", []))
+    segs = translation_overlay.apply_overlay(orig, overlay)
+
+    name = f"transcript.translation.{lang}.{fmt}"
+    tmpdir = tempfile.mkdtemp(prefix="wx-tr-")
+    out_path = os.path.join(tmpdir, name)
+    if fmt == "json":
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({"target_language": lang, "segments": segs}, f, ensure_ascii=False)
+    else:
+        from whisperx.utils import get_writer
+
+        # get_writer strips the last dotted suffix off the stem (os.path.splitext);
+        # the language tag looks like that suffix, so feed a throwaway ".x" to eat,
+        # leaving the final name transcript.translation.<lang>.<fmt>.
+        stem = os.path.join(tmpdir, f"transcript.translation.{lang}.x")
+        writer = get_writer(fmt, tmpdir)
+        writer({"segments": segs, "language": lang}, stem, pipeline.WRITER_OPTIONS)
+    if not os.path.exists(out_path):
+        abort(404)
+    return send_file(out_path, as_attachment=True, download_name=name)
 
 
 @app.get("/sessions/<session_id>/export.md")

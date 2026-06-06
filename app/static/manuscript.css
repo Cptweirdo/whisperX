@@ -386,6 +386,14 @@ body, body * { font-kerning: normal; }
    rubrication red — the manuscript tradition of red marginal annotation. */
 :root { --rubric: #a4402f; --rubric-soft: rgba(164,64,47,0.08); }
 
+/* untranslated fallback: a segment whose source text changed (or was never
+   translated) shows the original text, flagged provisional in rubrication red. */
+.seg--untranslated {
+  color: var(--rubric); font-style: italic;
+  text-decoration: underline dotted var(--rubric); text-underline-offset: 3px;
+  cursor: help;
+}
+
 /* header translation chip — sits beside the category chip */
 .lang-pick { position: relative; display: inline-flex; }
 .trans-chip {

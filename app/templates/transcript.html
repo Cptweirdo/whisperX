@@ -350,6 +350,9 @@
     body.innerHTML = html;
     window.rebuildSegs && window.rebuildSegs();
     setUndo(resp.headers.get('X-Can-Undo') === '1');
+    // Reassign/edit while viewing the Original: refresh the cached Original body so
+    // switching away and back doesn't restore a pre-edit snapshot.
+    if (!body.dataset.transLang) window.__setOrigBody && window.__setOrigBody(html);
   }
   // Shared with the speaker-reassign flow: a reassignment re-renders the whole body
   // (it can merge adjacent same-speaker turns and shift indices) on the same contract.
@@ -467,7 +470,9 @@
   const translations = data.translations || {};  // code -> {status, service, error?}
 
   const body = document.getElementById('tr-body');
-  const origBody = body.innerHTML;  // cached Original, restored when switching back
+  let origBody = body.innerHTML;  // cached Original, restored when switching back
+  // The reassign flow (other IIFE) refreshes this after an Original-view edit.
+  window.__setOrigBody = (html) => { origBody = html; };
   const chip = document.getElementById('trans-chip');
   const chipLabel = document.getElementById('trans-chip-label');
   const menu = document.getElementById('lang-menu');
@@ -568,6 +573,7 @@
     active = null;
     body.innerHTML = origBody;
     delete body.dataset.readonly;
+    delete body.dataset.transLang;
     txNote.hidden = true;
     downloads.hidden = true;
     window.rebuildSegs && window.rebuildSegs();
@@ -579,7 +585,8 @@
       const resp = await fetch(`/sessions/${sessionId}/translation/${encodeURIComponent(code)}`);
       if (!resp.ok) throw new Error(await resp.text());
       body.innerHTML = await resp.text();
-      body.dataset.readonly = '1';
+      body.dataset.readonly = '1';     // text edits stay on the Original
+      body.dataset.transLang = code;   // but speaker swaps are allowed + re-render this view
       active = code;
       txNoteLang.textContent = nativeOf(code);
       txNote.hidden = false;
@@ -684,6 +691,9 @@
   }
 
   // ---- boot -----------------------------------------------------------------
+  // The reassign flow re-fetches the active translation after a swap so the new
+  // speaker shows in this view too (structure/speaker come from the original).
+  window.__reloadTranslation = selectTranslation;
   renderMenu();
   updateChip();
   if (isRunning()) ensureStream();  // resume watching an in-flight translation
@@ -733,7 +743,11 @@
       }
       const html = await resp.text();
       closeMenu();
-      window.__applyBodySwap(resp, html);   // discards the (now stale) menu DOM
+      // In a translation view the POST re-rendered the *original* body; re-fetch the
+      // active translation instead so the new speaker shows with the translated text.
+      const lang = body.dataset.transLang;
+      if (lang && window.__reloadTranslation) window.__reloadTranslation(lang);
+      else window.__applyBodySwap(resp, html);   // discards the (now stale) menu DOM
     } catch (err) {
       notify({ variant: 'danger', closable: true,
                html: '<sl-icon slot="icon" name="exclamation-octagon"></sl-icon> Could not reassign the speaker.' });
@@ -804,7 +818,8 @@
   body.addEventListener('click', (e) => {
     const btn = e.target.closest('.turn__swap');
     if (!btn) return;
-    if (body.dataset.readonly) return;   // translation view is read-only
+    // Speaker swaps are allowed in any view (they edit the original, which propagates
+    // to every language); only inline text editing is original-only.
     e.preventDefault();
     if (openBtn === btn) { closeMenu(); return; }
     closeMenu();
