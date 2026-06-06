@@ -14,11 +14,11 @@
         Changing it takes effect immediately, no restart needed.
       </div>
     </div>
-    <div class="pref__control">
+    <div class="pref__control" style="min-width:300px">
       <form id="google-key-form" hx-post="/settings/google-key" hx-target="#google-key-card" hx-swap="outerHTML">
         <sl-input name="google_key" type="password" password-toggle autocomplete="off"
                   placeholder="{{ 'AIza•••• (stored)' if key_set else 'AIzaSy…' }}"
-                  style="min-width:300px"></sl-input>
+                  style="width:100%"></sl-input>
       </form>
       <div style="display:flex;gap:10px;margin-top:10px;justify-content:flex-end">
         {% if key_set %}
