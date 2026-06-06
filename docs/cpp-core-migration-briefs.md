@@ -1,0 +1,410 @@
+# C++ Core Migration — Per-Phase Briefs
+
+> Execution briefs for each phase of the [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md)
+> roadmap (§6). One brief per phase, each with **Context** (why, what it depends
+> on, the Python code it maps to), **Goals** (concrete deliverables),
+> **Validation** (how we prove it done/correct), and **Unknowns / open questions**
+> (the genuine risks and decisions to resolve before/while building it).
+>
+> Stage specs they reference live in [`pipeline-reference.md`](./pipeline-reference.md);
+> the DB contract in [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md) §2;
+> the streamlining rationale in [`cpp-core-spa-architecture.md`](./cpp-core-spa-architecture.md) §4.
+
+## How to read these briefs
+
+Two cross-cutting facts shape every phase:
+
+1. **Strangler-fig, Python stays the host.** Until Phase 5, `app/` + the Python
+   `whisperx` pipeline keep running. Each C++ stage is swapped in **behind the
+   pybind11 `whisperx_core` module** and gated by `WHISPERX_CORE_STAGES`, so we
+   always have a runnable reference to diff against. A phase is "done" when its
+   stage matches Python on the golden set with the flag on.
+2. **Alignment is sequenced before ASR (Phase 3 before 4) for risk, not for data
+   flow.** Alignment *consumes* transcript text, which ASR produces — but in the
+   strangler model **Python ASR feeds the C++ aligner** during Phase 3, so we can
+   retire the highest-risk stage (wav2vec2 export + Viterbi) early without C++ ASR
+   existing yet. The dependency is satisfied by the oracle.
+
+**Tolerances** (used throughout "Validation"): structural shape and integer
+indices **exact**; speaker labels and trellis/backtrack paths **exact**; writer
+bytes **exact**; floating timings within **~1 frame (~20 ms)**; emission/score
+tensors within a small **fp32 epsilon** (to be pinned in Phase 0).
+
+---
+
+## Phase 0 — pybind scaffold + golden generator
+
+### Context
+Nothing can be validated until two things exist: a **C++ module Python can call**
+(the migration vehicle *and* the parity oracle) and a **set of golden vectors**
+to compare against. The repo has **no golden data today** — tests synthesize
+inputs and mock models — so ground truth must be manufactured from the live
+Python pipeline. This phase builds the harness, not any real stage. Build tooling
+is settled in the plan (§5): **CMake + Ninja + vcpkg**.
+
+### Goals
+- A CMake project producing a **`whisperx_core` pybind11 module** that imports
+  cleanly from Python (`import whisperx_core`), even if its first functions are
+  stubs.
+- **CMake + Ninja + vcpkg** bootstrap with the dependency manifest seeded
+  (ONNX Runtime, sherpa-onnx, SQLiteCpp, nlohmann/json, Catch2, Google Benchmark,
+  Eigen) — pulling and linking at least one (e.g. nlohmann/json) end-to-end.
+- A **golden-vector generator** — a Python script/pytest pass that runs the real
+  `whisperx` pipeline over a small fixed clip set and dumps every stage's
+  intermediate to JSON: merged VAD chunks (`vads/vad.py::merge_chunks`), CTC
+  emissions + `get_trellis`/`backtrack`/`merge_repeats` (`alignment.py:425-541`),
+  word timings (`SingleWordSegment`), diarization turns + `assign_word_speakers`
+  labels (`diarize.py:185`), and the four writer outputs.
+- **CTest + Catch2** wired; one trivial parity test green (Python value ==
+  `whisperx_core` value) to prove the oracle loop.
+- A **CI job** skeleton beside `.github/workflows/python-compatibility.yml` that
+  builds the module and runs CTest.
+
+### Validation
+- `import whisperx_core` succeeds in the project venv.
+- `cmake --build` + `ctest` green locally and in CI.
+- Goldens exist for **N clips** (covering: short/long, 1-speaker/2-speaker,
+  English + at least one non-Latin-script language) and are committed under a
+  `golden/` dir with a manifest (clip → model versions → sha256).
+- The trivial parity test demonstrates a C++ function result matching Python.
+
+### Unknowns / open questions
+- **Clip set licensing + composition** — which audio can we commit? How many,
+  which languages/speaker counts/lengths? (Drives coverage of every later phase.)
+- **Determinism of goldens** — torch/CTranslate2/pyannote outputs can shift across
+  library/model versions. Do we **pin exact model + lib versions** in the manifest
+  and regenerate deliberately, or store goldens as immutable artifacts?
+- **The gated diarization model** (`pyannote/speaker-diarization-community-1`,
+  `diarize.py:91`) needs an HF token to generate its goldens — who runs that, and
+  is it reproducible in CI?
+- **Epsilon values** — what fp32 tolerance is "matching" for emissions/scores?
+  Needs to be measured, not guessed.
+- **pybind in CI** — manylinux build, vcpkg binary caching, build time budget. Does
+  the compat CI runner have the headroom, or do we need a separate workflow?
+
+---
+
+## Phase 1 — DB layer in C++ (SQLiteCpp)
+
+### Context
+The session DB is the **in-place-upgrade compatibility contract** (plan §2). It's
+low-ML-risk and high-value to port early: it exercises the pybind boundary on
+something deterministic and locks down the must-not-break surface before any model
+work. Source of truth: `app/store.py` (schema `:36-64`, `_migrate` `:86-92`, CRUD,
+`snapshot_db`/`swap_db`), `app/paths.py` (`data_dir()`), `app/backup/`.
+
+### Goals
+- A C++ `SessionStore` on **SQLiteCpp** reproducing the **exact** schema (3 tables,
+  `sessions` 15 columns in order), `PRAGMA journal_mode=WAL`, and the
+  `PRAGMA table_info` + `ALTER TABLE ADD COLUMN` idempotent migration (`stage`,
+  `translations`).
+- Full CRUD + lifecycle parity: `create / mark_running / mark_stage /
+  mark_duration / mark_done / mark_error / get / list` (`ORDER BY created_at DESC,
+  id DESC`) `/ delete` (cascade `speaker_names` + remove session dir) `/
+  reconcile_startup`.
+- Value-encoding parity: `options`/`translations` as JSON text (**nlohmann/json**),
+  `diarized` INTEGER 0/1, timestamps **ISO-8601 UTC seconds precision**.
+- `snapshot_db` (SQLite **Online Backup API**) + atomic `swap_db` + reopen.
+- A pybind binding so `app/store.py` can **delegate to** (or be shadowed by) the
+  C++ store without changing callers.
+
+### Validation
+- Open a **real pre-existing `sessions.db`** (created by the Python app), read all
+  rows, write new ones, and reopen with the Python store — **no schema drift, no
+  data loss**.
+- Migrations are **idempotent** (run twice → no error, no duplicate columns).
+- A parity test: a row written via the Python store and via the C++ store is
+  **byte-equal** field-for-field (including timestamp format and JSON serialization
+  key order, if order matters to consumers).
+- `snapshot_db` → `swap_db` round-trip preserves data; the existing
+  `tests/test_backup*.py` suite stays green against the C++-backed store.
+
+### Unknowns / open questions
+- **Shadow vs replace** — does `app/store.py` delegate to `whisperx_core` (thin
+  Python wrapper) or get fully replaced? Affects how much of `app/` changes now.
+- **Threading** — Python holds a `threading.Lock`; the C++ store needs its own
+  mutex, and WAL allows concurrent readers. How do the GIL, the pybind call, and
+  the C++ mutex compose under the job queue + SSE readers?
+- **JSON key-order / whitespace** — is any consumer sensitive to the exact
+  serialization of `options`/`translations`? nlohmann/json must match Python
+  `json.dumps` formatting if so.
+- **SQLite build** — SQLiteCpp's bundled SQLite vs system SQLite: confirm WAL +
+  Online Backup API availability and version alignment with what Python's `sqlite3`
+  produced (file-format compatibility is guaranteed, but PRAGMAs/features should
+  match).
+- **Secrets + settings** — `secret_store.py` (keyring) and the `settings` table
+  (`active_model`, `device`) — port to C++ now or leave in Python for this phase?
+- **File-artifact ownership** — `transcript.json` and the atomic tmp+rename
+  overlays are written by `app/pipeline.py`, not the store. Who owns those writes
+  while the host is still Python?
+
+---
+
+## Phase 2 — decode-once + VAD / merge_chunks
+
+### Context
+The first real pipeline stage and the first **streamlining win**: today audio is
+decoded up to 3× (ASR, alignment, diarization) via an **ffmpeg subprocess**
+(`audio.py:44`); we decode **once** to a shared float32 16 kHz mono buffer. Then
+the VAD segments it and `merge_chunks` packs voiced spans into ≤30 s windows.
+Source: `audio.py:25` (`load_audio`, `SAMPLE_RATE=16000`), `vads/vad.py:19`
+(`Vad.merge_chunks`), `vads/silero.py`.
+
+### Goals
+- **In-memory decode** to float32/16 k/mono via **dr_libs/miniaudio** (+ ffmpeg
+  *libraries*, not subprocess, for compressed formats) — replacing `load_audio`.
+- **silero VAD** through sherpa-onnx (ONNX Runtime).
+- A faithful **`merge_chunks` port** (chunk_size, onset/offset, the voiced-span
+  packing) producing the same chunk boundaries.
+- A **shared, zero-copy buffer** abstraction the later stages slice into.
+- First **bench RTF** numbers for decode + VAD.
+
+### Validation
+- Decoded PCM matches `whisperx.load_audio` output **sample-for-sample within a
+  small tolerance** on the golden clips (resampler differences bounded).
+- **Merged chunk boundaries == golden** (`vads/vad.py::merge_chunks`), exact.
+- Decode-once verified: one decode call services all downstream consumers.
+- Bench RTF for decode + VAD recorded for Phase 6 baselining.
+
+### Unknowns / open questions
+- **VAD model mismatch** — WhisperX's *default* VAD is **pyannote**
+  (`vads/pyannote.py`), but the plan defaults the C++ core to **silero**. Goldens
+  for `merge_chunks` must be generated with **silero** to be comparable (silero ≠
+  pyannote segmentation). Do we standardize golden generation on silero, or keep
+  pyannote VAD as an option and golden both?
+- **Resampler parity** — ffmpeg's `swr` vs miniaudio's resampler differ slightly;
+  what sample-level tolerance is acceptable, and does it propagate to mel/emissions
+  enough to matter?
+- **Compressed-format coverage** — mp3/m4a/etc. via linked ffmpeg libs vs dr_libs
+  alone. Which formats must v1 support, and is linking ffmpeg libs (licensing,
+  binary size) acceptable, or do we restrict inputs?
+- **silero version/thresholds** — `vad_onset=0.500`, `vad_offset=0.363`,
+  min_duration on/off — exact parity with the sherpa-onnx silero build?
+
+---
+
+## Phase 3 — alignment: batched wav2vec2 + Viterbi (highest risk)
+
+### Context
+The **one stage with no off-the-shelf binding in any language** and the project's
+core IP. A wav2vec2-CTC model produces frame emissions; a Viterbi trellis +
+backtrack maps transcript characters to frames for word timings. Today it's torch
++ pandas + nltk and **explicitly un-batched** (`TODO` at `alignment.py:245`).
+Source: `alignment.py:80` (`load_align_model`), `:117` (`align`), `:425`
+(`get_trellis`), `:455` (`backtrack`), `:508` (`merge_repeats`), `:298-411`
+(char→word→sentence + `interpolate_nans`), `:189` (nltk punkt), `:272-283`
+(wildcard/OOV), `:32-77` (`DEFAULT_ALIGN_MODELS_TORCH/HF` — 5 + 38 languages).
+**Do this early; it's where the migration most likely fails.**
+
+### Goals
+- **Export wav2vec2-CTC to ONNX** (start `WAV2VEC2_ASR_BASE_960H`, English), pin
+  opset, run on ORT.
+- **Batched forward passes** across segments (pad to common length, one ORT batch)
+  and/or **emissions computed over larger spans and sliced per segment** —
+  addressing the `:245` TODO and the `<400-sample` re-pad (`:248`).
+- Port **`get_trellis` / `backtrack` / `merge_repeats` / `merge_words`** to C++.
+- Port **char→word→sentence assembly** as struct loops (no pandas) +
+  **`interpolate_nans`** (`nearest` / `ignore`).
+- Replace **nltk punkt** sentence splitting with **ICU** or a rule-based splitter.
+- Port **wildcard/OOV char handling**.
+
+### Validation
+- **CTC emissions** (post log-softmax) match golden within fp32 epsilon.
+- **Trellis matrix and backtrack path exact**; `merge_repeats`/`merge_words`
+  segments exact.
+- **Word start/end within ~1 frame** of Python; `score` within epsilon.
+- `interpolate_nans` matches: `nearest` fills, `ignore` preserves NaNs.
+- The existing `tests/test_word_timestamp_interpolation.py` cases ported to Catch2
+  and green (known-char timestamps present/ordered; unknown words still get spans).
+- Per-language dictionary mapping correct for at least English + one HF language.
+
+### Unknowns / open questions
+- **ONNX export fidelity** — wav2vec2's conv feature extractor, layer norm, GELU,
+  attention: do they export cleanly at a chosen opset, and what's the torch→ORT
+  fp32 drift on emissions? (The load-bearing risk.)
+- **Dynamic shapes vs buckets** — variable audio length: dynamic axes vs fixed
+  length buckets with padding. Does padding + attention mask change boundary-frame
+  emissions enough to shift word edges?
+- **Batching correctness** — do padded batch elements stay numerically identical to
+  single-segment runs (mask handling)?
+- **nltk → ICU parity** — sentence spans drive `interpolate_nans` *grouping*, so a
+  different split shifts interpolated timings. How close must the splitter be, and
+  do we accept small divergence?
+- **torchaudio vs HF dicts** — `DEFAULT_ALIGN_MODELS_TORCH` (torchaudio bundles)
+  vs `_HF` (Wav2Vec2ForCTC) use different tokenizers/dictionaries; the port must
+  reproduce each. `torchaudio.functional.forced_align` is a reference but is the
+  same algorithm — do we lean on it for cross-checking?
+- **Per-language model proliferation** — 5 + 38 models. Export pipeline for all?
+  Which to bundle vs download? (Ties to the Flutter/mobile asset strategy.)
+
+---
+
+## Phase 4 — ASR (sherpa/ORT) + diarize + assign
+
+### Context
+Swap the two remaining models. **CTranslate2 Whisper → sherpa-onnx Whisper (ORT)**;
+**pyannote diarization → sherpa-onnx** (`pyannote-segmentation-3.0` + CAM++).
+Then port the speaker-assignment glue. Source: `asr.py:31` (`WhisperModel`),
+`:106` (`FasterWhisperPipeline`), `:325` (`load_model`), `:417-445`
+(`default_asr_options`); `diarize.py:14` (`IntervalTree`), `:91`
+(`DiarizationPipeline`, default gated `community-1`), `:185`
+(`assign_word_speakers`), `:170` (pandas DataFrame).
+
+### Goals
+- **sherpa-onnx Whisper** emitting `TranscriptionResult` (`segments` text +
+  `language` + `avg_logprob`), fed the Phase-2 VAD chunks; language detection.
+- **sherpa-onnx diarization** → turns (`start`/`end`/`speaker`), replacing the
+  pyannote DataFrame with structs.
+- Port **`IntervalTree`** (sorted arrays + binary search, O(log n)) and
+  **`assign_word_speakers`** (dominant speaker by overlap duration, `fill_nearest`).
+
+### Validation
+- **Speaker labels == golden** (IntervalTree + assignment exact) — this is the
+  reliably-exact part.
+- `assign_word_speakers` matches on synthetic turn sets (isolation test,
+  independent of which diarization model produced the turns).
+- Language detection matches Python.
+- Segment text compared to golden — **with a defined strategy** (see unknowns).
+- Bench RTF for ASR + diarization recorded.
+
+### Unknowns / open questions
+- **Whisper decode parity is NOT byte-exact** — CTranslate2 and sherpa-onnx ORT are
+  different decoders; tokens, segmentation, and `avg_logprob` will differ. "Segment
+  text == golden" is likely **too strict**. Options: (a) compare via WER/CER
+  threshold, (b) regenerate ASR goldens with sherpa-onnx and treat *it* as the
+  reference for downstream stages, (c) both. **Decide before building the
+  validation.**
+- **`default_asr_options` parity** — beam size, temperature fallback, patience,
+  suppress tokens, `chunk_size=30`, `batch_size`. Which map onto sherpa-onnx, and
+  which don't exist there?
+- **Diarization model differs** — Python default is the **gated `community-1`**;
+  sherpa uses **pyannote-seg-3.0 + CAM++**. Different models → different turns, so
+  **`assign_word_speakers` must be golden-tested in isolation** (synthetic turns),
+  while end-to-end speaker quality is an **A/B**, not a parity check.
+- **`avg_logprob` semantics** — used downstream/UI; does sherpa expose an
+  equivalent, and is the scale comparable?
+- **num/min/max speakers** params — parity of the speaker-count controls.
+
+---
+
+## Phase 5 — writers + end-to-end
+
+### Context
+Port the output writers and assemble the **full `run_job` parity** path, so a C++
+end-to-end run reproduces Python's `transcript.json` and exports byte-for-byte.
+This is where the strangler flag can flip fully on. Source: `utils.py:443`
+(`get_writer`), writers for srt/vtt/txt/tsv/json/aud; `SubtitlesProcessor.py`
+(line splitting); `conjunctions.py` (per-language); `app/pipeline.py:506-584`
+(`run_job`, `OUTPUT_FORMATS`, `WRITER_OPTIONS`, the `_stage(...)` progress calls).
+
+### Goals
+- Port the **writers** (srt/vtt/txt/json at minimum; tsv/aud as needed) as C++
+  string formatting.
+- Port **`SubtitlesProcessor`** line splitting (`highlight_words`,
+  max line width/count, conjunction-aware splits via `conjunctions.py`).
+- Assemble the full **`AlignedTranscriptionResult`** through a C++ orchestrator
+  mirroring `run_job`.
+- Bridge **stage progress events** (`decoding`/`transcribing`/`loading_align`/
+  `aligning`/`diarizing`) to `mark_stage` + the SSE broker.
+- Write `transcript.json` + exports via the **atomic tmp+rename** convention.
+
+### Validation
+- **Writer outputs byte-identical to golden** for every supported format.
+- Full `run_job` on a golden clip == Python's `transcript.json` (structure +
+  labels exact; timings within ~1 frame).
+- Progress events fire in the **correct order** and update the session row's
+  `stage` exactly as Python does.
+- The `app/` UI shows a C++-produced session indistinguishably from a Python one.
+
+### Unknowns / open questions
+- **Float formatting / byte-identical JSON** — `transcript.json` byte-equality
+  requires matching Python's float `repr`/rounding for timestamps and scores.
+  Achievable, but needs an explicit number-formatting decision (and the SRT/VTT
+  timecode rounding must match exactly too).
+- **`WRITER_OPTIONS` exact values** — `highlight_words`, `max_line_width`,
+  `max_line_count`, segment/sentence splitting, and the **per-language conjunction
+  lists** all affect output bytes; every option must be mirrored.
+- **`SubtitlesProcessor` edge cases** — long words, missing timings (NaN words),
+  CJK/no-space languages, overlapping segments.
+- **Progress bridging across pybind** — calling a Python SSE/`mark_stage` callback
+  from a C++ worker thread: GIL acquisition, ordering vs the durable DB write
+  (CLAUDE.md notes the DB row is the source of truth; broker carries deltas).
+- **Which formats are in-scope for v1** — json/srt/vtt/txt certainly; tsv/aud?
+
+---
+
+## Phase 6 — timing gates in CI
+
+### Context
+Replace the **guessed RTF constants** (`pipeline.py:184-202`,
+`STAGE_RTF = {transcribing: 0.22, aligning: 0.19, diarizing: 0.51}`,
+`eta_seconds`) with **measured** per-stage wall-clock numbers, gate regressions in
+CI, and use the data to *prove the streamlining claims* (decode-once, batched
+alignment, models-resident + pipelining) rather than assert them.
+
+### Goals
+- A **`bench/` target** (Google Benchmark or nanobench) timing each stage with
+  warmup/calibration/statistics, separate from the correctness suite.
+- Per-stage **ms + RTF** (`stage_seconds / audio_seconds`) emitted in a
+  machine-readable form.
+- A **CI job** that records the numbers and **gates regressions** against a budget.
+- Feed **measured RTF** back into `eta_seconds` (replace the hardcoded constants).
+- Quantified before/after for the streamlining wins (decode 3×→1×; batched vs
+  per-segment alignment; resident vs reload).
+
+### Validation
+- Benchmarks run green in CI and emit per-stage RTF across the clip set.
+- A regression budget is enforced (build fails on >X% slowdown) **without
+  flakiness**.
+- Documented decode-once and batched-alignment improvements vs the Python baseline.
+- `eta_seconds` uses measured constants; UI ETAs track reality.
+
+### Unknowns / open questions
+- **CI timing noise** — shared runners are noisy; how do we gate without flaky
+  failures? Relative budgets, multi-run medians, a dedicated/self-hosted runner,
+  or trend-tracking instead of hard gates?
+- **Baseline** — compare against the **Python pipeline on the same runner**, or an
+  absolute RTF target? The former needs both stacks runnable in CI.
+- **Device matrix** — CI realistically covers desktop CPU (maybe one GPU). Mobile
+  NNAPI/ANE and desktop CUDA/DirectML can't be CI-gated — do those get manual
+  benchmark runs, and how are their RTFs captured for ETA?
+- **Cold vs warm** — first-run model load vs steady state; which RTF feeds the ETA,
+  and how is model-load time accounted separately (it's the `loading_align` stage)?
+- **Surfacing measured RTF** — bake constants at build time, ship a config table,
+  or measure-and-adapt at runtime per device?
+
+---
+
+## Phase dependency map
+
+```
+0 scaffold+goldens ─┬─► 1 DB layer ───────────────► (host-side, parallelizable)
+                    │
+                    ├─► 2 decode+VAD ─► 3 alignment ─► 4 ASR+diarize ─► 5 writers+e2e
+                    │        (Python ASR feeds 3 until 4 lands)              │
+                    └────────────────────────────────────────────► 6 timing gates
+                                            (benchmarks accrue from phase 2 on)
+```
+
+- **0 gates everything** (no oracle, no goldens → nothing to validate against).
+- **1 is independent** of the model phases and can run in parallel once 0 is done.
+- **2 → 3 → 4 → 5 is the critical path**; 3 is sequenced before 4 deliberately
+  (risk), with Python ASR supplying transcripts to the aligner in the interim.
+- **6 accrues** bench numbers from Phase 2 onward; the *gate* lands once stages
+  are stable.
+
+## Open questions that span phases (resolve early)
+
+1. **Golden reference for ASR** — once sherpa-onnx Whisper differs from CTranslate2
+   (Phase 4), do downstream goldens (alignment input text, writer output) get
+   **regenerated from sherpa**, making it the new reference? This decision affects
+   Phases 3 and 5 validation strategy.
+2. **VAD default (silero vs pyannote)** — fixes how Phase 2 goldens are generated
+   and whether pyannote VAD stays selectable.
+3. **Host swap timing** — `app/` stays Python through Phase 5; *when* (if ever) the
+   C++ HTTP/SSE server replaces Flask is out of scope here but shapes Phase 5's
+   progress-bridging design.
+4. **Model-version pinning** — the whole golden strategy depends on pinning model +
+   library versions and a deliberate regeneration process.
+5. **Tolerance budget** — the single epsilon/frame budget (set in Phase 0) is
+   referenced by every later phase; getting it wrong invalidates comparisons.

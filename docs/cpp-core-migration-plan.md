@@ -241,7 +241,9 @@ artifact is what the Python side consumes.
 
 ## 6. Phased migration roadmap
 
-Compat-aware refinement of the cpp-core roadmap.
+Compat-aware refinement of the cpp-core roadmap. **Detailed per-phase execution
+briefs** (context · goals · validation · unknowns) live in
+[`cpp-core-migration-briefs.md`](./cpp-core-migration-briefs.md).
 
 | Phase | Goal | Exit criteria |
 |---|---|---|
