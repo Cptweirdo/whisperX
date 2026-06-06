@@ -1160,9 +1160,12 @@ def create_session():
     os.makedirs(_sessions.session_dir(session_id), exist_ok=True)
     file.save(os.path.join(_sessions.session_dir(session_id), audio_filename))
 
+    # Optional user-supplied display name; falls back to the uploaded file name.
+    display_name = request.form.get("name", "").strip() or file.filename
+
     _sessions.create(
         session_id,
-        filename=file.filename,
+        filename=display_name,
         audio_filename=audio_filename,
         options={
             "language": request.form.get("language", "").strip() or None,
