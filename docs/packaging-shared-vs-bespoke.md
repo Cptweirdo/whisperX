@@ -74,7 +74,7 @@ Nearly everything is common; the validated macOS pipeline is the template.
 
 | | macOS ✅ | Windows 📋 | Android | iOS |
 |---|---|---|---|---|
-| **Engine** | Python (CPU/MPS) | Python (**CUDA 12.8**/CPU) | **reimplement** (LiteRT) | **reimplement** (Core ML/ANE) |
+| **Engine** | Python (CPU/MPS) | Python (**CUDA 12.8**/CPU) | **reimplement** (ONNX Runtime / sherpa-onnx) | **reimplement** (ONNX Runtime, Core ML EP→ANE) |
 | **Webview / shell** | WKWebView | **WebView2** | native Android | native SwiftUI |
 | **Installer** | DMG | **MSI / NSIS** | APK / AAB | App Store / IPA |
 | **Signing** | codesign + **notarize+staple** | **Authenticode + SmartScreen rep** | Play signing | provisioning + App Store review |
@@ -92,12 +92,13 @@ on the desktop track — only the *value* differs per OS, not the code.
 
 ## Two consolidation moves worth deciding early
 
-1. **Mobile: pick `sherpa-onnx` and two ports collapse toward one.** It is the
-   *only* engine spanning Android **and** iOS (same ONNX models, Swift + Kotlin
-   bindings). Choosing it (iOS Option B / Android Option B) makes VAD + Whisper +
-   diarization a single shared native stack — trading some iOS ANE performance for
-   roughly halving the mobile work. The alternative (WhisperKit on iOS + LiteRT on
-   Android) is faster per-platform but doubles the engine integration. **The
+1. **Mobile: `sherpa-onnx` (ONNX Runtime) is the chosen engine, and two ports
+   collapse toward one.** It is the *only* engine spanning Android **and** iOS
+   (same ONNX models, Swift + Kotlin bindings), and it runs on the **same ONNX
+   Runtime as the desktop C++ core** — one runtime across all platforms. It makes
+   VAD + Whisper + diarization a single shared native stack. (A per-platform
+   WhisperKit-on-iOS route could squeeze more ANE performance but doubles the
+   engine integration and breaks runtime uniformity — not worth it.) **The
    wav2vec2 alignment port is shared either way.**
 
 2. **Desktop: unify the Tauri crate across macOS + Windows.** Tauri is

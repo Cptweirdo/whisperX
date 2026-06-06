@@ -203,8 +203,8 @@ must match:
 |---|---|---|---|
 | 1 Audio | **ffmpeg CLI**, `torch.stft` | constants, `pad_or_trim` | AVFoundation/AudioRecord + native/Dart FFT |
 | 2 VAD | `pyannote.audio` / `torch.hub` silero | **`Vad.merge_chunks`** | silero ONNX (sherpa) + port merge logic |
-| 3 ASR | **`ctranslate2`**, `faster_whisper`, `transformers` | segment assembly | LiteRT / sherpa-onnx Whisper |
-| 4 Align | `torch`, `torchaudio`, `transformers`, `nltk`, `pandas` | **`get_trellis`, `backtrack`, `merge_*`, interpolation** | wav2vec2→ONNX/CoreML/LiteRT + port the DP |
+| 3 ASR | **`ctranslate2`**, `faster_whisper`, `transformers` | segment assembly | sherpa-onnx Whisper (ONNX Runtime) |
+| 4 Align | `torch`, `torchaudio`, `transformers`, `nltk`, `pandas` | **`get_trellis`, `backtrack`, `merge_*`, interpolation** | wav2vec2→ONNX (ORT) + port the DP |
 | 5 Diarize | **`pyannote.audio`** (gated) | **`IntervalTree`, `assign_word_speakers`** | sherpa-onnx pyannote-seg + CAM++ + port assignment |
 | 6 Write | — | **all of it** | trivial reimplement |
 

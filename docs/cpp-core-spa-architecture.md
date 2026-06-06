@@ -195,7 +195,7 @@ functions directly from the existing pytest oracle.
 | # | Decision | Recommendation |
 |---|---|---|
 | C1 | **Primary delivery** — server-centric (desktop+cloud) vs device-centric (offline mobile) | If desktop+cloud lead, this architecture is cleanest; if mobile-first, Flutter+FFI is more direct and the server buys less |
-| C2 | **All-ORT vs keep LiteRT Whisper** as a backend | Default all-ORT for uniformity; keep LiteRT selectable if faster on target HW |
+| C2 | **Inference runtime** — ✅ *resolved: all ONNX Runtime* | **All-ORT** (ONNX Runtime + sherpa-onnx) is the committed runtime for every stage and platform — one runtime, one threading model, transformer-friendly, and sherpa-onnx supplies 3/4 models off-the-shelf. LiteRT is dropped. |
 | C3 | **Diarization-drives-VAD coupling** vs independent VAD | Coupling saves a segmentation pass; keep independent if simplicity preferred |
 | C4 | **SPA framework + webview shell** (reuse Tauri vs CEF vs system) | Reuse the existing Tauri shell; pick one SPA framework |
 | C5 | **Own engine in C++** vs consume sherpa-onnx as-is | You already get a C++ core free via sherpa; bespoke C++ adds value mainly for the server, alignment, and pybind oracle |

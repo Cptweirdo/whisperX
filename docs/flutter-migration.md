@@ -16,15 +16,17 @@ WhisperX today is a **Python library + Flask web app** (`app/`) bound to PyTorch
 CTranslate2 / pyannote and an **ffmpeg subprocess** — none of which run on mobile
 (see [`pipeline-reference.md`](./pipeline-reference.md)). The proven on-device
 pattern we already have is **Flutter UI + Dart FFI into a compiled native
-inference lib** (LiteRT). This plan generalizes that pattern into one codebase for
-all five platforms.
+inference lib** — an earlier LiteRT prototype demonstrated this works and
+performs; we now standardize that native lib on **ONNX Runtime (via
+`sherpa_onnx`)** for one runtime across all platforms. This plan generalizes the
+pattern into one codebase for all five platforms.
 
 **Principles**
 - **Dart for everything we author** — UI, orchestration, and all pure-algorithm
   glue (VAD chunk-merge, alignment Viterbi, diarization interval-tree, output
   formatting).
 - **Native inference under FFI, but as precompiled dependencies** — `sherpa_onnx`
-  (VAD + Whisper + diarization) and/or the existing LiteRT model. No Rust, no
+  (VAD + Whisper + diarization, all on **ONNX Runtime**). No Rust, no
   C++ we maintain (see [`single-language-runtime-options.md`](./single-language-runtime-options.md)).
 - **The Python pipeline is the spec, not a dependency** — every ported stage is
   checked against golden vectors dumped from `whisperx`.
@@ -36,11 +38,11 @@ These shape scope; recommendations given, please confirm in review.
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
 | D1 | **Scope of migration** | (a) Flutter everywhere — replaces the desktop Python/Flask app too; (b) Flutter mobile-only, keep the Python+Tauri desktop | **(a)** — one codebase, kills the torch/CUDA desktop packaging pain. Keep Python desktop only if its richer features are must-have near-term. |
-| D2 | **Whisper engine** | (a) `sherpa_onnx` ONNX Whisper; (b) the existing **LiteRT** model via FFI | **(a) as default for uniformity** (one runtime covers VAD+ASR+diarize); keep LiteRT as a selectable backend if its perf/quality is better on your target devices. |
+| D2 | **Whisper engine** — ✅ *resolved* | `sherpa_onnx` Whisper on **ONNX Runtime** | **Committed.** One runtime (ORT) covers VAD + ASR + diarization on every platform; LiteRT is dropped. |
 | D3 | **App feature set** | (a) simple one-shot transcribe→export; (b) full parity with `app/` (sessions DB, live progress, Drive backup) | Start **(a)**; add session history + live progress in phase 4; treat Drive backup as optional/later. |
 | D4 | **Diarization model** | sherpa-onnx pyannote-seg-3.0 + CAM++ (ONNX, ungated mirror) vs full pyannote | **sherpa-onnx** — on-device, no HF gating, all 5 platforms. |
 
-The rest of this plan assumes **D1(a) + D2(a) + D3(a)→(b) + D4(sherpa)**.
+The rest of this plan assumes **D1(a) + D2(ORT) + D3(a)→(b) + D4(sherpa)**.
 
 ## 3. Target architecture
 
@@ -57,9 +59,9 @@ The rest of this plan assumes **D1(a) + D2(a) + D3(a)→(b) + D4(sherpa)**.
 │ • vad merge   │ • sherpa_onnx VAD         │ • record pkg →  │
 │ • Viterbi     │ • sherpa_onnx Whisper     │   AVAudioEngine │
 │   align       │ • sherpa_onnx diarization │   /AudioRecord  │
-│ • interval    │ • (opt) LiteRT Whisper    │ • file decode → │
-│   tree assign │   via tflite_flutter/FFI  │   platform/wav  │
-│ • writers     │ • wav2vec2 align (ONNX)   │                 │
+│ • interval    │ • wav2vec2 align (ONNX,   │ • file decode → │
+│   tree assign │   same ORT instance)      │   platform/wav  │
+│ • writers     │                           │                 │
 │ • schema      │                           │                 │
 └──────────────┴───────────────────────────┴────────────────┘
 ```
@@ -77,10 +79,10 @@ Native = call a precompiled lib; Replace = new platform mechanism.**
 | Stage | Python source | Flutter implementation | Kind |
 |---|---|---|---|
 | **1 Audio load** | `audio.py:25` ffmpeg subprocess | `record` pkg (mic) + platform decode (AVAudioFile/MediaExtractor) or wav via sherpa; resample to 16 kHz mono f32 | **Replace** |
-| **1 Mel/STFT** | `audio.py:112` `torch.stft` | Only if using a raw LiteRT Whisper: FFT in Dart (`fftea`) + bundled mel filterbank. **sherpa_onnx computes features internally** → usually unneeded | Port / N/A |
+| **1 Mel/STFT** | `audio.py:112` `torch.stft` | **sherpa_onnx computes Whisper features internally** → not needed | N/A |
 | **2 VAD** | `vads/silero.py`, `vads/pyannote.py` | `sherpa_onnx` VAD (silero) — native | **Native** |
 | **2 Chunk merge** | `vads/vad.py:19` `Vad.merge_chunks` + `Binarize` | **Port to Dart** (pure interval math) | **Port** |
-| **3 Transcribe** | `asr.py` CTranslate2 | `sherpa_onnx` Whisper (D2a) or LiteRT (D2b) → emit `TranscriptionResult` | **Native** |
+| **3 Transcribe** | `asr.py` CTranslate2 | `sherpa_onnx` Whisper (ONNX Runtime) → emit `TranscriptionResult` | **Native** |
 | **4 Align — model** | `alignment.py:256` wav2vec2 fwd | wav2vec2 ONNX via `sherpa_onnx`/onnxruntime FFI (per-language model) | **Native** |
 | **4 Align — algo** | `alignment.py:425` `get_trellis`, `:455` `backtrack`, `:508` `merge_repeats`, `:298-411` char→word + `interpolate_nans` | **Port to Dart** (the DIY core — see §8) | **Port** |
 | **4 Sentence split** | `alignment.py:189` NLTK punkt | Dart sentence splitter (bundled rules) or simple punctuation heuristic | **Port** |
@@ -101,19 +103,17 @@ Viterbi) — sherpa doesn't provide it.
 - `record` — cross-platform audio capture.
 - `just_audio` — playback for transcript review (optional).
 - `path_provider`, `path` — app data/model dirs.
-- `ffi`, `package:ffi` — custom FFI (LiteRT backend / wav2vec2 ONNX if not via sherpa).
-- `tflite_flutter` — only if keeping the LiteRT Whisper backend (D2b).
-- `fftea` — Dart FFT, only if a raw-mel LiteRT path is used.
+- `ffi`, `package:ffi` — custom FFI for the wav2vec2 ONNX pass if run outside sherpa.
 - `drift` or `sqflite` — local session DB (phase 4, mirrors `app/store.py`).
 - `dio` / `http` + `archive` — model download + unzip.
 - `freezed` + `json_serializable` — schema models.
 
 **Native (precompiled, via the above packages)**
-- ONNX Runtime (inside `sherpa_onnx`) — Core ML / NNAPI / CPU EPs.
-- (optional) LiteRT (inside `tflite_flutter` / your DLL).
+- ONNX Runtime (inside `sherpa_onnx`) — Core ML / NNAPI / CPU EPs. The single
+  runtime for every model.
 
 **Models (assets or first-run download)**
-- Whisper (sherpa ONNX or your LiteRT) — size per chosen size class.
+- Whisper (sherpa ONNX) — size per chosen size class.
 - silero VAD ONNX (small).
 - pyannote-segmentation-3.0 ONNX + CAM++ embedding ONNX.
 - wav2vec2-CTC per language (start with English; map the rest from
@@ -135,7 +135,7 @@ whisperx_app/
 │  │   ├─ orchestrator.dart      # mirrors transcribe_task()
 │  │   ├─ audio.dart             # capture/decode/resample
 │  │   ├─ vad.dart               # sherpa VAD + merge_chunks port
-│  │   ├─ transcribe.dart        # sherpa/LiteRT backend
+│  │   ├─ transcribe.dart        # sherpa_onnx Whisper backend
 │  │   ├─ align/
 │  │   │   ├─ model.dart         # wav2vec2 ONNX wrapper
 │  │   │   ├─ trellis.dart       # get_trellis + backtrack (ported)
@@ -217,7 +217,7 @@ one piece with no off-the-shelf binding and the main technical risk.
 | Diarization quality vs full pyannote | Accept sherpa pyannote-seg+CAM++; A/B on real clips |
 | Model bundle size / download UX | Tiered bundle+download with progress + checksums |
 | Losing `app/` features (sessions/backup) | Phase 4 reintroduces history; backup deferred/optional (D3) |
-| sherpa_onnx maintainer bus-factor | Pin versions; ORT is the stable substrate; LiteRT fallback (D2b) |
+| sherpa_onnx maintainer bus-factor | Pin versions; ONNX Runtime is the stable substrate underneath — the wav2vec2 ONNX model and ported glue can run on ORT directly if sherpa stalls |
 
 ## 12. Out of scope / open
 

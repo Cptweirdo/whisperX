@@ -36,7 +36,7 @@ Stage 4. It just changes the language you write it in.
 |---|---|---|---|---|
 | **C++** | *It is the runtime layer.* sherpa-onnx (VAD + Whisper + diarization) + ONNX Runtime (wav2vec2 align) + a C audio decoder + your Viterbi = the whole pipeline, natively | All 5, first-class | **Highest** — these libs are C++ | Worst ergonomics; no UI story (pair with Flutter/Qt); manual memory/builds |
 | **C# / .NET** | Microsoft owns **both** ONNX Runtime *and* .NET → first-class ORT bindings; Whisper.net; sherpa-onnx C# bindings; **MAUI** UI on all targets; NativeAOT | All 5 (MAUI) | **Very high** — one vendor backs runtime + platform | Runtime weight; MAUI ecosystem smaller than native; audio capture is platform glue |
-| **Dart / Flutter** *(current stack)* | `sherpa_onnx` pub package (VAD+ASR+diarize, all 5) + `tflite_flutter`/ORT FFI for the wav2vec2 pass; glue in pure Dart | All 5 | High for bindings; smaller maintainer (k2-fsa) than MS | Not self-sufficient — every model is native-under-FFI; no Dart-native ML runtime |
+| **Dart / Flutter** *(current stack)* | `sherpa_onnx` pub package (VAD+ASR+diarize, all 5) + ORT FFI for the wav2vec2 pass; glue in pure Dart | All 5 | High for bindings; smaller maintainer (k2-fsa) than MS | Not self-sufficient — every model is native-under-FFI; no Dart-native ML runtime |
 | **JS / TypeScript** | transformers.js runs Whisper + wav2vec2 + VAD on ORT-Web/WASM; onnxruntime-react-native (mobile); Electron (desktop) | All 5 (RN + Electron) | High (ORT-backed) | WASM/JS perf lower; diarization support thin; heavier shells |
 | **Rust** | `ort` + `candle` + `sherpa-rs`; the memory-safe version of the C++ answer | All 5 | High | candle-on-mobile less proven; diarization via bindings/DIY |
 
@@ -52,8 +52,8 @@ Stage 4. It just changes the language you write it in.
    exactly what "stable" buys.
 3. **For the current Flutter reality, the pragmatic "one language *you write*" is
    Dart** — but it's "one language for UI + glue, native runtimes under FFI," not
-   "Dart covers the deps natively." The `sherpa_onnx` package + the existing LiteRT
-   DLL already prove this; the only DIY piece is the alignment Viterbi (in Dart).
+   "Dart covers the deps natively." The `sherpa_onnx` package (ONNX Runtime under
+   FFI) already proves this; the only DIY piece is the alignment Viterbi (in Dart).
 
 ---
 
@@ -117,11 +117,11 @@ on both platforms.
 Mechanically, C#/.NET on mobile works **the same way the current Flutter+FFI stack
 does**: managed language AOT-compiled to native, calling a native ONNX/inference lib
 through interop, accelerated via Core ML/NNAPI. The ORT Core ML EP ≈ what
-`sherpa_onnx`/LiteRT already provide under Flutter.
+`sherpa_onnx` already provides under Flutter.
 
 So C# is a **fully viable, vendor-stable** option — but for this project it's a
-**lateral move, not an upgrade**: the Flutter + LiteRT stack already runs on the same
-architectural pattern. **Pick C# only if you specifically want the .NET / ONNX-Runtime
+**lateral move, not an upgrade**: the Flutter + `sherpa_onnx` (ONNX Runtime) stack
+already runs on the same architectural pattern. **Pick C# only if you specifically want the .NET / ONNX-Runtime
 ecosystem** (e.g. shared code with a C# backend, or a C#-first team). Otherwise,
 staying on Dart/Flutter and reaching the same ORT/Core ML acceleration via
 `sherpa_onnx` gets there without redoing the inference integration and UI.
