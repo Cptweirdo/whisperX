@@ -745,9 +745,16 @@
       closeMenu();
       // In a translation view the POST re-rendered the *original* body; re-fetch the
       // active translation instead so the new speaker shows with the translated text.
+      // Still refresh the cached Original body with that response (it IS the fresh
+      // original render) so switching back to the Original doesn't restore a
+      // pre-reassign snapshot.
       const lang = body.dataset.transLang;
-      if (lang && window.__reloadTranslation) window.__reloadTranslation(lang);
-      else window.__applyBodySwap(resp, html);   // discards the (now stale) menu DOM
+      if (lang && window.__reloadTranslation) {
+        window.__setOrigBody && window.__setOrigBody(html);
+        window.__reloadTranslation(lang);
+      } else {
+        window.__applyBodySwap(resp, html);   // discards the (now stale) menu DOM
+      }
     } catch (err) {
       notify({ variant: 'danger', closable: true,
                html: '<sl-icon slot="icon" name="exclamation-octagon"></sl-icon> Could not reassign the speaker.' });
