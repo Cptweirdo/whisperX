@@ -285,6 +285,62 @@ body, body * { font-kerning: normal; }
 .older__del:hover { color: var(--error); }
 .older__empty { padding: 28px 4px; font-family: var(--mono); font-size: 13px; color: var(--on-surface-faint); }
 
+/* ===== RECORDINGS QUEUE (status-aware) ===== */
+.rec { margin-top: 46px; }
+.rec__head { display: flex; align-items: flex-end; justify-content: space-between; padding-bottom: 14px; border-bottom: 1px solid var(--outline); }
+.rec__h { font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--on-surface-variant); }
+.rec__filters { display: flex; gap: 4px; }
+.rec__filter {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.04em;
+  color: var(--on-surface-variant); background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius); padding: 8px 13px; cursor: pointer;
+  transition: background 0.14s, color 0.14s, border-color 0.14s;
+}
+.rec__filter:hover { background: var(--surface-container-low); }
+.rec__filter--on { color: var(--on-surface); background: var(--surface-container-high); }
+.rec__filter .n { font-size: 11px; color: var(--on-surface-faint); }
+.rec__filter--on .n { color: var(--on-surface-variant); }
+
+.rec__row {
+  display: grid; grid-template-columns: 42px 1fr auto; gap: 22px;
+  align-items: center; padding: 21px 4px; border-bottom: 1px solid var(--outline-soft);
+}
+.rec__row[hidden] { display: none; }
+
+.rec__icon {
+  width: 42px; height: 42px; flex: 0 0 42px; border: 1px solid var(--outline-variant);
+  border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center;
+  background: var(--surface-container-low); color: var(--on-surface-variant); font-size: 19px;
+}
+.rec__icon--fail { border-color: rgba(164,64,47,0.35); background: var(--rubric-soft); color: var(--rubric); }
+.rec__icon--done { color: var(--on-surface); }
+.rec__icon--run { color: var(--on-surface); }
+
+.rec__main { min-width: 0; }
+.rec__name { font-size: 19px; font-weight: 500; letter-spacing: -0.005em; }
+.rec__meta { font-family: var(--mono); font-size: 12.5px; color: var(--on-surface-variant); margin-top: 7px; display: flex; align-items: center; gap: 9px; white-space: nowrap; flex-wrap: wrap; }
+.rec__meta .sep { color: var(--outline); }
+.rec__meta--fail { color: var(--rubric); }
+.rec__progress { margin-top: 12px; height: 5px; max-width: 380px; border-radius: 3px; background: var(--surface-container-highest); overflow: hidden; position: relative; }
+.rec__progress > i { display: block; height: 100%; background: var(--primary); border-radius: 3px; }
+.rec__progress::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+  transform: translateX(-100%); animation: recshimmer 1.6s ease-in-out infinite;
+}
+@keyframes recshimmer { 0% { transform: translateX(-100%); } 60%,100% { transform: translateX(280%); } }
+
+.rec__right { display: flex; align-items: center; gap: 18px; justify-self: end; }
+.rec__dur { font-family: var(--mono); font-size: 13px; color: var(--on-surface-variant); white-space: nowrap; }
+.rec__cancel { font-family: var(--mono); font-size: 12px; color: var(--on-surface-faint); background: none; border: none; cursor: pointer; padding: 4px; letter-spacing: 0.03em; }
+.rec__cancel:hover { color: var(--on-surface); }
+.btn-outline.is-fail { border-color: rgba(164,64,47,0.45); color: var(--rubric); }
+.btn-outline.is-fail:hover { background: var(--rubric-soft); }
+.rec__empty { padding: 40px 4px; font-family: var(--mono); font-size: 13px; color: var(--on-surface-faint); }
+.rec__del { font-size: 15px; color: var(--on-surface-faint); cursor: pointer; background: none; border: 0; padding: 4px; }
+.rec__del:hover { color: var(--error); }
+
 /* ===== MODAL (Shoelace sl-dialog body) ===== */
 .modal__sub { font-family: var(--mono); font-size: 14px; color: var(--on-surface-variant); margin: -6px 0 26px; }
 .field__label { font-family: var(--mono); font-size: 12px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--on-surface-variant); display: block; }

@@ -159,6 +159,8 @@ def _card(row: dict) -> dict:
         "diarized": bool(row.get("diarized")),
         "num_segments": row.get("num_segments") or 0,
         "status": row["status"],
+        "stage": row.get("stage"),
+        "error": row.get("error"),
         "translations": row.get("translations") or {},
     }
 
@@ -239,7 +241,7 @@ def _warm_models() -> None:
         logger.exception("Active model load failed")
 
 
-def run_session(session_id: str) -> None:
+def run_session(session_id: str, cancel_event=None) -> None:
     """Execute the pipeline for a session and persist results + metadata."""
     row = _sessions.get(session_id)
     if row is None:
@@ -257,6 +259,7 @@ def run_session(session_id: str) -> None:
         max_speakers=opts.get("max_speakers"),
         progress=lambda s: _on_stage(session_id, s),
         on_duration=lambda d: _sessions.mark_duration(session_id, d),
+        cancel_event=cancel_event,
     )
     _sessions.mark_done(
         session_id,
@@ -759,10 +762,17 @@ def index():
     active_error = next(
         (m["error"] for m in status["models"] if m["name"] == status["active"]), None
     )
+    pending = [c for c in cards if c["status"] in ("queued", "running")]
+    failed = [c for c in cards if c["status"] == "error"]
+    done = [c for c in cards if c["status"] == "done"]
+    device_label = pipeline.DEVICE_LABELS.get(_manager.device, _manager.device)
     return render_template(
         "index.html",
         featured=cards[0] if cards else None,
-        older=cards[1:],
+        all_cards=cards,
+        pending_count=len(pending),
+        failed_count=len(failed),
+        done_count=len(done),
         summary=_summary(rows),
         default_language=_sessions.get_setting("default_language", ""),
         models_ready=models_ready(),
@@ -770,6 +780,7 @@ def index():
         diarize_enabled=status["diarize_available"],
         diarize_error=status["diarize_error"],
         models=status,
+        device_label=device_label,
     )
 
 
@@ -1559,6 +1570,7 @@ def export_markdown(session_id: str):
 
 @app.post("/sessions/<session_id>/delete")
 def delete_session(session_id: str):
+    _queue.cancel(session_id)  # no-op if not running; signals the thread to stop
     if not _sessions.delete(session_id):
         abort(404)
     # htmx swaps the row out on a 200 empty body (it skips 204 No Content).

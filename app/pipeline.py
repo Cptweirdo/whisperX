@@ -514,6 +514,7 @@ def run_job(
     artifact_basename: str = "transcript",
     progress: Optional[Callable[[str], None]] = None,
     on_duration: Optional[Callable[[float], None]] = None,
+    cancel_event=None,
 ) -> dict:
     """Run the full pipeline for one audio file.
 
@@ -527,6 +528,9 @@ def run_job(
     from whisperx.utils import get_writer
 
     def _stage(name: str) -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            from app.jobs import Cancelled
+            raise Cancelled()
         if progress is not None:
             progress(name)
 
