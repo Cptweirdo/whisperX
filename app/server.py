@@ -74,7 +74,7 @@ from app import translation_overlay  # noqa: E402
 from app.translation import DEFAULT_SERVICE, SERVICES  # noqa: E402
 from app.sse import Broker, sse_response  # noqa: E402
 from app.jobs import JobQueue  # noqa: E402
-from app.edits import distinct_speakers, next_speaker_key  # noqa: E402
+from app.edits import distinct_speakers, group_turns, next_speaker_key  # noqa: E402
 from app.render import render_markdown, render_transcript, resolve_label  # noqa: E402
 from app.store import SessionStore  # noqa: E402
 
@@ -450,6 +450,34 @@ def _render_backup(template: str, **ctx_overrides):
     return render_template(template, **_backup_ctx(**ctx_overrides))
 
 
+def _remote_json(remote) -> dict | None:
+    """JSON view of a RemoteState (restore/conflict prompts)."""
+    if not remote or not getattr(remote, "exists", False):
+        return None
+    return {
+        "exists": True,
+        "entries": remote.entries,
+        "total_size": remote.total_size,
+        "size_human": _human_size(remote.total_size),
+        "created_at": remote.created_at or None,
+    }
+
+
+def _backup_json(remote=None, notice: str | None = None, notice_ok: bool = True) -> dict:
+    """JSON the SPA renders the backup card from (mirrors _backup_ctx)."""
+    status = _backup.status()
+    backend = status.get("backend")
+    return {
+        **status,
+        "provider_label": _PROVIDER_LABELS.get(backend, backend or "Cloud backup"),
+        "last_human": _human_ago(status.get("last_backup_at")),
+        "folder": backup_pkg.gdrive_folder() if backend == "gdrive" else None,
+        "remote": _remote_json(remote),
+        "notice": notice,
+        "notice_ok": notice_ok,
+    }
+
+
 # --- Live sync status (persistent SSE; mirrors the model-load stream) ----------
 # Every BackupService state transition fires on_change -> _publish_backup, which
 # re-renders the Settings card and pushes it to the persistent BACKUP_STATUS_CHANNEL
@@ -472,7 +500,8 @@ def _backup_status_event() -> dict:
             remote = None
     with app.app_context():
         html = _render_backup("partials/_backup_card.html", remote=remote)
-    return {"type": "backup", "state": state, "html": html}
+    return {"type": "backup", "state": state, "html": html,
+            "status": _backup_json(remote=remote)}
 
 
 def _publish_backup() -> None:
@@ -544,16 +573,15 @@ def _run_backup_link(template: str) -> None:
             after = "seed"       # empty remote: push the first backup
         elif a.outcome == LinkOutcome.REMOTE_ONLY:
             after = "restore"    # empty local: pull the existing backup down
+        remote = a.remote if a.outcome == LinkOutcome.DIVERGED else None
         with app.app_context():
-            html = _render_backup(
-                template,
-                remote=a.remote if a.outcome == LinkOutcome.DIVERGED else None,
-            )
-        event = {"status": "linked", "html": html}
+            html = _render_backup(template, remote=remote)
+        event = {"status": "linked", "html": html, "backup": _backup_json(remote=remote)}
     except Exception as exc:  # noqa: BLE001 - report to the page over SSE
         with app.app_context():
             html = _render_backup(template, notice=str(exc), notice_ok=False)
-        event = {"status": "error", "html": html, "message": str(exc)}
+        event = {"status": "error", "html": html, "message": str(exc),
+                 "backup": _backup_json(notice=str(exc), notice_ok=False)}
     with _backup_link_lock:
         _backup_link["active"] = False
         _backup_link["result"] = event
@@ -1577,8 +1605,585 @@ def delete_session(session_id: str):
     return ("", 200)
 
 
+# =============================================================================
+# JSON API (/api/*) — the surface the Svelte SPA consumes. These run alongside
+# the HTML routes during the migration; the Jinja/htmx routes are removed once
+# the SPA reaches parity. Binary/SSE/OAuth-callback routes stay at root.
+# =============================================================================
+
+# Transcription-language options (auto-detect + common), mirrors the old
+# partials/_language_select.html list.
+TRANSCRIBE_LANGUAGES = [
+    {"code": "", "label": "Auto-detect"},
+    {"code": "en", "label": "English"}, {"code": "es", "label": "Spanish"},
+    {"code": "fr", "label": "French"}, {"code": "de", "label": "German"},
+    {"code": "it", "label": "Italian"}, {"code": "pt", "label": "Portuguese"},
+    {"code": "nl", "label": "Dutch"}, {"code": "ja", "label": "Japanese"},
+    {"code": "zh", "label": "Chinese"}, {"code": "ru", "label": "Russian"},
+]
+
+
+def _body() -> dict:
+    """Request payload as a dict, tolerant of JSON or form encoding."""
+    data = request.get_json(silent=True)
+    if isinstance(data, dict):
+        return data
+    return {k: v for k, v in request.form.items()}
+
+
+def _current_segments(session_id: str) -> tuple[dict, list]:
+    """(result, edit-overlaid+coalesced segments) for a session."""
+    result = _sessions.load_result(session_id) or {}
+    segments = _sessions.current_segments(session_id, result.get("segments", []))
+    return result, segments
+
+
+def _turn_words(segments: list, seg_indices: list) -> list:
+    """Flatten a turn's words to {text, start?, end?, stale?} entries — word-timed
+    when the aligner produced words, else one segment-timed entry (mirrors
+    render._word_spans, including the translation `stale` fallback flag)."""
+    out: list[dict] = []
+    for k in seg_indices:
+        seg = segments[k]
+        words = seg.get("words") or []
+        if words:
+            for w in words:
+                token = (w.get("word") or "").strip()
+                if not token:
+                    continue
+                wd: dict = {"text": token}
+                if w.get("start") is not None and w.get("end") is not None:
+                    wd["start"] = round(float(w["start"]), 3)
+                    wd["end"] = round(float(w["end"]), 3)
+                out.append(wd)
+        else:
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            wd = {"text": text}
+            if seg.get("start") is not None and seg.get("end") is not None:
+                wd["start"] = round(float(seg["start"]), 3)
+                wd["end"] = round(float(seg["end"]), 3)
+            if seg.get("stale"):
+                wd["stale"] = True
+            out.append(wd)
+    return out
+
+
+def _build_turns(segments: list, names: dict) -> list:
+    """Speaker-grouped turns the SPA renders. Turn indices come from group_turns so
+    they match the edit endpoints; empty-text turns are skipped from the output but
+    never renumber the rest (mirrors render.render_transcript)."""
+    turns = []
+    for t in group_turns(segments):
+        words = _turn_words(segments, t.seg_indices)
+        if not any(w["text"] for w in words):
+            continue
+        turns.append({
+            "index": t.index,
+            "speaker": t.speaker,
+            "label": resolve_label(t.speaker, names),
+            "start": t.start,
+            "end": t.end,
+            "words": words,
+            "text": t.text,
+        })
+    return turns
+
+
+def _transcript_payload(session_id: str) -> dict:
+    """{turns, segments, can_undo} from the current overlaid segments — the shared
+    shape returned by the edit / undo / reassign endpoints."""
+    _result, segments = _current_segments(session_id)
+    names = _sessions.get_speaker_names(session_id)
+    return {
+        "turns": _build_turns(segments, names),
+        "segments": segments,
+        "can_undo": _sessions.edit_history_len(session_id) > 0,
+    }
+
+
+# --- Sessions ----------------------------------------------------------------
+@app.get("/api/sessions")
+def api_list_sessions():
+    rows = _sessions.list()
+    return jsonify({"sessions": [_card(r) for r in rows], "summary": _summary(rows)})
+
+
+@app.post("/api/sessions")
+def api_create_session():
+    if not models_ready():
+        return jsonify({"error": "loading_models"}), 503
+    file = request.files.get("audio")
+    if not file or not file.filename:
+        return jsonify({"error": "No audio file uploaded."}), 400
+
+    def _int(name):
+        v = (request.form.get(name) or "").strip()
+        return int(v) if v.isdigit() else None
+
+    requested = (request.form.get("model") or "").strip()
+    if requested:
+        try:
+            model = pipeline.WhisperModel(requested).value
+        except ValueError:
+            return jsonify({"error": f"Unknown model: {requested}"}), 400
+    else:
+        model = _manager.active
+
+    session_id = uuid.uuid4().hex
+    safe_name = secure_filename(file.filename) or "audio"
+    ext = os.path.splitext(safe_name)[1] or ".bin"
+    audio_filename = f"audio{ext}"
+    os.makedirs(_sessions.session_dir(session_id), exist_ok=True)
+    file.save(os.path.join(_sessions.session_dir(session_id), audio_filename))
+
+    display_name = (request.form.get("name") or "").strip() or file.filename
+    _sessions.create(
+        session_id,
+        filename=display_name,
+        audio_filename=audio_filename,
+        options={
+            "language": (request.form.get("language") or "").strip() or None,
+            "min_speakers": _int("min_speakers"),
+            "max_speakers": _int("max_speakers"),
+        },
+        model=model,
+    )
+    _queue.submit(session_id)
+    return jsonify({"id": session_id, "status": "queued"}), 201
+
+
+@app.get("/api/sessions/<session_id>")
+def api_get_session(session_id: str):
+    row = _sessions.get(session_id)
+    if row is None:
+        abort(404)
+    row.pop("audio_filename", None)
+    card = _card(row)
+    names = _sessions.get_speaker_names(session_id)
+    result = _sessions.load_result(session_id)
+    if result is not None:
+        result["segments"] = _sessions.current_segments(session_id, result.get("segments", []))
+        card["turns"] = _build_turns(result["segments"], names)
+    card["result"] = result
+    card["speaker_names"] = names
+    card["can_undo"] = _sessions.edit_history_len(session_id) > 0
+    card["created_at"] = row.get("created_at")
+    card["updated_at"] = row.get("updated_at")
+    card["options"] = row.get("options") or {}
+    card["formats"] = [f for f in pipeline.OUTPUT_FORMATS
+                       if os.path.exists(_sessions.artifact_path(session_id, f))]
+    return jsonify(card)
+
+
+@app.post("/api/sessions/<session_id>/rename")
+def api_rename_session(session_id: str):
+    if _sessions.get(session_id) is None:
+        abort(404)
+    name = (_body().get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Name cannot be empty."}), 400
+    _sessions.rename(session_id, name)
+    return jsonify({"id": session_id, "filename": name})
+
+
+@app.post("/api/sessions/<session_id>/delete")
+def api_delete_session(session_id: str):
+    _queue.cancel(session_id)
+    if not _sessions.delete(session_id):
+        abort(404)
+    return jsonify({"deleted": True})
+
+
+@app.post("/api/sessions/<session_id>/turns/<int:turn_index>")
+def api_edit_turn(session_id: str, turn_index: int):
+    if _sessions.get(session_id) is None:
+        abort(404)
+    try:
+        _sessions.save_turn_edit(session_id, turn_index, _body().get("text", ""))
+    except IndexError:
+        return jsonify({"error": "Unknown turn."}), 400
+    return jsonify(_transcript_payload(session_id))
+
+
+@app.post("/api/sessions/<session_id>/undo")
+def api_undo_edit(session_id: str):
+    if _sessions.get(session_id) is None:
+        abort(404)
+    _sessions.undo_turn_edit(session_id)
+    return jsonify(_transcript_payload(session_id))
+
+
+@app.get("/api/sessions/<session_id>/speakers")
+def api_list_speakers(session_id: str):
+    if _sessions.get(session_id) is None:
+        abort(404)
+    _result, segments = _current_segments(session_id)
+    names = _sessions.get_speaker_names(session_id)
+    return jsonify([
+        {"key": key, "label": resolve_label(key, names)}
+        for key in distinct_speakers(segments)
+    ])
+
+
+@app.post("/api/sessions/<session_id>/speakers")
+def api_rename_speaker(session_id: str):
+    if _sessions.get(session_id) is None:
+        abort(404)
+    data = _body()
+    speaker = (data.get("speaker") or "").strip()
+    if not speaker:
+        return jsonify({"error": "Missing speaker key."}), 400
+    name = (data.get("name") or "").strip()
+    _sessions.set_speaker_name(session_id, speaker, name)
+    return jsonify({"key": speaker, "label": resolve_label(speaker, {speaker: name} if name else None)})
+
+
+@app.post("/api/sessions/<session_id>/turns/<int:turn_index>/speaker")
+def api_reassign_turn(session_id: str, turn_index: int):
+    if _sessions.get(session_id) is None:
+        abort(404)
+    data = _body()
+    speaker = (data.get("speaker") or "").strip()
+    name = (data.get("name") or "").strip()
+    if not speaker:
+        if not name:
+            return jsonify({"error": "Provide a speaker key or a name for a new speaker."}), 400
+        _result, segments = _current_segments(session_id)
+        names = _sessions.get_speaker_names(session_id)
+        taken = {resolve_label(k, names).casefold() for k in distinct_speakers(segments)}
+        taken |= {v.casefold() for v in names.values()}
+        if name.casefold() in taken:
+            return jsonify({"error": f"A speaker named {name!r} already exists."}), 409
+        existing = set(distinct_speakers(segments)) | set(names)
+        speaker = next_speaker_key(existing)
+    if name:
+        _sessions.set_speaker_name(session_id, speaker, name)
+    try:
+        _sessions.save_turn_reassign(session_id, turn_index, speaker)
+    except IndexError:
+        return jsonify({"error": "Unknown turn."}), 400
+    return jsonify(_transcript_payload(session_id))
+
+
+# --- Models / device ---------------------------------------------------------
+@app.get("/api/models")
+def api_models():
+    return jsonify(_manager.status())
+
+
+@app.post("/api/models/active")
+def api_switch_model():
+    model = (_body().get("model") or "").strip()
+    try:
+        model = pipeline.WhisperModel(model).value
+    except ValueError:
+        return jsonify({"error": f"Unknown model: {model}"}), 400
+    status = _manager.set_active(model)
+    _sessions.set_setting("active_model", model)
+    return jsonify(status)
+
+
+@app.post("/api/device")
+def api_switch_device():
+    device = (_body().get("device") or "").strip()
+    if device not in pipeline.DEVICES:
+        return jsonify({"error": f"Unknown device: {device}"}), 400
+    if _sessions.has_active_jobs():
+        return jsonify({"error": "busy", **_manager.status()}), 409
+    try:
+        status = _manager.set_device(device)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    _sessions.set_setting("device", device)
+    return jsonify(status)
+
+
+# --- Translation -------------------------------------------------------------
+@app.post("/api/sessions/<session_id>/translate")
+def api_translate_session(session_id: str):
+    row = _sessions.get(session_id)
+    if row is None:
+        abort(404)
+    if row["status"] != "done":
+        return jsonify({"error": "Transcript is not ready to translate."}), 409
+    target = (_body().get("target_language") or "").strip()
+    if not _valid_lang(target):
+        return jsonify({"error": "Invalid target language."}), 400
+    if not secret_store.resolve_google_api_key():
+        return jsonify({"error": "Add a Google Translation API key in Settings first."}), 400
+    service = _sessions.get_setting("translation_service", DEFAULT_SERVICE)
+    if service not in SERVICES:
+        service = DEFAULT_SERVICE
+    _translate_queue.submit(session_id, target, service)
+    return jsonify({"lang": target, "status": "running", "service": service})
+
+
+@app.get("/api/sessions/<session_id>/translation/<lang>")
+def api_view_translation(session_id: str, lang: str):
+    if _sessions.get(session_id) is None or not _valid_lang(lang):
+        abort(404)
+    overlay = _sessions.load_translation(session_id, lang)
+    if overlay is None:
+        abort(404)
+    _result, orig = _current_segments(session_id)
+    segs = translation_overlay.apply_overlay(orig, overlay)
+    names = _sessions.get_speaker_names(session_id)
+    return jsonify({
+        "target_language": lang,
+        "turns": _build_turns(segs, names),
+        "segments": segs,
+    })
+
+
+# --- Onboarding --------------------------------------------------------------
+@app.get("/api/onboarding")
+def api_onboarding():
+    status = _manager.status()
+    return jsonify({
+        "token": secret_store.resolve_hf_token() or "",
+        "sizes": ONBOARDING_SIZES,
+        "selected_size": _onboarding_size(status["active"]),
+        "models": status,
+        "diarize_model": secret_store.DIARIZE_MODEL,
+        "backup": _backup_json(),
+    })
+
+
+@app.post("/api/onboarding/verify")
+def api_onboarding_verify():
+    token = (_body().get("token") or "").strip()
+    ok, detail = secret_store.verify_token(token)
+    return jsonify({"ok": ok, "detail": detail})
+
+
+@app.post("/api/onboarding")
+def api_onboarding_finish():
+    data = _body()
+    token = (data.get("token") or "").strip()
+    model = (data.get("model") or "").strip()
+    device = (data.get("device") or "").strip()
+    try:
+        model = pipeline.WhisperModel(model).value
+    except ValueError:
+        return jsonify({"error": f"Unknown model: {model}"}), 400
+    if device not in pipeline.DEVICES:
+        return jsonify({"error": f"Unknown device: {device}"}), 400
+    if token:
+        ok, detail = secret_store.verify_token(token)
+        if not ok:
+            return jsonify({"error": detail or "Token did not verify."}), 400
+        try:
+            secret_store.set_hf_token(token)
+        except secret_store.SecretStoreUnavailable as exc:
+            return jsonify({"store_error": str(exc)}), 500
+    _sessions.set_setting("active_model", model)
+    _sessions.set_setting("device", device)
+    _manager.set_active(model)
+    if device != _manager.device:
+        try:
+            _manager.set_device(device)
+        except ValueError:
+            pass
+    _manager.reset_diarize()
+    _sessions.set_setting("onboarded", "1")
+    return jsonify({"ok": True})
+
+
+# --- Settings ----------------------------------------------------------------
+def _settings_payload() -> dict:
+    return {
+        "default_language": _sessions.get_setting("default_language", ""),
+        "languages": TRANSCRIBE_LANGUAGES,
+        "models": _manager.status(),
+        "translation_service": _sessions.get_setting("translation_service", DEFAULT_SERVICE),
+        "translation_services": [
+            {"id": name, "label": cls.label} for name, cls in SERVICES.items()
+        ],
+        "translation_languages": TRANSLATION_LANGUAGES,
+        "google_key": {"key_set": bool(secret_store.resolve_google_api_key())},
+        "diarize": {
+            "version": diarize_model.derive_version(diarize_model.resolve_local_model()),
+            "model_name": diarize_model.REPO_ID,
+            "token_set": bool(secret_store.resolve_hf_token()),
+        },
+        "backup": _backup_json(),
+        "onboarded": _sessions.get_setting("onboarded") == "1",
+    }
+
+
+@app.get("/api/settings")
+def api_settings():
+    return jsonify(_settings_payload())
+
+
+@app.post("/api/settings")
+def api_save_settings():
+    lang = (_body().get("default_language") or "").strip()
+    _sessions.set_setting("default_language", lang)
+    return jsonify({"ok": True, "default_language": lang})
+
+
+def _hf_token_payload(notice: str, notice_ok: bool) -> dict:
+    return {"token_set": bool(secret_store.resolve_hf_token()),
+            "notice": notice, "notice_ok": notice_ok}
+
+
+@app.post("/api/settings/hf-token")
+def api_hf_token():
+    token = (_body().get("hf_token") or "").strip()
+    ok, detail = secret_store.verify_token(token)
+    if not ok:
+        return jsonify(_hf_token_payload(detail, False)), 400
+    try:
+        secret_store.set_hf_token(token)
+    except secret_store.SecretStoreUnavailable as exc:
+        return jsonify(_hf_token_payload(str(exc), False)), 500
+    _manager.reset_diarize()
+    return jsonify(_hf_token_payload("Token saved and verified.", True))
+
+
+@app.post("/api/settings/hf-token/clear")
+def api_hf_token_clear():
+    secret_store.delete_hf_token()
+    _manager.reset_diarize()
+    token_set = bool(secret_store.resolve_hf_token())
+    notice = ("Cleared the stored token, but HF_TOKEN is still set in the environment."
+              if token_set else "Token cleared. Speaker diarization is now disabled.")
+    return jsonify({"token_set": token_set, "notice": notice, "notice_ok": True})
+
+
+def _google_key_payload(notice: str, notice_ok: bool) -> dict:
+    return {"key_set": bool(secret_store.resolve_google_api_key()),
+            "notice": notice, "notice_ok": notice_ok}
+
+
+@app.post("/api/settings/google-key")
+def api_google_key():
+    key = (_body().get("google_key") or "").strip()
+    ok, detail = secret_store.verify_google_api_key(key)
+    if not ok:
+        return jsonify(_google_key_payload(detail, False)), 400
+    try:
+        secret_store.set_google_api_key(key)
+    except secret_store.SecretStoreUnavailable as exc:
+        return jsonify(_google_key_payload(str(exc), False)), 500
+    return jsonify(_google_key_payload("Key saved and verified.", True))
+
+
+@app.post("/api/settings/google-key/clear")
+def api_google_key_clear():
+    secret_store.delete_google_api_key()
+    key_set = bool(secret_store.resolve_google_api_key())
+    notice = ("Cleared the stored key, but GOOGLE_TRANSLATE_API_KEY is still set "
+              "in the environment." if key_set else "Key cleared. Translation is now disabled.")
+    return jsonify({"key_set": key_set, "notice": notice, "notice_ok": True})
+
+
+@app.post("/api/settings/translation-service")
+def api_translation_service():
+    service = (_body().get("translation_service") or "").strip()
+    if service not in SERVICES:
+        return jsonify({"error": "Unknown translation service."}), 400
+    _sessions.set_setting("translation_service", service)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/settings/diarize-model/refresh")
+def api_diarize_refresh():
+    def _payload(notice, notice_ok):
+        return {
+            "version": diarize_model.derive_version(diarize_model.resolve_local_model()),
+            "model_name": diarize_model.REPO_ID,
+            "token_set": bool(secret_store.resolve_hf_token()),
+            "notice": notice, "notice_ok": notice_ok,
+        }
+    token = secret_store.resolve_hf_token()
+    if not token:
+        return jsonify(_payload("Add a Hugging Face token above to fetch model updates.", False)), 400
+    try:
+        dest = diarize_model.vendor(token, dest_root=diarize_model.data_root())
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Diarization model refresh failed")
+        return jsonify(_payload(f"Refresh failed: {exc}", False)), 500
+    _manager.reset_diarize()
+    sha8 = dest.name.rsplit(".", 1)[-1]
+    return jsonify(_payload(f"Refreshed to revision {sha8}.", True))
+
+
+# --- Backup (one JSON surface; SSE state via /backup/status/events) -----------
+@app.get("/api/backup/status")
+def api_backup_status():
+    return jsonify(_backup_json())
+
+
+@app.post("/api/backup/connect")
+def api_backup_connect():
+    if _backup.is_linked():
+        return jsonify(_backup_json())
+    _apply_backup_folder(_body().get("backup_folder"))
+    # Reuse the existing background consent flow; the SPA watches /backup/events
+    # for the terminal {status, backup, remote?} event.
+    _start_backup_link("partials/_backup_card.html")
+    return jsonify({"connecting": True})
+
+
+@app.post("/api/backup/disconnect")
+def api_backup_disconnect():
+    from app.backup import oauth
+    oauth.unlink()
+    return jsonify(_backup_json(notice="Disconnected. Local data is untouched."))
+
+
+@app.post("/api/backup/now")
+def api_backup_now():
+    if not _backup.is_linked():
+        return jsonify({"error": "Backup backend is not linked."}), 409
+    _run_backup_async()
+    return jsonify(_backup_json()), 202
+
+
+@app.post("/api/backup/restore")
+def api_backup_restore():
+    try:
+        n = _backup.restore()
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+    return jsonify({"restored": n, "backup": _backup_json()})
+
+
+@app.post("/api/backup/bootstrap/adopt")
+def api_backup_adopt():
+    try:
+        n = _backup.adopt_remote()
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+    return jsonify({"restored": n, "backup": _backup_json()})
+
+
+@app.post("/api/backup/bootstrap/overwrite")
+def api_backup_overwrite():
+    try:
+        r = _backup.overwrite_remote()
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+    return jsonify({"uploaded": r.uploaded, "skipped": r.skipped, "backup": _backup_json()})
+
+
+@app.get("/api/backup/remote-info")
+def api_backup_remote_info():
+    try:
+        remote = _backup.bootstrap()
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+    return jsonify({"remote": _remote_json(remote)})
+
+
 # Kick off model loading at import time (works under both `flask run` and __main__).
-threading.Thread(target=_warm_models, name="warm-models", daemon=True).start()
+# Tests set WHISPERX_NO_WARM=1 to import the app without pulling a model.
+if os.environ.get("WHISPERX_NO_WARM") != "1":
+    threading.Thread(target=_warm_models, name="warm-models", daemon=True).start()
 
 
 _shutdown_done = threading.Event()

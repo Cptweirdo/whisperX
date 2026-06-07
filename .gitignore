@@ -210,3 +210,6 @@ packaging/macos/tauri/target/
 !packaging/macos/tauri/dist/
 packaging/macos/tauri/dist/*
 !packaging/macos/tauri/dist/index.html
+
+# Throwaway local venv for running the web backend without the full torch stack
+.venv-web/
