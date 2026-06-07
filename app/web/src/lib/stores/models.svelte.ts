@@ -56,6 +56,15 @@ class ModelsStore {
     return !!(a && a.loaded);
   }
 
+  async switchActive(model: string) {
+    this.setStatus(await api.post("/models/active", { model }));
+  }
+
+  /** Switch device; throws ApiError (409 body carries `error:"busy"` + status). */
+  async switchDevice(device: string) {
+    this.setStatus(await api.post("/device", { device }));
+  }
+
   start() {
     if (this.#es) return;
     this.#es = openSSE(urls.modelsEvents(), (d) => this.#onState(d));
