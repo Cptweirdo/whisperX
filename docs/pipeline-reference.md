@@ -1,12 +1,11 @@
 # WhisperX Transcription Pipeline — Reference
 
 > What each stage of the pipeline does, the exact code responsible for it, and
-> the dependencies it pulls in. This is the **spec** the port work targets (see
-> [`android-port-options.md`](./android-port-options.md),
-> [`ios-port-options.md`](./ios-port-options.md),
-> [`windows-port-options.md`](./windows-port-options.md),
-> [`packaging-shared-vs-bespoke.md`](./packaging-shared-vs-bespoke.md)). Line refs
-> are against the tree at the time of writing.
+> the dependencies it pulls in. This is the **spec the C++ core targets** — see
+> [`cpp-core-spa-architecture.md`](./cpp-core-spa-architecture.md),
+> [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md), and the per-phase
+> [`cpp-core-migration-briefs.md`](./cpp-core-migration-briefs.md). Line refs are
+> against the tree at the time of writing.
 
 ## Data flow at a glance
 
@@ -161,9 +160,9 @@ turns onto the aligned segments/words.
 optional `speaker_embeddings`).
 
 **Deps:** `pyannote.audio` + `pyannote.core` (**native, gated model + HF
-download**), `torch`, `pandas`, `numpy`. *Portability note:* the model is the hard
-part (sherpa-onnx ships an ONNX equivalent for mobile); `IntervalTree` +
-`assign_word_speakers` are **pure algorithm**.
+download**), `torch`, `pandas`, `numpy`. *Port note:* the model is the hard part
+(sherpa-onnx ships an ONNX equivalent); `IntervalTree` + `assign_word_speakers` are
+**pure algorithm** to port.
 
 ---
 
@@ -203,13 +202,13 @@ must match:
 |---|---|---|---|
 | 1 Audio | **ffmpeg CLI**, `torch.stft` | constants, `pad_or_trim` | AVFoundation/AudioRecord + native/Dart FFT |
 | 2 VAD | `pyannote.audio` / `torch.hub` silero | **`Vad.merge_chunks`** | silero ONNX (sherpa) + port merge logic |
-| 3 ASR | **`ctranslate2`**, `faster_whisper`, `transformers` | segment assembly | LiteRT / sherpa-onnx Whisper |
-| 4 Align | `torch`, `torchaudio`, `transformers`, `nltk`, `pandas` | **`get_trellis`, `backtrack`, `merge_*`, interpolation** | wav2vec2→ONNX/CoreML/LiteRT + port the DP |
+| 3 ASR | **`ctranslate2`**, `faster_whisper`, `transformers` | segment assembly | sherpa-onnx Whisper (ONNX Runtime) |
+| 4 Align | `torch`, `torchaudio`, `transformers`, `nltk`, `pandas` | **`get_trellis`, `backtrack`, `merge_*`, interpolation** | wav2vec2→ONNX (ORT) + port the DP |
 | 5 Diarize | **`pyannote.audio`** (gated) | **`IntervalTree`, `assign_word_speakers`** | sherpa-onnx pyannote-seg + CAM++ + port assignment |
 | 6 Write | — | **all of it** | trivial reimplement |
 
 **Bottom line:** the model forward passes (Stages 1 STFT, 3, 4, 5) are the
-native/engine-bound parts; the **glue** — VAD chunk merge, the alignment
-Viterbi, the diarization interval-tree assignment, and all output formatting — is
-pure algorithm and is exactly what the cross-platform "headless core" reuses
-(shared as code on desktop, ported/validated against golden vectors on mobile).
+runtime-bound parts (ORT + sherpa-onnx); the **glue** — VAD chunk merge, the
+alignment Viterbi, the diarization interval-tree assignment, and all output
+formatting — is pure algorithm and is exactly what the **C++ core** ports and
+validates against golden vectors.
