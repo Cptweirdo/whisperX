@@ -25,6 +25,7 @@
 #include "audio/audio_constants.hpp"
 #include "build_info.hpp"
 #include "db/session_store.hpp"
+#include "diarize/assign_speakers.hpp"
 #include "edits/edits.hpp"
 #include "text/edit_distance.hpp"
 #include "text/sentence_split.hpp"
@@ -487,6 +488,31 @@ void bind_align(py::module_& m) {
         "token ids) — the torch-free post-forward step for the align_onnx path.");
 }
 
+// whisperx/diarize.py speaker-assignment glue (`assign` token, Phase 4): the
+// IntervalTree + assign_word_speakers dominant-by-overlap labelling. The pyannote
+// DataFrame is extracted to (start, end, speaker) turns in the Python facade; the
+// speaker_embeddings passthrough stays Python (a dict copy, no algorithm).
+void bind_diarize(py::module_& m) {
+    namespace di = whisperx::diarize;
+    using TurnTuple = std::tuple<double, double, std::string>;
+    m.def(
+        "assign_word_speakers",
+        [](const std::vector<TurnTuple>& turns, const py::handle& segments,
+           bool fill_nearest) {
+            std::vector<di::Turn> t;
+            t.reserve(turns.size());
+            for (const auto& [s, e, sp] : turns) t.push_back({s, e, sp});
+            json out = di::assign_word_speakers(t, py_to_json(segments),
+                                                fill_nearest);
+            return json_to_py(out);
+        },
+        py::arg("turns"), py::arg("segments"), py::arg("fill_nearest") = false,
+        "assign_word_speakers: diarization turns as (start, end, speaker) tuples + "
+        "a list of segment dicts -> the same segments with 'speaker' set on each "
+        "segment and each timed word by dominant overlap (fill_nearest assigns the "
+        "nearest turn when there is no overlap).");
+}
+
 #ifdef WHISPERX_CORE_AUDIO
 // In-process libav* decode (replaces the ffmpeg subprocess; `decode` token).
 // Built only with WHISPERX_CORE_AUDIO; the Python facade hasattr-guards so a
@@ -602,6 +628,7 @@ PYBIND11_MODULE(whisperx_core, m) {
     bind_edits(m);
     bind_vad(m);
     bind_align(m);
+    bind_diarize(m);
 #ifdef WHISPERX_CORE_AUDIO
     bind_audio(m);
 #endif

@@ -908,6 +908,22 @@ The aligner's ONNX Runtime + audio access are already wired by 2B's
 > **Split into two independent sub-tracks** — they share no code and can ship
 > separately. 4a is two ASR engines; 4b is diarization + the assignment glue.
 
+> **Slice `assign` LANDED** (the pure 4b glue, the 3A analog). Native
+> `IntervalTree` + `assign_word_speakers` (`core/diarize/{interval_tree,assign_speakers}.cpp`
+> in `whisperx_core_lib`, no deps) behind the **`assign`** token;
+> `whisperx/diarize.py::assign_word_speakers` facades to it (pandas body is the
+> oracle). The pyannote **DataFrame stays Python** → extracted to `(start,end,speaker)`
+> turns at the facade; `speaker_embeddings` passthrough + the **mutate-and-return**
+> contract (callers rely on in-place *and* the return) live in the facade. Exact-parity
+> tie-breaks (`max` first-wins, `argmin` first-min, `searchsorted side='left'`),
+> `-ffp-contract=off`. **Golden:** a new model-independent `*.assign.json`
+> (`dump_goldens.py --assign`, align-only) from the **CC0 RTTM ground truth** + the
+> Python assign oracle over pre-diarize segments — so the C++ replay
+> (`bindings/test/test_assign_parity.py`) is torch/model-free. Gates: exact segment +
+> word labels on all 3 dialogs; Catch2 `test_assign_speakers` (9 cases, ASan/UBSan);
+> 78/78 CTest; pytest 226 green across `{unset, assign, db,edits,vad,align,assign}`.
+> **Still open:** the diarization **model** swap (4b, A/B) + the **`asr`** backend (4a).
+
 ### Context
 Swap the two remaining models. **Whisper** moves to a **pluggable ASR backend**
 (default sherpa-onnx Whisper on ORT; **whisper.cpp/GGML for Apple-Silicon Metal** —

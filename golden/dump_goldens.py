@@ -35,6 +35,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import sys
@@ -57,6 +58,64 @@ def _sha256(path: Path) -> str:
 
 def _lang_of(name: str) -> str:
     return name.split("_", 1)[0]
+
+
+def _jsonable(obj):
+    """Coerce numpy scalars/arrays in the aligned segments to plain Python so the
+    assign golden serializes cleanly (align output is mostly python floats, but be
+    defensive about stray np types)."""
+    if isinstance(obj, dict):
+        return {k: _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
+def _parse_rttm(path: Path):
+    """Ground-truth turns from an RTTM file -> [(start, end, speaker), …].
+    RTTM cols: SPEAKER file chnl tbeg tdur <NA> <NA> name <NA> <NA>."""
+    turns = []
+    for line in path.read_text().splitlines():
+        f = line.split()
+        if len(f) < 8 or f[0] != "SPEAKER":
+            continue
+        start, dur = float(f[3]), float(f[4])
+        turns.append((start, start + dur, f[7]))
+    return turns
+
+
+def _turns_to_df(turns):
+    """RTTM turns -> the diarize_df shape assign_word_speakers consumes."""
+    import pandas as pd
+
+    return pd.DataFrame(
+        [{"start": s, "end": e, "speaker": sp} for s, e, sp in turns],
+        columns=["start", "end", "speaker"])
+
+
+def _assign_golden(name, aligned):
+    """Model-independent assign golden: feed the clip's CC0 ground-truth RTTM turns
+    through the **Python** assign_word_speakers oracle over a copy of the pre-diarize
+    aligned segments. The C++ `assign` parity replay (test_assign_parity.py) reads
+    this back torch/pandas/model-free. None if the clip has no committed RTTM."""
+    rttm = GOLDEN / "clips" / f"{name}.rttm"
+    if not rttm.exists():
+        return None
+    from whisperx.diarize import _py_assign_word_speakers
+
+    turns = _parse_rttm(rttm)
+    segs_in = _jsonable(copy.deepcopy(aligned["segments"]))
+    expected = _py_assign_word_speakers(
+        _turns_to_df(turns), {"segments": copy.deepcopy(segs_in)}, None, False)
+    return {
+        "turns": [[round(s, 3), round(e, 3), sp] for s, e, sp in turns],
+        "segments_in": segs_in,
+        "segments_out": _jsonable(expected["segments"]),
+    }
 
 
 # --- align spies: wrap the real functions, record what they compute -----------
@@ -165,6 +224,12 @@ def _dump_clip(name, meta, *, wx, pipe, align_cache, diarizer, outdir):
         aligned = wx.align(segments, amodel, ameta, audio, "cpu",
                            return_char_alignments=False)
 
+    # 2b) assign golden (dialogs) — RTTM ground-truth turns through the Python
+    # assign oracle over the *pre-diarize* aligned segments. Captured before the
+    # live diarizer mutates `aligned` below, and model-independent (CC0 RTTM, not
+    # the community-1 turns) so the C++ `assign` replay is torch/model-free.
+    assign_golden = _assign_golden(name, aligned) if multispeaker else None
+
     # 3) diarize (dialogs only) -> per-word speaker labels
     if diarizer is not None and multispeaker:
         diar_df = diarizer(audio)
@@ -210,6 +275,8 @@ def _dump_clip(name, meta, *, wx, pipe, align_cache, diarizer, outdir):
     _write("words", {"words": [
         {k: (round(float(v), 3) if isinstance(v, float) else v)
          for k, v in w.items()} for w in words]})
+    if assign_golden is not None:
+        _write("assign", assign_golden)
     artifacts["tensors"] = {"file": npz_path.name, "sha256": _sha256(npz_path),
                             "arrays": sorted(tensors)}
 
@@ -328,6 +395,46 @@ def _dump_align_io(clips, outdir, *, wx):
     print(f"\naugmented align.json IO -> {man_path}")
 
 
+def _dump_assign(clips, outdir, *, wx):
+    """Augment each dialog clip with a ``*.assign.json`` golden without touching the
+    other (committed) intermediates: align the committed transcript segments (loads
+    align models only — no whisper/diarize), then feed the clip's RTTM ground-truth
+    turns through the Python assign oracle over those pre-diarize segments. Model-
+    independent so the C++ ``assign`` parity replay (test_assign_parity.py) is
+    torch-free; the pinned tensor/words goldens are left untouched."""
+    align_cache: dict = {}
+    man_path = outdir / "manifest.json"
+    man = json.loads(man_path.read_text())
+    n = 0
+    for name, meta in sorted(clips.items()):
+        if (meta.get("n_speakers") or 1) <= 1:
+            continue
+        if not (GOLDEN / "clips" / f"{name}.rttm").exists():
+            continue
+        if not (outdir / f"{name}.transcript.json").exists():
+            continue
+        lang = _lang_of(name)
+        if lang not in align_cache:
+            align_cache[lang] = wx.load_align_model(language_code=lang, device="cpu")
+        amodel, ameta = align_cache[lang]
+        tr = json.loads((outdir / f"{name}.transcript.json").read_text())
+        audio = wx.load_audio(str(GOLDEN / meta["file"]))
+        aligned = wx.align(tr["segments"], amodel, ameta, audio, "cpu",
+                           return_char_alignments=False)
+        golden = _assign_golden(name, aligned)
+        if golden is None:
+            continue
+        p = outdir / f"{name}.assign.json"
+        p.write_text(json.dumps(golden, indent=2, ensure_ascii=False) + "\n")
+        man["clips"][name].setdefault("artifacts", {})["assign"] = {
+            "file": p.name, "sha256": _sha256(p)}
+        n += 1
+        print(f"  {name:16} {len(golden['turns'])} turns -> "
+              f"{len(golden['segments_out'])} segments")
+    man_path.write_text(json.dumps(man, indent=2, ensure_ascii=False) + "\n")
+    print(f"\nwrote {n} assign.json -> {man_path}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -342,6 +449,10 @@ def main():
     ap.add_argument("--align-io", action="store_true",
                     help="only augment *.align.json with dictionary + clean_cdx "
                          "(loads align models only; no whisper/diarize)")
+    ap.add_argument("--assign", action="store_true",
+                    help="only (re)write *.assign.json for dialog clips (RTTM turns "
+                         "+ Python assign oracle; align models only, no whisper/"
+                         "diarize; preserves the other goldens)")
     ap.add_argument("--outdir", default=str(OUTDIR))
     args = ap.parse_args()
 
@@ -358,6 +469,10 @@ def main():
 
     if args.align_io:
         _dump_align_io(clips, outdir, wx=wx)
+        return
+
+    if args.assign:
+        _dump_assign(clips, outdir, wx=wx)
         return
 
     pipe = wx.load_model(args.model, device=args.device,

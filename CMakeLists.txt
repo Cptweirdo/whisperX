@@ -85,6 +85,8 @@ add_library(whisperx_core_lib STATIC
   core/align/trellis.cpp
   core/align/align.cpp
   core/align/emission_post.cpp
+  core/diarize/interval_tree.cpp
+  core/diarize/assign_speakers.cpp
   core/build_info.cpp)
 target_include_directories(whisperx_core_lib PUBLIC core ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(whisperx_core_lib PUBLIC
@@ -106,6 +108,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # emission_post.cpp's log_softmax is a new fp32 parity surface vs torch — keep
   # FMA off so it tracks torch's never-fused reductions within emission_atol.
   set_source_files_properties(core/align/emission_post.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  # assign_speakers.cpp's overlap/midpoint arithmetic — no FMA so the dominant-
+  # speaker sums + argmin midpoints track Python's never-fused doubles exactly
+  # (speaker labels are an exact-== parity gate).
+  set_source_files_properties(core/diarize/assign_speakers.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  set_source_files_properties(core/diarize/interval_tree.cpp
     PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
 
@@ -216,7 +225,8 @@ if(WHISPERX_CORE_TESTS)
     core/tests/test_merge_chunks.cpp
     core/tests/test_trellis.cpp
     core/tests/test_sentence_split.cpp
-    core/tests/test_emission_post.cpp)
+    core/tests/test_emission_post.cpp
+    core/tests/test_assign_speakers.cpp)
   target_link_libraries(whisperx_core_tests
     PRIVATE whisperx_core_lib Catch2::Catch2WithMain)
 

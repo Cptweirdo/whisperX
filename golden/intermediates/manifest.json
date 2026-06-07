@@ -61,6 +61,10 @@
             "seg1_emission",
             "seg2_emission"
           ]
+        },
+        "assign": {
+          "file": "de_dialog.assign.json",
+          "sha256": "43338a7fb56c6d82a38cf0931313f79014e87eec4db76c274312ff727cc7126e"
         }
       }
     },
@@ -95,6 +99,10 @@
             "seg0_emission",
             "seg1_emission"
           ]
+        },
+        "assign": {
+          "file": "en_dialog.assign.json",
+          "sha256": "361f0e155e81f677acc91721c9e9cfeba76de909b555a037587bcc43642ff201"
         }
       }
     },
@@ -295,6 +303,10 @@
             "seg1_emission",
             "seg2_emission"
           ]
+        },
+        "assign": {
+          "file": "ru_dialog.assign.json",
+          "sha256": "ffe59b3c6d71e13ace5c478659635bc4b1a2f536040537104ccc8c03d93d8649"
         }
       }
     }

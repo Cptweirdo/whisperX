@@ -246,6 +246,50 @@ token; **3B** (the heavy ONNX wav2vec2 forward) is the remaining slice.
   torchaudio, ru HF). Producer is swappable (torch-export now → CI-hosted later) with the
   C++ seam unchanged. Phase-5 packaging decides which langs bundle vs lazy-download.
 
+## Phase 4 — slice `assign` landed (speaker-assignment glue)
+
+Phase 4 swaps the last two models — **ASR** (4a) and **diarization** (4b) — and,
+like every prior phase, the **pure dep-free algorithm IP ships first** behind its own
+composable token. **Slice `assign` is landed**: the 4b analog of 3A.
+
+- **Native `IntervalTree` + `assign_word_speakers` (`assign` token).**
+  `core/diarize/interval_tree.{hpp,cpp}` + `core/diarize/assign_speakers.{hpp,cpp}`
+  (verbatim ports of `diarize.py:14,185`) live in the always-built `whisperx_core_lib`
+  — **no new deps**. Pure JSON segments in/out (carries arbitrary seg/word fields
+  untouched; only `"speaker"` keys are written). `whisperx/diarize.py::assign_word_speakers`
+  facades to `whisperx_core.assign_word_speakers` under **`assign`** (the pandas body
+  `_py_assign_word_speakers` stays the oracle). The pyannote **DataFrame stays Python**
+  — the facade extracts it to `(start,end,speaker)` turns and the C++ takes structs
+  ("replace the DataFrame with structs"); `speaker_embeddings` passthrough stays Python
+  (a dict copy, no algorithm).
+- **Mutate-and-return contract.** Callers rely on **both** in-place mutation
+  (`dump_goldens.py`, `tests/test_baseline_golden.py` ignore the return) **and** the
+  return value (`transcribe.py:233`, `app/pipeline.py:563`). The C++ returns fresh
+  dicts, so the facade writes the speaker labels **back into the original seg/word
+  dicts in place** and returns — both contracts hold.
+- **Load-bearing parity = the tie-breaks.** `max(dict.items(), key=…)` first-wins on a
+  tie (insertion order from the IntervalTree query) and `np.argmin` first-min in
+  `find_nearest`, plus `searchsorted(side='left')`; all ported exactly, `-ffp-contract=off`.
+- **Model-independent golden.** The committed `words.json` speakers are entangled with
+  the live `community-1` turns, so the isolation gate uses a **new** `*.assign.json`
+  (`golden/dump_goldens.py --assign`, align models only — no whisper/diarize): the
+  synthetic dialogs' **CC0 ground-truth RTTM** turns fed once through the Python assign
+  oracle over the pre-diarize aligned segments (`{turns, segments_in, segments_out}`).
+  The C++ replay is therefore torch/pandas/model-free.
+- **Gates met.** C++ `assign_word_speakers` reproduces the oracle's segment **and** word
+  speaker labels **exactly** on all 3 dialogs (`bindings/test/test_assign_parity.py`);
+  Catch2 `test_assign_speakers` (9 cases: ties, no-overlap, `fill_nearest`, untimed
+  word, empties, argmin/searchsorted) under ASan/UBSan; 78/78 CTest; the facade's C++
+  path matches the oracle end-to-end incl. in-place mutation + embeddings passthrough;
+  `test_pipeline_contract.py` seam untouched; full `uv run pytest tests/` green (226)
+  across `WHISPERX_CORE_STAGES` ∈ {unset, `assign`, `db,edits,vad,align,assign`};
+  `import whisperx` + dep-free build unaffected.
+- **Remaining Phase 4 slices (later):** the **diarization model** swap (sherpa
+  pyannote-seg-3.0 + CAM++) is **A/B, not parity** — Python pyannote `community-1` keeps
+  feeding the turns this glue consumes (strangler); the sherpa-onnx **Whisper `asr`**
+  backend (default-on-ORT, WER/CER-gated, ONNX **mirrored + sha-pinned** via the 3B
+  mechanism; whisper.cpp/GGML a follow-on) is unstarted.
+
 ## Where to start
 
 **Phase 0 is a decision gate, not just CMake setup.** Deliver: the `whisperx_core`
