@@ -339,6 +339,61 @@ follow-on.
   pyannote-seg-3.0 + CAM++, **A/B not parity**) and the **whisper.cpp/GGML** ASR backend
   (4a follow-on, Metal-shader/CMake build).
 
+## Phase 4 — slice `diarize` landed (sherpa-onnx speaker diarization)
+
+The diarization **model** moves to a pluggable backend behind a new composable
+**`diarize`** token; pyannote `community-1` (Python/torch) stays the **default
+oracle** (strangler). **A/B, not parity — by construction:** community-1 is
+pyannote.audio 4.0 (its own segmentation + embedding + **VBxClustering/PLDA**),
+sherpa uses pyannote-segmentation-3.0 + a speaker-embedding extractor + cosine
+**FastClustering** — different models ⇒ different turns. The landed `assign`
+glue consumes either model's turns unchanged.
+
+- **Native sherpa-onnx diarization (`diarize` token).** `core/diarize/diarize_sherpa.{hpp,cpp}`
+  (pImpl, built only under `WHISPERX_CORE_AUDIO`) wraps sherpa's high-level
+  **`OfflineSpeakerDiarization`** (segmentation + embedding + FastClustering inside
+  sherpa) — reuses the vendored sherpa-onnx/ORT (2B). `diarize(AudioBuffer, num_clusters)`
+  returns `{start,end,speaker:int}` turns; `embeddings(AudioBuffer, segments)` runs a
+  **second `SpeakerEmbeddingExtractor` pass** (the diarization result exposes no
+  vectors) feeding each cluster's turns into one stream → a per-speaker vector
+  (sherpa's result has no embeddings, unlike pyannote). Inherits the 2B facts (ORT
+  **shared**, sherpa-`nlohmann_json` guard, `AudioBuffer::slice`).
+- **Python facade.** `whisperx/diarize_sherpa.py` (`SherpaDiarizationPipeline` +
+  `load_sherpa_diarize_model`, sibling of `asr_sherpa.py`) emits the **same pandas
+  DataFrame** `[segment,label,speaker,start,end]` the pyannote path does (cluster int →
+  `SPEAKER_xx`), so `assign_word_speakers` and all callers are untouched; preserves the
+  optional `return_embeddings` `(df, {speaker: vec})` return. `whisperx/diarize.py::DiarizationPipeline`
+  facades under `_core_diarize_enabled()` (the `diarize` token, `hasattr`-guarded):
+  `__init__` builds the sherpa pipeline into `self._impl` and `__call__` delegates, else
+  the pyannote oracle path runs unchanged. **Speaker-count controls → FastClustering's
+  single `num_clusters`:** precedence `num_speakers → max_speakers → min_speakers → auto`
+  (sherpa has no native min/max range); `num_clusters` is a clustering *target* — the
+  pyannote impl's frame-level finalization can yield fewer — not a hard guarantee.
+- **Model assets — mirror + sha-pin (3B mechanism), with a fallback.**
+  `golden/mirror_diarize_onnx.py` re-hosts sherpa's pre-exported **pyannote-segmentation-3.0**
+  + **wespeaker_en_voxceleb CAM++** ONNX (already ONNX — no torch export; MIT + Apache-2.0)
+  to `KonstantK/diarize-onnx-sherpa` (public), sha-pinned, with a `meta.json` (asset names +
+  `embedding_dim` + shas + license). The runtime resolver (`diarize_sherpa._resolve_diarize_assets`)
+  tries: (1) a local dir (`WHISPERX_DIARIZE_ONNX_DIR`, dev/CI), (2) our mirror via
+  `huggingface_hub`, (3) sherpa-onnx's official release assets (cached). The embedding model
+  is **English-VoxCeleb CAM++** (~28 MB, 512-dim) — best language family for en/de/ru at
+  small/fast size (the zh-cn CAM++ would be the wrong family). Bundle-vs-lazy is Phase-5.
+- **A/B gate (not parity).** The synthetic dialogs are concatenated CommonVoice clips and
+  are *hard for any diarizer* — measured, the incumbent **community-1 itself scores DER
+  ≈ 32 % (en) / 32 % (de) / 64 % (ru)** with the wrong speaker count on them; sherpa is
+  comparable (≈ 43/32/45 %, and better than community-1 on ru). So there is **no `count==4`
+  or low-DER claim**: `bindings/test/test_diarize_sherpa.py` (opt-in,
+  `WHISPERX_DIARIZE_ONNX_DIR`/`RUN_MIRROR`) gates **DER ≤ 0.70** vs the CC0 RTTM (a
+  regression bound), ≥ 2 speakers, the **assign-glue contract** (its DataFrame feeds
+  `assign_word_speakers` → labels land on segments + words), per-speaker embedding dim, and
+  a speaker-count-control sanity. **Gates met:** 5/5 on en/de/ru; the seam
+  (`test_pipeline_contract.py`) green under `diarize`; full `uv run pytest tests/` green
+  across `WHISPERX_CORE_STAGES` ∈ {unset, `diarize`, `db,edits,vad,align,assign,diarize`};
+  `import whisperx` clean (facade `hasattr`-guarded); dep-free `WHISPERX_CORE_AUDIO=OFF`
+  build unaffected. CI: a torch-free `SherpaDiarizer` smoke in the `audio-stage` lane.
+- **Remaining Phase 4 slice (later):** only the **whisper.cpp/GGML** ASR backend (4a
+  follow-on, Metal-shader/CMake build).
+
 ## Where to start
 
 **Phase 0 is a decision gate, not just CMake setup.** Deliver: the `whisperx_core`

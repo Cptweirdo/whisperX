@@ -31,6 +31,25 @@ def _core_assign_enabled() -> bool:
     return hasattr(whisperx_core, "assign_word_speakers")
 
 
+def _core_diarize_enabled() -> bool:
+    """Whether the native sherpa-onnx diarization model backs this run.
+
+    ``diarize`` in ``WHISPERX_CORE_STAGES`` routes ``DiarizationPipeline`` to the
+    sherpa-onnx backend (pyannote-seg-3.0 + CAM++ + FastClustering) instead of the
+    Python pyannote ``community-1`` pipeline (the default oracle). A/B, not parity —
+    the produced turns feed the same ``assign_word_speakers``. ``hasattr``-guarded so
+    a module built without the audio stage degrades to pyannote.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "diarize" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "SherpaDiarizer")
+
+
 class IntervalTree:
     """
     Simple interval tree for fast overlap queries using sorted array + binary search.
@@ -116,6 +135,17 @@ class DiarizationPipeline:
         device: Optional[Union[str, torch.device]] = "cpu",
         cache_dir=None,
     ):
+        # Native sherpa-onnx diarization backend (the `diarize` token). A/B with
+        # pyannote community-1 (the default oracle) — same DataFrame contract, so
+        # callers and assign_word_speakers are untouched.
+        self._impl = None
+        if _core_diarize_enabled():
+            from whisperx.diarize_sherpa import load_sherpa_diarize_model
+
+            self._impl = load_sherpa_diarize_model(download_root=cache_dir)
+            logger.info("Diarization backend: sherpa-onnx (diarize token)")
+            return
+
         if isinstance(device, str):
             device = torch.device(device)
         model_config = model_name or "pyannote/speaker-diarization-community-1"
@@ -148,6 +178,16 @@ class DiarizationPipeline:
             Otherwise:
                 Just the diarization dataframe
         """
+        if self._impl is not None:
+            return self._impl(
+                audio,
+                num_speakers=num_speakers,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                return_embeddings=return_embeddings,
+                progress_callback=progress_callback,
+            )
+
         if isinstance(audio, str):
             audio = load_audio(audio)
         audio_data = {

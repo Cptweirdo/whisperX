@@ -943,8 +943,29 @@ The aligner's ONNX Runtime + audio access are already wired by 2B's
 > en/de/ru. `avg_logprob` best-effort. Gates: pytest 226 green across `{unset, asr,
 > db,edits,vad,align,assign,asr}`; seam green under `asr`; dep-free build unaffected; CI
 > torch-free `WhisperSherpa` smoke in `audio-stage`.
-> **Still open:** the diarization **model** swap (4b, A/B) + the **whisper.cpp/GGML** ASR
-> backend (4a follow-on).
+
+> **Slice `diarize` LANDED** (4b, the diarization model). Native **sherpa-onnx
+> OfflineSpeakerDiarization** (`core/diarize/diarize_sherpa.{hpp,cpp}` in
+> `whisperx_core_audio`, pImpl) = pyannote-segmentation-3.0 + **wespeaker_en_voxceleb
+> CAM++** embedding (512-dim) + cosine **FastClustering**, behind the **`diarize`** token;
+> pyannote `community-1` stays the **default oracle**. `whisperx/diarize_sherpa.py`
+> (`SherpaDiarizationPipeline`) emits the **same `[segment,label,speaker,start,end]`
+> DataFrame** (cluster int → `SPEAKER_xx`) so `assign_word_speakers` + callers are
+> untouched; `return_embeddings` via a **second `SpeakerEmbeddingExtractor` pass** (the
+> diarization result has none). `diarize.py::DiarizationPipeline` facades under
+> `_core_diarize_enabled()` (`__init__` builds `self._impl`, `__call__` delegates).
+> **Speaker count → FastClustering `num_clusters`** precedence `num→max→min→auto` (no
+> native min/max range; `num_clusters` is a clustering *target*, final count may be fewer).
+> **Assets:** `golden/mirror_diarize_onnx.py` re-hosts + sha-pins the two ONNX (already
+> ONNX — no torch export; MIT + Apache-2.0) to `KonstantK/diarize-onnx-sherpa`; resolver
+> order = local dir (`WHISPERX_DIARIZE_ONNX_DIR`) → mirror → sherpa official releases
+> (cached). **A/B gate (not parity):** the synthetic dialogs are hard — community-1 itself
+> scores DER ≈ 32/32/64 % with the wrong count on them; sherpa is comparable (≈ 43/32/45 %).
+> `bindings/test/test_diarize_sherpa.py` gates **DER ≤ 0.70** vs CC0 RTTM (regression
+> bound), ≥ 2 speakers, the assign-glue contract, embedding dim — 5/5 on en/de/ru. Gates:
+> pytest 226 green across `{unset, diarize, db,edits,vad,align,assign,diarize}`; seam green
+> under `diarize`; dep-free build unaffected; CI torch-free `SherpaDiarizer` smoke.
+> **Still open:** only the **whisper.cpp/GGML** ASR backend (4a follow-on).
 
 ### Context
 Swap the two remaining models. **Whisper** moves to a **pluggable ASR backend**

@@ -175,3 +175,41 @@ jobs:
           assert lang == "en", lang
           assert text, "empty transcription"
           PY
+
+      # Phase 4 / 4b: cache + fetch the sherpa diarization ONNX (pyannote-seg-3.0 +
+      # wespeaker_en CAM++) and smoke the native SherpaDiarizer path. Torch-free
+      # (reads a 16 kHz golden dialog via stdlib `wave`) so it stays in this
+      # no-`whisperx` lane; the DER/glue A/B gate (test_diarize_sherpa.py) runs in the
+      # whisperx-installed lane / locally with WHISPERX_DIARIZE_ONNX_DIR set.
+      - name: Cache sherpa diarization ONNX
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: diarize-onnx
+          key: sherpa-diarize-onnx-v1
+      - name: Diarization (sherpa) smoke
+        run: |
+          mkdir -p diarize-onnx
+          if [ ! -d diarize-onnx/sherpa-onnx-pyannote-segmentation-3-0 ]; then
+            curl -fsSL https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2 \
+              | tar xj -C diarize-onnx
+          fi
+          if [ ! -f diarize-onnx/wespeaker_en_voxceleb_CAM++.onnx ]; then
+            curl -fsSL -o diarize-onnx/wespeaker_en_voxceleb_CAM++.onnx \
+              https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx
+          fi
+          PYTHONPATH=build uv run --no-project --with numpy python - <<'PY'
+          import glob, wave
+          import numpy as np
+          import whisperx_core as w
+          seg = glob.glob("diarize-onnx/sherpa-onnx-pyannote-segmentation-3-0/*.onnx")[0]
+          emb = "diarize-onnx/wespeaker_en_voxceleb_CAM++.onnx"
+          wf = wave.open("golden/clips/en_dialog.wav", "rb")
+          pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+          audio = (pcm.astype(np.float32) / 32768.0)
+          m = w.SherpaDiarizer(segmentation=seg, embedding=emb, num_threads=2)
+          segs = m.diarize(audio, 0)
+          n_spk = len({s["speaker"] for s in segs})
+          print(f"turns={len(segs)} speakers={n_spk} embed_dim={m.embedding_dim()}")
+          assert n_spk >= 2, n_spk
+          assert m.embedding_dim() > 0
+          PY

@@ -37,6 +37,7 @@
 #include "asr/whisper_sherpa.hpp"
 #include "audio/decode.hpp"
 #include "audio/vad_silero.hpp"
+#include "diarize/diarize_sherpa.hpp"
 #endif
 
 namespace py = pybind11;
@@ -648,6 +649,70 @@ void bind_audio(py::module_& m) {
             },
             py::arg("audio"),
             "Whisper language ID over the first 30 s -> bare code (e.g. 'en').");
+
+    // Native speaker diarization under ORT (Phase 4 / 4b). Wraps sherpa-onnx's
+    // OfflineSpeakerDiarization (pyannote-seg-3.0 + CAM++ + FastClustering); the
+    // Python diarize_sherpa facade builds the same DataFrame the pyannote path
+    // returns. A/B (not parity) with community-1 — judged by speaker-count + DER.
+    py::class_<whisperx::diarize::SherpaDiarizer>(m, "SherpaDiarizer")
+        .def(py::init<const std::string&, const std::string&, int,
+                      const std::string&, float, float, float>(),
+             py::arg("segmentation"), py::arg("embedding"),
+             py::arg("num_threads") = 1, py::arg("provider") = "cpu",
+             py::arg("threshold") = 0.5f, py::arg("min_duration_on") = 0.3f,
+             py::arg("min_duration_off") = 0.5f)
+        .def(
+            "diarize",
+            [](whisperx::diarize::SherpaDiarizer& self,
+               const py::array_t<float, py::array::c_style |
+                                            py::array::forcecast>& audio,
+               int num_clusters) {
+                if (audio.ndim() != 1)
+                    throw std::invalid_argument(
+                        "audio must be a 1-D float32 array");
+                whisperx::audio::AudioBuffer buf;
+                buf.samples.assign(audio.data(), audio.data() + audio.size());
+                auto segs = self.diarize(buf, num_clusters);
+                py::list out;
+                for (const auto& s : segs) {
+                    py::dict d;
+                    d["start"] = s.start;
+                    d["end"] = s.end;
+                    d["speaker"] = s.speaker;
+                    out.append(std::move(d));
+                }
+                return out;
+            },
+            py::arg("audio"), py::arg("num_clusters") = 0,
+            "Diarize a float32 waveform -> list of {start, end, speaker:int}. "
+            "num_clusters>0 forces exactly that many speakers; <=0 = auto.")
+        .def(
+            "embeddings",
+            [](whisperx::diarize::SherpaDiarizer& self,
+               const py::array_t<float, py::array::c_style |
+                                            py::array::forcecast>& audio,
+               const py::list& segments) {
+                if (audio.ndim() != 1)
+                    throw std::invalid_argument(
+                        "audio must be a 1-D float32 array");
+                whisperx::audio::AudioBuffer buf;
+                buf.samples.assign(audio.data(), audio.data() + audio.size());
+                std::vector<whisperx::diarize::DiarSegment> segs;
+                for (const auto& item : segments) {
+                    auto d = item.cast<py::dict>();
+                    segs.push_back({d["start"].cast<double>(),
+                                    d["end"].cast<double>(),
+                                    d["speaker"].cast<int>()});
+                }
+                auto emb = self.embeddings(buf, segs);
+                py::dict out;
+                for (auto& [spk, vec] : emb) out[py::int_(spk)] = vec;
+                return out;
+            },
+            py::arg("audio"), py::arg("segments"),
+            "Per-speaker mean embedding over its turns -> {speaker:int: list[float]}.")
+        .def("embedding_dim", &whisperx::diarize::SherpaDiarizer::embedding_dim,
+             "Embedding dimensionality of the extractor model.");
 }
 #endif
 
