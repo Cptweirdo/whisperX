@@ -4,7 +4,12 @@ The transcript view lets a user edit a whole speaker *turn* (a contiguous run of
 same-speaker segments). Editing collapses that range into one segment and splices
 it back; the original result is never mutated, and an overlay keeps the edited state
 plus the last 100 deltas for undo. These tests pin the structural transform
-(`app.edits`), its persistence (`app.store`), and the rendered markup (`app.render`).
+(`app.edits`) and its persistence (`app.store`).
+
+Markup rendering moved to the Svelte SPA (the server now ships pre-grouped turn
+*data* via ``server.py::_build_turns``, covered by ``tests/test_api.py``), so the
+old server-rendered-HTML assertions are gone; the turn-grouping + index-alignment
+contract that fed them is pinned here against ``edits.group_turns`` directly.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from app.edits import (
     realign_words,
     undo_last,
 )
-from app.render import render_transcript
+from app.render import resolve_label
 from app.store import SessionStore
 
 
@@ -453,67 +458,37 @@ def test_edit_trims_outer_whitespace_keeps_inner(diarized):
     assert new_segments[0]["text"] == "a   b"
 
 
-# --- render integration ------------------------------------------------------
+# --- turn grouping + index alignment (the contract _build_turns/SPA renders) -
+# Markup is the SPA's job now; what the server still owes the client is stable
+# turn *indices* from group_turns (the SPA edits by turn.index) and resolved
+# speaker labels. Those are pinned here Flask-free; the JSON shape sits in
+# tests/test_api.py.
 
-def test_render_emits_data_turn(diarized):
-    html = render_transcript({"segments": diarized})
-    assert 'data-turn="0"' in html
-    assert 'data-turn="1"' in html
-    assert 'data-turn="2"' in html
-
-
-def test_render_edited_turn_is_single_seg_span(diarized):
-    segs, _ = apply_turn_edit(diarized, 0, "Collapsed line.")
-    html = render_transcript({"segments": segs})
-    # The edited turn renders as ONE timed span carrying the segment bounds.
-    assert html.count('data-start="0.000"') == 1
-    assert 'data-start="0.000" data-end="2.000">Collapsed line.</span>' in html
-
-
-def test_render_appended_word_keeps_timed_spans(diarized):
-    # Adding a word must NOT collapse the turn to one untimed span: the surviving
-    # words keep their data-start spans and only the new word is plain.
-    segs, _ = apply_turn_edit(diarized, 0, "Hello there. How are you? Right.")
-    html = render_transcript({"segments": [segs[0]]})  # just the edited turn
-    # All six words are timed: five originals + the interpolated typed word.
-    assert html.count("data-start=") == 6
-    assert 'data-start="0.000"' in html and 'data-start="1.700"' in html
-    assert ">Right.</span>" in html
-
-
-def test_render_speaker_override_survives_edit(diarized):
-    segs, _ = apply_turn_edit(diarized, 0, "Edited.")
-    html = render_transcript({"segments": segs}, {"SPEAKER_00": "Alice"})
-    assert "Alice" in html                              # rename overlay still applies
-
-
-def test_render_skips_empty_turn_without_renumbering():
-    # A diarized-but-empty middle turn is omitted from the DOM, but the turns after it
-    # keep their group_turns index — so editing by that index still hits the right
-    # segment. This is the render/edit-index alignment guarantee.
+def test_empty_middle_turn_keeps_its_index_so_edits_stay_aligned():
+    # A diarized-but-empty middle turn is dropped from the rendered output, but it
+    # still consumes a group_turns index — so the trailing turn is index 2, and
+    # editing by that index must hit the trailing segment, not the empty one. This
+    # is the edit-index alignment guarantee the SPA depends on.
     segs = [_seg(0, 1, "hi", "SPEAKER_00"),
-            _seg(1, 2, "", "SPEAKER_01"),       # empty -> not rendered, but is turn 1
+            _seg(1, 2, "", "SPEAKER_01"),       # empty, but still turn 1
             _seg(2, 3, "bye", "SPEAKER_00")]    # -> turn 2
-    html = render_transcript({"segments": segs})
-    assert 'data-turn="0"' in html
-    assert 'data-turn="1"' not in html          # skipped (no visible text)
-    assert 'data-turn="2"' in html
-    # The index the DOM exposes (2) edits the trailing segment, not the empty one.
+    assert [t.index for t in group_turns(segs)] == [0, 1, 2]
     new_segments, _ = apply_turn_edit(segs, 2, "BYE")
     assert new_segments[2]["text"] == "BYE"
     assert new_segments[0] == segs[0] and new_segments[1] == segs[1]
 
 
-def test_render_empty_transcript():
-    assert "No speech detected" in render_transcript({"segments": []})
+def test_speaker_override_resolves_on_edited_turn(diarized):
+    # After an edit the speaker key is preserved, so a rename overlay still resolves.
+    segs, _ = apply_turn_edit(diarized, 0, "Edited.")
+    label = resolve_label(group_turns(segs)[0].speaker, {"SPEAKER_00": "Alice"})
+    assert label == "Alice"
 
 
-def test_render_escapes_edited_text(diarized):
-    # Edited text is user input and must be HTML-escaped, not injected raw.
-    segs, _ = apply_turn_edit(diarized, 0, '<script>alert("x")</script>')
-    html = render_transcript({"segments": segs})
-    assert "<script>alert" not in html
-    assert "&lt;script&gt;" in html
+def test_unlabelled_speakers_get_stable_default_labels(diarized):
+    # No overrides -> deterministic "Speaker N" labels in first-appearance order.
+    labels = [resolve_label(t.speaker, {}) for t in group_turns(diarized)]
+    assert labels == ["Speaker 1", "Speaker 2", "Speaker 1"]
 
 
 # --- store: overlay persistence ---------------------------------------------
@@ -638,55 +613,61 @@ def test_store_unicode_round_trips(tmp_path, diarized):
 # --- end-to-end: a realistic editing session --------------------------------
 
 def test_end_to_end_editing_session(tmp_path, diarized):
-    """Walk the full stack (store + edits + render, no Flask) through the common
-    operations a user performs: edit, re-render, rename a speaker, undo, delete a
-    turn (with re-merge), undo the delete — and verify the original is never touched."""
+    """Walk the full stack (store + edits, no Flask) through the common operations a
+    user performs: edit, rename a speaker, undo, delete a turn (with re-merge), undo
+    the delete — and verify the original is never touched. Asserts on the overlaid
+    *data* (current_segments + group_turns + resolve_label), which is exactly what
+    server.py::_build_turns hands the SPA to render."""
     store, sid = _make_store(tmp_path, diarized)
     original = copy.deepcopy(diarized)
 
-    def body():
+    def cur():
         result = store.load_result(sid)
-        segs = store.current_segments(sid, result["segments"])
-        return render_transcript({"segments": segs}, store.get_speaker_names(sid))
+        return store.current_segments(sid, result["segments"])
+
+    def text():
+        return " ".join(s["text"] for s in cur())
+
+    def labels():
+        names = store.get_speaker_names(sid)
+        return [resolve_label(t.speaker, names) for t in group_turns(cur())]
 
     # 0) Pristine view: original text, three turns, no overlay yet.
-    html = body()
-    assert "Hello there." in html and "Fine thanks." in html
+    assert "Hello there." in text() and "Fine thanks." in text()
     assert store.load_edits(sid) is None
 
-    # 1) Edit the opening (multi-segment) turn -> collapses to one timed span.
+    # 1) Edit the opening (multi-segment) turn -> collapses to one segment-timed span.
     store.save_turn_edit(sid, 0, "Hi, how is it going?")
-    html = body()
-    assert "Hi, how is it going?" in html
-    assert "Hello there." not in html
-    assert 'data-start="0.000" data-end="2.000">' in html   # segment-level timing
+    assert "Hi, how is it going?" in text()
+    assert "Hello there." not in text()
+    edited = cur()[0]
+    assert (edited["start"], edited["end"]) == (0.0, 2.0)   # segment-level timing
+    assert edited["words"] == []
     assert store.edit_history_len(sid) == 1
 
     # 2) Edit the SPEAKER_01 turn. Indices shifted (4 segs -> 3): it's now turn 1.
     store.save_turn_edit(sid, 1, "All good here.")
-    assert "All good here." in body()
+    assert "All good here." in text()
     assert store.edit_history_len(sid) == 2
 
     # 3) Rename a speaker — the override still resolves on edited turns.
     store.set_speaker_name(sid, "SPEAKER_00", "Alice")
-    assert "Alice" in body()
+    assert "Alice" in labels()
 
     # 4) Undo the last edit -> SPEAKER_01 text comes back; one delta left.
     store.undo_turn_edit(sid)
-    html = body()
-    assert "Fine thanks." in html
-    assert "All good here." not in html
+    assert "Fine thanks." in text()
+    assert "All good here." not in text()
     assert store.edit_history_len(sid) == 1
 
     # 5) Delete a turn: empty-edit the trailing "Good." turn (now turn 2).
     store.save_turn_edit(sid, 2, "")
-    html = body()
-    assert "Good." not in html
+    assert "Good." not in text()
     assert store.edit_history_len(sid) == 2
 
     # 6) Undo the delete -> "Good." restored.
     store.undo_turn_edit(sid)
-    assert "Good." in body()
+    assert "Good." in text()
 
     # Throughout, the original transcript.json was never mutated.
     assert store.load_result(sid)["segments"] == original

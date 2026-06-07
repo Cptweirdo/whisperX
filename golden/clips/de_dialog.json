@@ -1,0 +1,84 @@
+{
+  "uri": "de_dialog",
+  "lang": "de",
+  "n_speakers": 4,
+  "n_turns": 8,
+  "duration_s": 65.152,
+  "gap_s": 0.4,
+  "seed": 0,
+  "corpus": "sps-corpus-3.0-2026-03-09-de",
+  "turns": [
+    {
+      "speaker": "SPK0",
+      "client_id": "6e19c5438076b899",
+      "start": 0.0,
+      "end": 9.288,
+      "gender": "female_feminine",
+      "audio_file": "spontaneous-speech-de-78298.mp3",
+      "text": "In meiner Wohnung stehen die Bücher im Wohnzimmer und im Arbeitszimmer. Auch in der Küche finden sich die Kochbücher."
+    },
+    {
+      "speaker": "SPK1",
+      "client_id": "c965a49b306662f8",
+      "start": 9.688,
+      "end": 14.224,
+      "gender": "",
+      "audio_file": "spontaneous-speech-de-72281.mp3",
+      "text": "Welches Werkzeug benutzt du gerne im Haushalt und warum?"
+    },
+    {
+      "speaker": "SPK2",
+      "client_id": "5c6dcdff9cf0654a",
+      "start": 14.624,
+      "end": 24.812,
+      "gender": "female_feminine",
+      "audio_file": "spontaneous-speech-de-71325.mp3",
+      "text": "Wenn ich ein Tier wäre, würde ich eine Rauchschwalbe sein wollen, weil die so wunderschön singen, wenn sie aus Ihrem Winter in Afrika zurückkommen."
+    },
+    {
+      "speaker": "SPK3",
+      "client_id": "e7bc343c81c79090",
+      "start": 25.212,
+      "end": 35.58,
+      "gender": "male_masculine",
+      "audio_file": "spontaneous-speech-de-72176.mp3",
+      "text": "Am liebsten mag ich den Herbst. Und zwar den Anfang des Herbstes, weil es noch angenehm warm ist und gleichzeitig noch nicht kalt."
+    },
+    {
+      "speaker": "SPK0",
+      "client_id": "6e19c5438076b899",
+      "start": 35.98,
+      "end": 43.576,
+      "gender": "female_feminine",
+      "audio_file": "spontaneous-speech-de-78289.mp3",
+      "text": "Wenn ich ein weiteres Zimmer geschenkt bekäme, würde ich es als Sport- und Gymnastikraum nutzen."
+    },
+    {
+      "speaker": "SPK1",
+      "client_id": "c965a49b306662f8",
+      "start": 43.976,
+      "end": 48.224,
+      "gender": "",
+      "audio_file": "spontaneous-speech-de-72265.mp3",
+      "text": "Wenn du ein Tier wärst, welches wärst du und warum?"
+    },
+    {
+      "speaker": "SPK2",
+      "client_id": "5c6dcdff9cf0654a",
+      "start": 48.624,
+      "end": 53.196,
+      "gender": "female_feminine",
+      "audio_file": "spontaneous-speech-de-71331.mp3",
+      "text": "Ich persönlich fahre am liebsten ans Meer."
+    },
+    {
+      "speaker": "SPK3",
+      "client_id": "e7bc343c81c79090",
+      "start": 53.596,
+      "end": 65.152,
+      "gender": "male_masculine",
+      "audio_file": "spontaneous-speech-de-72179.mp3",
+      "text": "Ich lebe in der Nähe der Nordseeküste und gefühlt gibt es immer Wind. Mal mehr, mal weniger."
+    }
+  ]
+}

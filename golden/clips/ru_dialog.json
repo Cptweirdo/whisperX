@@ -1,0 +1,84 @@
+{
+  "uri": "ru_dialog",
+  "lang": "ru",
+  "n_speakers": 4,
+  "n_turns": 8,
+  "duration_s": 66.7,
+  "gap_s": 0.4,
+  "seed": 0,
+  "corpus": "sps-corpus-3.0-2026-03-09-ru",
+  "turns": [
+    {
+      "speaker": "SPK0",
+      "client_id": "330954bdb6de06d8",
+      "start": 0.0,
+      "end": 8.208,
+      "gender": "",
+      "audio_file": "spontaneous-speech-ru-71379.mp3",
+      "text": "Из всех социальных сетей я больше всего предпочитаю Твиттер, просто потому что в нём быстрее и проще всего оставлять записи."
+    },
+    {
+      "speaker": "SPK1",
+      "client_id": "f660b73844d7d5d9",
+      "start": 8.608,
+      "end": 19.624,
+      "gender": "",
+      "audio_file": "spontaneous-speech-ru-79139.mp3",
+      "text": "Я скорее из тех, кому вечно холодно, потому что я даже с-с я даже летом хожу с кофтой."
+    },
+    {
+      "speaker": "SPK2",
+      "client_id": "1c1ee5fe7f56aed4",
+      "start": 20.024,
+      "end": 24.812,
+      "gender": "",
+      "audio_file": "spontaneous-speech-ru-72019.mp3",
+      "text": "В выходные я встаю где-то часов в пять-шесть."
+    },
+    {
+      "speaker": "SPK3",
+      "client_id": "8bb48c98a8a021ca",
+      "start": 25.212,
+      "end": 30.612,
+      "gender": "female_feminine",
+      "audio_file": "spontaneous-speech-ru-71596.mp3",
+      "text": "Какие качества я больше всего ценю в людях? Искренность и честность."
+    },
+    {
+      "speaker": "SPK0",
+      "client_id": "330954bdb6de06d8",
+      "start": 31.012,
+      "end": 38.932,
+      "gender": "",
+      "audio_file": "spontaneous-speech-ru-71382.mp3",
+      "text": "Какие изменения в природе вы замечаете с приходом весны? Я замечаю, как почки набухают на деревьях."
+    },
+    {
+      "speaker": "SPK1",
+      "client_id": "f660b73844d7d5d9",
+      "start": 39.332,
+      "end": 45.02,
+      "gender": "",
+      "audio_file": "spontaneous-speech-ru-78940.mp3",
+      "text": "Я спец в трате денег. Однозначно."
+    },
+    {
+      "speaker": "SPK2",
+      "client_id": "1c1ee5fe7f56aed4",
+      "start": 45.42,
+      "end": 55.14,
+      "gender": "",
+      "audio_file": "spontaneous-speech-ru-72017.mp3",
+      "text": "Я определённо склонен считать, что вещи, которые могут приносить тебе радость и счастье, можно купить за деньги."
+    },
+    {
+      "speaker": "SPK3",
+      "client_id": "8bb48c98a8a021ca",
+      "start": 55.54,
+      "end": 66.7,
+      "gender": "female_feminine",
+      "audio_file": "spontaneous-speech-ru-71600.mp3",
+      "text": "Моей работе свойственна работа с людьми. Я люблю угадывать настроения людей и смешивать напитки таким образом, чтобы они им точно понравились. Я работаю бариста."
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "clips": {
+    "de_dialog": {
+      "corpus": "sps-corpus-3.0-2026-03-09-de",
+      "duration_s": 65.152,
+      "file": "clips/de_dialog.wav",
+      "n_speakers": 4,
+      "note": "DE SYNTHETIC 4-speaker dialog (CV-SPS concat) - diarization",
+      "rttm": "clips/de_dialog.rttm",
+      "rttm_sha256": "954c2b33193231fe3c536cb253c3e6fe2fbd78c9217308f4b7ceb24bfdf06914",
+      "sample_rate": 16000,
+      "seed": 0,
+      "sha256": "0f3fcbcb720efa11683062efcc366d7334330fcae6b2dd2b75410e5cfaa48e5a",
+      "synthetic": true,
+      "transcript": "clips/de_dialog.json"
+    },
+    "en_dialog": {
+      "corpus": "sps-corpus-3.0-2026-03-09-en",
+      "duration_s": 60.76,
+      "file": "clips/en_dialog.wav",
+      "n_speakers": 4,
+      "note": "EN SYNTHETIC 4-speaker dialog (CV-SPS concat) - diarization",
+      "rttm": "clips/en_dialog.rttm",
+      "rttm_sha256": "3b781fa283aec2ab907c208f59c1760bc52d6d6faa1a9f107f1a9d47746ba2d5",
+      "sample_rate": 16000,
+      "seed": 0,
+      "sha256": "b37c4ee6efa4f1c20c3939aa41b1b929d769b81fe97c94e2fbff9fb09956c9b8",
+      "synthetic": true,
+      "transcript": "clips/en_dialog.json"
+    },
+    "en_libri": {
+      "config": "clean",
+      "file": "clips/en_libri.wav",
+      "id": "6930-75918-0000",
+      "index": 0,
+      "note": "EN single-speaker, torchaudio align loader",
+      "revision": "main",
+      "sample_rate": 16000,
+      "sha256": "746c756a0b42872638c5f4bb5a8e282ca113bcdaf786bc54591d745dbed96f47",
+      "source_repo": "openslr/librispeech_asr",
+      "speaker_id": 6930,
+      "split": "test",
+      "text": null
+    },
+    "ru_cv_71085": {
+      "audio_id": "71085",
+      "duration_s": 8.39,
+      "file": "clips/ru_cv_71085.wav",
+      "gender": "female_feminine",
+      "note": "RU single-speaker (CV Spontaneous Speech) - HF align loader + Cyrillic",
+      "sample_rate": 16000,
+      "sha256": "1b7cbba4525e4f934bfa1c06c788c817d3465a3b8153d3d27830959618991624",
+      "source": "mozilla common-voice sps-corpus-3.0-2026-03-09-ru (CC0)",
+      "speaker": "cb0ac3cb3d89faf6",
+      "transcription": "Наверное, фолк-музыка, рок-музыка на стыке вот этих двух направлений."
+    },
+    "ru_cv_71379": {
+      "audio_id": "71379",
+      "duration_s": 8.21,
+      "file": "clips/ru_cv_71379.wav",
+      "gender": "",
+      "note": "RU single-speaker (CV Spontaneous Speech) - HF align loader + Cyrillic",
+      "sample_rate": 16000,
+      "sha256": "2d855659e70642e0007b37c0c34c9d910fa5167e5f4e504b6da4f4c145472e80",
+      "source": "mozilla common-voice sps-corpus-3.0-2026-03-09-ru (CC0)",
+      "speaker": "330954bdb6de06d8",
+      "transcription": "Из всех социальных сетей я больше всего предпочитаю Твиттер, просто потому что в нём быстрее и проще всего оставлять записи."
+    },
+    "ru_cv_71606": {
+      "audio_id": "71606",
+      "duration_s": 9.11,
+      "file": "clips/ru_cv_71606.wav",
+      "gender": "female_feminine",
+      "note": "RU single-speaker (CV Spontaneous Speech) - HF align loader + Cyrillic",
+      "sample_rate": 16000,
+      "sha256": "bb04a6a559213b5f32a2c44417ba8d06dea4dac3e2727dfbaaea86bcbef4e359",
+      "source": "mozilla common-voice sps-corpus-3.0-2026-03-09-ru (CC0)",
+      "speaker": "8bb48c98a8a021ca",
+      "transcription": "Я очень люблю стрелялки, фэнтези. В целом, а-а, любое РПГ или хотя бы чтобы был открытый мир."
+    },
+    "ru_cv_79125": {
+      "audio_id": "79125",
+      "duration_s": 8.21,
+      "file": "clips/ru_cv_79125.wav",
+      "gender": "",
+      "note": "RU single-speaker (CV Spontaneous Speech) - HF align loader + Cyrillic",
+      "sample_rate": 16000,
+      "sha256": "b0e10a4581d7accfcb7aa34cc470eab66a3989ed2f7dfb444ab1c3af43e6ffa3",
+      "source": "mozilla common-voice sps-corpus-3.0-2026-03-09-ru (CC0)",
+      "speaker": "f660b73844d7d5d9",
+      "transcription": "Мой кот любит валяться на полу. Я - не очень. Как-то, знаете, твердовато что ли."
+    },
+    "ru_dialog": {
+      "corpus": "sps-corpus-3.0-2026-03-09-ru",
+      "duration_s": 66.7,
+      "file": "clips/ru_dialog.wav",
+      "n_speakers": 4,
+      "note": "RU SYNTHETIC 4-speaker dialog (CV-SPS concat) - diarization",
+      "rttm": "clips/ru_dialog.rttm",
+      "rttm_sha256": "e9b23ffc6161f19faa9196bcb6d7c793e63394eb60cd5360445c42b337c5a628",
+      "sample_rate": 16000,
+      "seed": 0,
+      "sha256": "3df29de88bc38a3f7fb04111420d7ac5710acf6243385f8f4dc1af0b96daaab0",
+      "synthetic": true,
+      "transcript": "clips/ru_dialog.json"
+    }
+  }
+}

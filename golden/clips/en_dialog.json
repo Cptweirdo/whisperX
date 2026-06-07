@@ -1,0 +1,84 @@
+{
+  "uri": "en_dialog",
+  "lang": "en",
+  "n_speakers": 4,
+  "n_turns": 8,
+  "duration_s": 60.76,
+  "gap_s": 0.4,
+  "seed": 0,
+  "corpus": "sps-corpus-3.0-2026-03-09-en",
+  "turns": [
+    {
+      "speaker": "SPK0",
+      "client_id": "4f3abb26a792c162",
+      "start": 0.0,
+      "end": 11.952,
+      "gender": "male_masculine",
+      "audio_file": "spontaneous-speech-en-67686.mp3",
+      "text": "I like to use a forward approach when, um, resolving an issue of someone staring at me. I like to ask, \"Oh, hi. Do I know you?\", um, or you can also ask, \"Is there something i can help with?\"."
+    },
+    {
+      "speaker": "SPK1",
+      "client_id": "090ba6517c75de05",
+      "start": 12.352,
+      "end": 19.588,
+      "gender": "male_masculine",
+      "audio_file": "spontaneous-speech-en-72063.mp3",
+      "text": "Each day when I wake up, or when I go outside I see trees."
+    },
+    {
+      "speaker": "SPK2",
+      "client_id": "9d152467262ec07a",
+      "start": 19.988,
+      "end": 28.628,
+      "gender": "",
+      "audio_file": "spontaneous-speech-en-77315.mp3",
+      "text": "Do you wear glasses? How long have you needed them? What do you need them for?"
+    },
+    {
+      "speaker": "SPK3",
+      "client_id": "730a209dd43f9eac",
+      "start": 29.028,
+      "end": 34.356,
+      "gender": "",
+      "audio_file": "spontaneous-speech-en-75452.mp3",
+      "text": "I am proud about my: humour."
+    },
+    {
+      "speaker": "SPK0",
+      "client_id": "4f3abb26a792c162",
+      "start": 34.756,
+      "end": 41.308,
+      "gender": "male_masculine",
+      "audio_file": "spontaneous-speech-en-67685.mp3",
+      "text": "I've always enjoyed studying and working with computers, in school and out of school."
+    },
+    {
+      "speaker": "SPK1",
+      "client_id": "090ba6517c75de05",
+      "start": 41.708,
+      "end": 48.548,
+      "gender": "male_masculine",
+      "audio_file": "spontaneous-speech-en-72065.mp3",
+      "text": "Japanese, Chinese... for starters, at least."
+    },
+    {
+      "speaker": "SPK2",
+      "client_id": "9d152467262ec07a",
+      "start": 48.948,
+      "end": 55.824,
+      "gender": "",
+      "audio_file": "spontaneous-speech-en-77311.mp3",
+      "text": "Who is your favorite celebrit- celebrity or actor?"
+    },
+    {
+      "speaker": "SPK3",
+      "client_id": "730a209dd43f9eac",
+      "start": 56.224,
+      "end": 60.76,
+      "gender": "",
+      "audio_file": "spontaneous-speech-en-75453.mp3",
+      "text": "Uh, maybe the children of the people dying."
+    }
+  ]
+}
