@@ -21,6 +21,26 @@ bun run build    # → ../static/spa  (served by Flask at / in production)
 
 `bun run test` runs the Vitest unit tests; `bun run check` runs svelte-check.
 
+## End-to-end tests (Playwright)
+
+`bun run test:e2e` drives the **real SPA against a seeded Flask backend** (started
+by `tests/e2e/serve.sh`, which builds the SPA, seeds a finished demo session, and
+runs `python -m app.server` single-origin). It covers the dashboard render,
+opening a transcript, reassigning a speaker (which merges adjacent turns), undo,
+and navigation — the flow also locked at the API level in `tests/test_api.py`.
+
+It needs a Python interpreter with the web deps (Flask/keyring) and a Chromium:
+
+```bash
+# PYTHON: an env where `import app.server` works (e.g. your whisperx venv).
+# PW_CHROMIUM_PATH: only when Playwright can't download its own browser
+#   (otherwise run `bunx playwright install chromium` once and omit it).
+PYTHON=/path/to/venv/bin/python \
+PW_CHROMIUM_PATH=/path/to/chrome \
+bun run test:e2e
+```
+
+
 ## Layout
 
 - `src/lib/api.ts` — typed fetch wrapper (`/api` base; XHR upload for progress).

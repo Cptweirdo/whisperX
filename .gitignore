@@ -213,3 +213,8 @@ packaging/macos/tauri/dist/*
 
 # Throwaway local venv for running the web backend without the full torch stack
 .venv-web/
+
+# Playwright e2e artifacts (app/web)
+app/web/test-results/
+app/web/playwright-report/
+app/web/.playwright/

@@ -1,11 +1,14 @@
-# WhisperX web frontend
+# WhisperX web app
 
-Minimal Flask + htmx UI for WhisperX: upload audio, run transcription + word
-alignment + (optional) speaker diarization on **CPU**, view the speaker-labelled
-transcript, and download `srt` / `vtt` / `txt` / `json`.
+A **Flask JSON API** plus a standalone **Bun + Vite + Svelte 5** single-page
+client (`app/web/`) for WhisperX: upload audio, run transcription + word alignment
++ (optional) speaker diarization, view/edit the speaker-labelled transcript,
+translate it, and download `srt` / `vtt` / `txt` / `json` / `md`.
 
 This is a standalone app that imports `whisperx` as a library. It is **not** part
-of the published `whisperx` package.
+of the published `whisperx` package. The API and SPA are same-origin: Flask serves
+the built SPA (`app/static/spa/`) at `/` and the JSON API under `/api/*`. See
+`app/web/README.md` for the client.
 
 ## Requirements
 
@@ -37,16 +40,16 @@ backend: Apple GPU/MLX on Apple Silicon, CUDA on a GPU Linux host, else CPU):
 Or do the steps manually:
 
 ```bash
-pip install -r app/requirements.txt        # in the whisperx env
-(cd app && bun install && bun run build)   # bundle frontend deps -> app/static/vendor/
-python -m app.server                        # serves on http://localhost:5000
+pip install -r app/requirements.txt          # in the whisperx env
+(cd app/web && bun install && bun run build)  # build the SPA -> app/static/spa/
+python -m app.server                          # serves on http://localhost:5000
 ```
 
-The frontend deps (Shoelace, htmx, the Literata/JetBrains Mono fonts) are
-**bundled locally** — no CDNs — by [Bun](https://bun.sh) into `app/static/vendor/`
-(gitignored). Run `bun run build` once (and after changing `app/src/` or the
-pinned versions in `app/package.json`). The Docker image builds this
-automatically, so the step above is only for local runs.
+The SPA (Svelte/Vite, deps incl. Shoelace + the Literata/JetBrains Mono fonts) is
+built by [Bun](https://bun.sh)/Vite into `app/static/spa/` (gitignored). Run
+`bun run build` once (and after changing `app/web/`), or `cd app/web && bun run
+dev` for a live dev server (Vite :5173, proxying the API/SSE to Flask :5000). The
+Docker image builds this automatically, so the step above is only for local runs.
 
 ## Run (Docker)
 
@@ -96,11 +99,9 @@ pipeline advances it pushes the current stage (`decoding` → `transcribing` →
 - `GET /sessions/<id>/events` streams `text/event-stream`: current state on
   connect, then deltas, `:` keepalive comments while idle, closing on a terminal
   event.
-- Client: shared primitives live in `static/sse.js` (`openSSE` /
-  `sseSwap` / `watchBackupConnect`), loaded by `base.html` and the standalone
-  onboarding page. A global `htmx:load` hook in `base.html` `openSSE`s one stream
-  per `[data-sse-session]` element, updates its label as stages arrive, and on a
-  terminal status fetches the final `/sessions/<id>/status` render in place.
+- Client: the SPA's `app/web/src/lib/sse.ts` (`openSSE` / `sseStream`) consumes
+  the stream. The `sessions` store opens one per in-progress row and updates it
+  reactively; on a terminal event it refreshes the row from `/api/sessions`.
 
 ## Model selection
 
@@ -123,9 +124,9 @@ HTTP API:
 
 | Method | Path | Body | Result |
 |--------|------|------|--------|
-| `GET`  | `/models` | — | `{active, diarize, models:[{name, loaded, loading, error}]}` |
-| `POST` | `/models/active` | `model=<name>` | Switch + persist the active model (warms it); `400` on unknown model |
-| `POST` | `/sessions` | `audio`, optional `model=<name>` | Per-upload model override; `400` on unknown model |
+| `GET`  | `/api/models` | — | `{active, device, diarize, models:[{name, loaded, loading, error}], …}` |
+| `POST` | `/api/models/active` | `{"model": "<name>"}` | Switch + persist the active model (warms it); `400` on unknown model |
+| `POST` | `/api/sessions` | `audio` (multipart), optional `model=<name>` | Per-upload model override; `400` on unknown model |
 
 ## Config (env vars)
 
@@ -135,7 +136,7 @@ HTTP API:
 | `WHISPERX_MODEL` | `small` | Initial default model (clients switch at runtime; the switch is persisted and takes precedence after first use) |
 | `WHISPERX_DIARIZE_MODEL` | `pyannote/speaker-diarization-community-1` | Diarization model |
 | `WHISPERX_BATCH_SIZE` | `8` | Transcription batch size |
-| `WHISPERX_MAX_UPLOAD_MB` | `200` | Upload size cap |
+| `WHISPERX_MAX_UPLOAD_MB` | `5000` | Upload size cap |
 | `PORT` | `5000` | Server port |
 | `WHISPERX_BACKUP_BACKEND` | — | Cloud backup target: `gdrive`, `local`, or unset (off). See *Cloud backup* |
 | `WHISPERX_BACKUP_INTERVAL` | `900` | Periodic auto-backup seconds (`0` disables; runs only when local data changed) |
@@ -216,27 +217,22 @@ mirror to another disk or a mounted share (also what the tests use).
   SSE clients) + `sse_response()` (the shared `text/event-stream` helper).
 - `jobs.py` — `JobQueue`: single-worker background executor over the store; emits
   terminal status to the broker.
-- `server.py` — Flask routes; `GET /sessions/<id>/events` streams live progress
-  over SSE (see *Live progress*); model endpoints `GET /models`,
-  `POST /models/active`.
-- `render.py` — result dict → speaker-grouped transcript HTML.
-- `static/sse.js` — client SSE primitives (`openSSE` / `sseSwap` /
-  `watchBackupConnect`), shared by `base.html` and onboarding.
-- `templates/` — `index.html`, `_status.html` (SSE-driven status), `_result.html`,
-  `_models.html` (active-model switcher), `partials/_model_select.html`.
-- `tests/` — frontend unit tests (`bun test`): `sse.test.ts` exercises the
-  `static/sse.js` primitives against happy-dom + a fake `EventSource`; `setup.ts`
-  / `fake-eventsource.ts` / `load-sse.ts` are the harness.
+- `server.py` — the Flask JSON API (`/api/*`), SSE streams, binary download/audio
+  routes, and the SPA catch-all that serves `static/spa/index.html`.
+- `render.py` — result dict → Markdown transcript (the `.md` export) + `resolve_label`.
+- `static/spa/` — the built SPA (gitignored; built from `app/web/`).
+- `templates/` — only the two `oauth_callback_*.html` pages, served by the
+  loopback OAuth server in `app/backup/oauth.py` (not Flask).
+- `web/` — the Svelte SPA project (see `app/web/README.md`).
 
 ## Tests
 
-Backend (Python, from the repo root): `uv run pytest tests/` — the SSE broker is
-covered by `tests/test_sse.py` (`Broker` fan-out, isolation, cleanup,
-drop-not-block backpressure, concurrency) and the backup glue by
-`tests/test_backup_server.py` (those `importorskip("flask")`).
+Backend (Python, from the repo root): `uv run pytest tests/`. The JSON API is
+covered by `tests/test_api.py` (sessions, edit/undo, speaker reassign+merge,
+turn-index parity vs `edits.group_turns`), the SSE broker by `tests/test_sse.py`,
+and the backup glue by `tests/test_backup_server.py` (these `importorskip`/skip
+when the web deps aren't installed).
 
-Frontend (TypeScript): `cd app && bun test` (or `bun run test`). `tests/sse.test.ts`
-unit-tests `static/sse.js` — `openSSE` framing + JSON-parse guard, `sseSwap`
-swap/terminal/close behavior, and `watchBackupConnect` discovery + idempotency —
-on happy-dom with a controllable fake `EventSource`. Needs `bun install` once
-(dev dep: `@happy-dom/global-registrator`); the preload is wired in `bunfig.toml`.
+Frontend: `cd app/web && bun run test` (Vitest + happy-dom) for unit tests
+(`sse.ts`, `format.ts`), and `bun run test:e2e` for the Playwright end-to-end
+suite (drives the real SPA against a seeded Flask backend — see `app/web/README.md`).

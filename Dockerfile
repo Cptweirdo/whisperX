@@ -1,4 +1,4 @@
-# CPU-only image for the WhisperX Flask/htmx frontend (app/), built with uv.
+# CPU-only image for the WhisperX Flask JSON API + Svelte SPA (app/), built with uv.
 #
 # torch is pinned to the PyTorch CPU wheel index. We use `uv pip install`
 # (not `uv sync`): pyproject's [tool.uv.sources] routes torch to the CUDA
@@ -68,7 +68,7 @@ COPY --from=assets /assets/static/spa ./app/static/spa
 EXPOSE 5000
 
 # Single worker: the JobStore, the model bundle, and the warm-up thread are all
-# process-local in-memory state. Threads handle concurrent htmx polls; the heavy
+# process-local in-memory state. Threads handle concurrent API/SSE requests; the heavy
 # job runs in app's own single-worker executor. Long startup model load -> generous timeout.
 CMD ["uv", "run", "--no-project", "gunicorn", "--bind", "0.0.0.0:5000", \
      "--workers", "1", "--threads", "8", "--timeout", "120", "app.server:app"]

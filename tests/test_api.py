@@ -98,6 +98,35 @@ def test_reassign_enrolls_new_speaker(client):
     assert "Alice" in labels
 
 
+def test_reassign_merges_adjacent_turns_and_undo_restores(client):
+    """The exact flow the browser e2e exercises: with three alternating turns
+    [SP00, SP01, SP00], reassigning the middle turn to its neighbours' speaker
+    collapses them into a single turn (enabling Undo); undo restores all three.
+    Mirrors the Playwright e2e so the data contract is locked even when the browser
+    suite can't run."""
+    alternating = [
+        {"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00", "text": "Welcome everyone",
+         "words": [{"word": "Welcome", "start": 0.0, "end": 0.5},
+                   {"word": "everyone", "start": 0.5, "end": 1.0}]},
+        {"start": 1.0, "end": 2.0, "speaker": "SPEAKER_01", "text": "Glad to be here",
+         "words": [{"word": "Glad", "start": 1.0, "end": 2.0}]},
+        {"start": 2.0, "end": 3.0, "speaker": "SPEAKER_00", "text": "Let us begin",
+         "words": [{"word": "begin", "start": 2.0, "end": 3.0}]},
+    ]
+    _make_session("s_merge", alternating)
+    before = client.get("/api/sessions/s_merge").get_json()["turns"]
+    assert [t["label"] for t in before] == ["Speaker 1", "Speaker 2", "Speaker 1"]
+
+    res = client.post("/api/sessions/s_merge/turns/1/speaker", json={"speaker": "SPEAKER_00"})
+    merged = res.get_json()
+    assert [t["label"] for t in merged["turns"]] == ["Speaker 1"]
+    assert merged["can_undo"] is True
+
+    undo = client.post("/api/sessions/s_merge/undo").get_json()
+    assert [t["label"] for t in undo["turns"]] == ["Speaker 1", "Speaker 2", "Speaker 1"]
+    assert undo["can_undo"] is False
+
+
 def test_reassign_duplicate_name_409(client):
     _make_session("s_dup", _segments())
     # "Speaker 1" already exists as the default label for SPEAKER_00.

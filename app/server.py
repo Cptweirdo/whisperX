@@ -309,11 +309,9 @@ def healthz():
     return jsonify(status="ok", models_ready=models_ready())
 
 
-# --- Backup endpoints (thin: all logic lives in BackupService) ----------------
-# --- Backup UI (partial-rendering, htmx-swapped — mirrors the HF-token card) ---
-# These power the Settings "Backup & Restore" card and the onboarding step. They
-# reuse the same BackupService as the JSON routes above, but render HTML
-# fragments so the UI follows the app's server-rendered-partial convention.
+# --- Backup helpers (thin: all logic lives in BackupService) -------------------
+# Shared by the /api/backup/* routes and the backup SSE streams; build the JSON
+# the SPA renders the Settings "Backup & Restore" card + onboarding step from.
 _PROVIDER_LABELS = {"gdrive": "Google Drive", "local": "Local folder"}
 
 
@@ -739,9 +737,9 @@ def export_markdown(session_id: str):
 
 
 # =============================================================================
-# JSON API (/api/*) — the surface the Svelte SPA consumes. These run alongside
-# the HTML routes during the migration; the Jinja/htmx routes are removed once
-# the SPA reaches parity. Binary/SSE/OAuth-callback routes stay at root.
+# JSON API (/api/*) — the surface the Svelte SPA consumes. Binary, SSE, and the
+# OAuth-callback routes stay at root; everything else is served the SPA shell by
+# the catch-all at the bottom of this file.
 # =============================================================================
 
 # Transcription-language options (auto-detect + common), mirrors the old

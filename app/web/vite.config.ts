@@ -71,5 +71,8 @@ export default defineConfig(({ command }) => ({
   test: {
     environment: "happy-dom",
     globals: true,
+    // Unit tests only; the Playwright e2e specs (tests/e2e/*.spec.ts) run via
+    // `bun run test:e2e`, not vitest.
+    include: ["tests/**/*.test.ts"],
   },
 }));
