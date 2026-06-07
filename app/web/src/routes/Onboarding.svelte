@@ -1,5 +1,5 @@
 <script lang="ts">
-  let { id }: { id?: string } = $props();
+  let props = $props();
 </script>
 
-<div class="empty"><h2>Onboarding</h2>{#if id}<p>{id}</p>{/if}</div>
+<div class="empty"><h2>Onboarding</h2><p>Coming soon.</p></div>

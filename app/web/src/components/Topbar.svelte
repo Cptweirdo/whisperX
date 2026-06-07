@@ -1,5 +1,18 @@
 <script lang="ts">
-  let { id }: { id?: string } = $props();
+  import { router } from "../lib/router.svelte";
+
+  const TABS: Record<string, string> = {
+    dashboard: "Dashboard",
+    transcript: "Transcript",
+    settings: "Settings",
+  };
+  const tab = $derived(TABS[router.current.name] ?? "Dashboard");
 </script>
 
-<div class="empty"><h2>Topbar</h2>{#if id}<p>{id}</p>{/if}</div>
+<header class="topbar">
+  <div class="topbar__tabs">
+    <span class="topbar__tab topbar__tab--active">{tab}</span>
+  </div>
+  <div style="flex:1"></div>
+  <div class="topbar__right"></div>
+</header>
