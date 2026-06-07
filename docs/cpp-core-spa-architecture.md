@@ -95,21 +95,33 @@ The C++ core lets us drop most of it. Items map to the current code in
   "Memory management"). Revisit pipelining only if single-job latency becomes a
   bottleneck.
 
-### B. Collapse four ML stacks into one runtime
+### B. Collapse ML stacks toward one runtime (ORT), with a pluggable ASR backend
 Python uses **four** inference stacks: CTranslate2 (Whisper), torch/HF (wav2vec2),
-pyannote/torch (diarization), torch.hub (silero). Run **all four on ONNX Runtime**
-(sherpa-onnx already does 3/4; add wav2vec2 as an ORT model). One runtime → one
-threading model, one memory arena, one set of EPs (Core ML/NNAPI/CUDA/DirectML).
+pyannote/torch (diarization), torch.hub (silero). Run **VAD, alignment, and
+diarization on ONNX Runtime** (sherpa-onnx already does VAD + diarization; add
+wav2vec2 as an ORT model). One runtime for those → one threading model, one memory
+arena, one set of EPs (Core ML/NNAPI/CUDA/DirectML).
 
-This also **deletes heavy transitive deps**:
+**Caveat — ASR is a pluggable backend, not folded into ORT.** ORT has **no Metal
+EP**, and Whisper-on-Apple-GPU is exactly where ORT is weak, so the existing
+**whisper.cpp/GGML (Metal)** backend stays as the Apple-Silicon ASR path (default
+remains sherpa-onnx Whisper on ORT for cross-platform). So "one runtime" really
+means **one runtime for VAD/align/diarize + a pluggable ASR engine** — and
+**one runtime ≠ one accelerator**: on Mac you get Metal for ASR (GGML) and
+CoreML-EP-or-CPU for the ORT stages. See
+[`cpp-core-migration-briefs.md`](./cpp-core-migration-briefs.md) §"Runtime &
+acceleration" for the backend interface and the Apple-Silicon acceleration map.
+
+This still **deletes heavy transitive deps**:
 
 | Drop | Replace with |
 |---|---|
 | `pandas` (alignment `:325,395`, diarize `:170`) | plain structs + loops |
 | `nltk` punkt (`alignment.py:189`) | ICU / small punctuation-rule splitter |
-| `torch`, `torchaudio`, `transformers`, `faster-whisper`, `ctranslate2`, `pyannote-audio` | ORT + sherpa-onnx |
+| `torch`, `torchaudio`, `transformers`, `faster-whisper`, `ctranslate2`, `pyannote-audio` | ORT + sherpa-onnx (+ whisper.cpp/GGML for the Metal ASR backend) |
 
-Dependency graph shrinks from dozens of packages to ≈ **ORT + audio decoder + your code**.
+Dependency graph shrinks from dozens of packages to ≈ **ORT + sherpa-onnx +
+whisper.cpp + audio decoder + your code**.
 
 ### C. Make alignment efficient (the un-optimized stage)
 Alignment carries an explicit `TODO: ...batched inference here` (`alignment.py:245`)

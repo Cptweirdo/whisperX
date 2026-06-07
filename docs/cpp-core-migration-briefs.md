@@ -283,17 +283,24 @@ run to completion." It is the recommended Phase 3 approach: **batch inference
 ## Phase 4 — ASR (sherpa/ORT) + diarize + assign
 
 ### Context
-Swap the two remaining models. **CTranslate2 Whisper → sherpa-onnx Whisper (ORT)**;
-**pyannote diarization → sherpa-onnx** (`pyannote-segmentation-3.0` + CAM++).
-Then port the speaker-assignment glue. Source: `asr.py:31` (`WhisperModel`),
-`:106` (`FasterWhisperPipeline`), `:325` (`load_model`), `:417-445`
-(`default_asr_options`); `diarize.py:14` (`IntervalTree`), `:91`
-(`DiarizationPipeline`, default gated `community-1`), `:185`
-(`assign_word_speakers`), `:170` (pandas DataFrame).
+Swap the two remaining models. **Whisper** moves to a **pluggable ASR backend**
+(default sherpa-onnx Whisper on ORT; **whisper.cpp/GGML for Apple-Silicon Metal** —
+see §"Runtime & acceleration"); **pyannote diarization → sherpa-onnx**
+(`pyannote-segmentation-3.0` + CAM++). Then port the speaker-assignment glue.
+Source: `asr.py:31` (`WhisperModel`), `:106` (`FasterWhisperPipeline`), `:325`
+(`load_model`), `:417-445` (`default_asr_options`); `diarize.py:14`
+(`IntervalTree`), `:91` (`DiarizationPipeline`, default gated `community-1`),
+`:185` (`assign_word_speakers`), `:170` (pandas DataFrame).
 
 ### Goals
-- **sherpa-onnx Whisper** emitting `TranscriptionResult` (`segments` text +
-  `language` + `avg_logprob`), fed the Phase-2 VAD chunks; language detection.
+- An **ASR backend interface** producing `TranscriptionResult` (`segments` text +
+  `language` + `avg_logprob`) from the Phase-2 VAD chunks, with two
+  implementations: **sherpa-onnx Whisper (ORT)** default, **whisper.cpp/GGML**
+  (Metal/CUDA/CPU). The backend produces **text only** — word timestamps still come
+  from the ORT wav2vec2 aligner (Phase 3), never whisper.cpp's DTW. Likely
+  **supersedes the current `mlx` backend** as the Apple path.
+- Backend selection wired to the existing `device` setting
+  (`cpu`/`cuda`/`mlx`/`whispercpp` → ORT vs GGML), with language detection.
 - **sherpa-onnx diarization** → turns (`start`/`end`/`speaker`), replacing the
   pyannote DataFrame with structs.
 - Port **`IntervalTree`** (sorted arrays + binary search, O(log n)) and
@@ -309,12 +316,17 @@ Then port the speaker-assignment glue. Source: `asr.py:31` (`WhisperModel`),
 - Bench RTF for ASR + diarization recorded.
 
 ### Unknowns / open questions
-- **Whisper decode parity is NOT byte-exact** — CTranslate2 and sherpa-onnx ORT are
-  different decoders; tokens, segmentation, and `avg_logprob` will differ. "Segment
-  text == golden" is likely **too strict**. Options: (a) compare via WER/CER
-  threshold, (b) regenerate ASR goldens with sherpa-onnx and treat *it* as the
-  reference for downstream stages, (c) both. **Decide before building the
+- **Whisper decode parity is NOT byte-exact — across *three* decoders now.**
+  CTranslate2 (today), sherpa-onnx ORT, and whisper.cpp/GGML each produce different
+  tokens/segmentation/`avg_logprob`. "Segment text == golden" is **too strict**.
+  Strategy (reinforced by the pluggable backend): **golden-test align/diarize/writers
+  against a *fixed* transcript input** (decoupled from the ASR engine) and validate
+  each ASR backend by **WER/CER, not bytes**. **Decide before building the
   validation.**
+- **ASR backend selection + parity between backends** — sherpa-onnx vs whisper.cpp
+  won't agree segment-for-segment either; the orchestrator picks per `device`, and
+  each is quality-gated independently. Confirm the GGML CMake/Metal-shader build cost
+  is acceptable.
 - **`default_asr_options` parity** — beam size, temperature fallback, patience,
   suppress tokens, `chunk_size=30`, `batch_size`. Which map onto sherpa-onnx, and
   which don't exist there?
@@ -409,12 +421,69 @@ alignment, models-resident + pipelining) rather than assert them.
 - **Device matrix** — CI realistically covers desktop CPU (maybe one GPU). Mobile
   NNAPI/ANE and desktop CUDA/DirectML can't be CI-gated — do those get manual
   benchmark runs, and how are their RTFs captured for ETA?
+- **Apple-Silicon acceleration bench** — the decisive measurement from
+  §"Runtime & acceleration": **diarization CoreML-EP vs CPU** (heaviest stage,
+  loses MPS under ORT), plus whisper.cpp-Metal ASR and CPU alignment. Manual
+  Apple-Silicon bench run; decides whether to ship the CoreML-EP ORT build.
 - **Cold vs warm** — first-run model load vs steady state; which RTF feeds the ETA,
   and how is model-load time accounted separately (it's the `loading_align` stage)?
 - **Surfacing measured RTF** — bake constants at build time, ship a config table,
   or measure-and-adapt at runtime per device?
 
 ---
+
+## Runtime & acceleration (committed decision + findings)
+
+> **Decision.** ORT/sherpa-onnx is the runtime for **VAD, alignment, diarization**;
+> **ASR is a pluggable backend** — sherpa-onnx Whisper (ORT) as the cross-platform
+> default, **whisper.cpp/GGML (Metal)** as the Apple-Silicon path. "One runtime"
+> means *one runtime for the non-ASR stages plus a pluggable ASR engine*, and
+> **one runtime ≠ one accelerator.**
+
+### Why ASR stays pluggable (not folded into ORT)
+ORT has **no Metal EP**; on Apple GPU its only lever is the **CoreML EP**, and
+Whisper is awkward under CoreML (autoregressive decode, dynamic shapes), so
+sherpa-onnx Whisper on Mac tends to fall to **CPU**. **whisper.cpp/GGML has
+hand-tuned Metal kernels** for Whisper and is **already in production** in the app
+(the `device` setting already carries `whispercpp`/`mlx`). Dropping it to satisfy
+"one runtime" would be a real Mac regression. GGML is Whisper-specific, so it
+**cannot** run the other models — they stay on ORT. The ASR backend produces
+**text only**; word timestamps always come from the ORT wav2vec2 aligner. In the
+C++ core, whisper.cpp/GGML likely **supersedes the `mlx` backend**, so Apple-Silicon
+ASR consolidates onto one engine (net: `{ORT, whisper.cpp}`, *simpler* than today's
+`{cpu, cuda, mlx, whispercpp}`).
+
+### Apple-Silicon acceleration map (the finding)
+Default reality: sherpa-onnx usually ships **CPU-only ORT**, so the non-ASR stages
+are **CPU unless** ORT is built with the CoreML EP *and* it's enabled (even then
+coverage is partial — unsupported ops fall back to CPU). Stage by stage, against
+what the current Python app does on Apple Silicon (`_torch_device` → MPS for
+VAD/diarize; `_align_device` **forces alignment to CPU** via the MPS conv1d limit):
+
+| Stage | RTF | Today (Apple Silicon) | New core (ORT) | Verdict |
+|---|---|---|---|---|
+| **VAD** (silero) | tiny | torch→MPS | CoreML-EP / CPU | **Non-issue** — trivial model |
+| **ASR** (Whisper) | 0.22 | whisper.cpp Metal / mlx | **whisper.cpp Metal (kept)** | **Best path preserved** |
+| **Alignment** (wav2vec2) | 0.19 | **already CPU** (MPS conv workaround) | ORT **CPU** | **Parity — no regression**; CoreML-EP an optional upside |
+| **Diarization** (pyannote-seg + CAM++) | **0.51** | torch→**MPS** | CoreML-EP / **CPU** | **The one to watch** (heaviest stage) |
+
+**The one open item: diarization.** It's the heaviest stage and the only one that
+loses today's GPU (MPS) under ORT. Whether the **CoreML EP** accelerates
+pyannote-seg/CAM++ or it runs CPU is **empirical** → a Phase 4/Phase 6 benchmark.
+Levers if CPU is too slow: (1) build/enable the **CoreML EP** for the non-ASR
+models; (2) **native Core ML conversion** of the diarization models (ANE, the
+WhisperKit/SpeakerKit route — heavier); (3) **accept CPU** (one job at a time on a
+desktop may be fine).
+
+### Open questions
+- **Diarization on Apple Silicon** — CoreML EP vs CPU for pyannote-seg + CAM++:
+  benchmark (Phase 6), decide whether to ship the CoreML-EP ORT build.
+- **CoreML-EP ORT build** — does the sherpa-onnx/ORT we bundle include the CoreML
+  EP, or do we build it? Affects VAD/align/diarize acceleration headroom.
+- **wav2vec2 via CoreML EP** — optional alignment speedup on Mac (transformer
+  encoder is more CoreML-friendly than Whisper decode); benchmark, no-regression
+  fallback to CPU.
+- **GGML build cost** — Metal-shader compilation + one more CMake dependency.
 
 ## Memory management (committed decision)
 
