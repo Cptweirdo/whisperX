@@ -95,14 +95,27 @@ Ninja + vcpkg**.
     golden clips and writes `golden/baseline.json` (per-clip hypothesis, WER/CER vs
     reference, segment/word/speaker counts, and **per-stage wall-clock + RTF**).
     Diarization uses the **vendored** community-1 checkpoint (token-free). This is
-    the timing + end-to-end baseline; it does **not yet** dump the per-stage tensor
-    intermediates (VAD chunks / CTC emissions / trellis) — those are the remaining
-    golden-generator work for the alignment/VAD phases. A first run on CPU
+    the timing + end-to-end baseline; the per-stage **tensor** intermediates are
+    dumped separately (next bullet). A first run on CPU
     (`tiny`/`int8`, 8 clips, 9 min) confirmed: **en+de align via the torchaudio
     loader, ru via the HF loader (Cyrillic path exercised)**; diarization dominates
     CPU RTF (~2.6 of ~2.9); tiny-model speaker counts drift (5/5/3 vs true 4) on the
     no-overlap synthetic dialogs — scored against the RTTM ground truth, not asserted
     exact.
+  - **Per-stage tensor dump landed: `golden/dump_goldens.py`** → `golden/intermediates/`.
+    Captures, per clip, the intermediates the C++ core is diffed against by **wrapping
+    the real `merge_chunks` / `get_trellis` / `backtrack` / `merge_repeats`** (zero
+    duplication, the exact pipeline values): merged **VAD chunks**, the **fixed
+    transcript** as its own artifact (decoupled-goldens input), per align-segment **CTC
+    emissions** (fp32 `.npz`) + tokens/blank_id + integer **backtrack path** +
+    **char-segments**, and final **word timings** (+ speaker labels for dialogs). The
+    `trellis` matrix is **not** stored (deterministically recomputable from
+    emission+tokens; the parity gate downstream is the path/char-segments) — keeps the
+    set at **~2.3 MB**, committable without LFS. `manifest.json` pins versions + sha256
+    of every artifact + the **starting tolerance budget** (`emission_atol 1e-3`, ±1
+    frame, `score 0.01`; tokens/path/char-segments/merged-chunks/speaker-labels EXACT).
+    Guarded by **`tests/test_golden_intermediates.py`** — torch-free sha256 + shape
+    consistency check (33 cases, ~0.1 s), skips when intermediates absent.
 - **CTest + Catch2** wired; **ASan + LeakSanitizer on** from the first build (per
   the memory decision); one trivial parity test green to prove the oracle loop.
 - A **CI job** skeleton beside `.github/workflows/python-compatibility.yml` that
@@ -166,8 +179,13 @@ Ninja + vcpkg**.
   separate artifact. **Done:** `golden/` holds the clips + `manifest.json`; the
   generator scripts (`fetch_datasets.py`, `synthesize_dialog.py`) and the
   end-to-end baseline (`tests/test_baseline_golden.py` → `golden/baseline.json`,
-  with per-stage timings) are committed. **Remaining:** dump the per-stage tensor
-  intermediates (VAD chunks / CTC emissions / trellis) for the align/VAD goldens.
+  with per-stage timings) are committed; the **per-stage tensor intermediates**
+  (`golden/dump_goldens.py` → `golden/intermediates/`: merged VAD chunks, CTC
+  emissions, backtrack path, char-segments, words, transcript-as-input — guarded by
+  `tests/test_golden_intermediates.py`) are committed. **Remaining:** finalize the
+  **tolerance budget** — the committed numbers (`emission_atol 1e-3` etc.) are
+  starting points; tighten to just above observed drift once a wav2vec2 ORT export
+  exists to measure torch-vs-ORT (Phase 3 prep).
 - The trivial parity test demonstrates a C++ function result matching Python.
   **Done:** `bindings/test/test_core_parity.py` — the first ported algorithm,
   `edit_distance` (WER/CER, lifted verbatim from the Python baseline), matches the

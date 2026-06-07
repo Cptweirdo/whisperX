@@ -1,0 +1,14 @@
+{
+  "merged_chunks": [
+    {
+      "start": 0.482,
+      "end": 8.67,
+      "n_segments": 2
+    }
+  ],
+  "params": {
+    "chunk_size": 30,
+    "onset": 0.5,
+    "offset": 0.363
+  }
+}
