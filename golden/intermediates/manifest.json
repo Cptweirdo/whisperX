@@ -11,8 +11,8 @@
     "generated_utc": "2026-06-07T07:42:28Z"
   },
   "tolerances": {
-    "emission_atol": 0.001,
-    "trellis_atol": 0.001,
+    "emission_atol": 0.006,
+    "trellis_atol": 0.006,
     "time_frames": 1,
     "score_atol": 0.01,
     "exact": [
@@ -21,7 +21,12 @@
       "char_segments",
       "merged_chunks",
       "speaker_labels"
-    ]
+    ],
+    "_measured": {
+      "ort_vs_torch_max": 0.0027980804443359375,
+      "source": "golden/measure_ort_tolerance.py",
+      "onnxruntime": "1.26.0"
+    }
   },
   "clips": {
     "de_dialog": {

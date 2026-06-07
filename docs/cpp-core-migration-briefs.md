@@ -56,9 +56,10 @@ Four cross-cutting facts shape every phase:
 indices **exact**; speaker labels and trellis/backtrack paths **exact**; writer
 bytes **exact *given identical input*** (not end-to-end through a different ASR);
 floating timings within **~1 frame (~20 ms)**; emission/score tensors within a
-small **fp32 epsilon**. The exact epsilon/frame numbers are a **Phase-0
-deliverable** — measured from observed torch-vs-ORT drift, not guessed (starting
-points: emissions `atol ≈ 1e-3`, timings ±1 frame, scores ±0.01).
+small **fp32 epsilon**. The exact epsilon/frame numbers were a **Phase-0
+deliverable**, now **measured** (not guessed): **`emission_atol = 0.006`** (2× the
+observed ORT-vs-torch wav2vec2 drift; see the Phase 0 brief + `tolerance_report.json`),
+timings ±1 frame, scores ±0.01.
 
 ---
 
@@ -182,10 +183,15 @@ Ninja + vcpkg**.
   with per-stage timings) are committed; the **per-stage tensor intermediates**
   (`golden/dump_goldens.py` → `golden/intermediates/`: merged VAD chunks, CTC
   emissions, backtrack path, char-segments, words, transcript-as-input — guarded by
-  `tests/test_golden_intermediates.py`) are committed. **Remaining:** finalize the
-  **tolerance budget** — the committed numbers (`emission_atol 1e-3` etc.) are
-  starting points; tighten to just above observed drift once a wav2vec2 ORT export
-  exists to measure torch-vs-ORT (Phase 3 prep).
+  `tests/test_golden_intermediates.py`) are committed. The **tolerance budget is
+  measured** (`golden/measure_ort_tolerance.py` → `tolerance_report.json`): the
+  torchaudio wav2vec2 (`WAV2VEC2_ASR_BASE_960H`) exports to **ONNX opset 17**
+  cleanly and runs under ORT; **ORT-vs-torch emission drift = max 2.8e-3 / mean
+  2.3e-4**, and cross-process **torch-vs-torch run noise ≈ 2.9e-3** (float
+  reduction-order), so exact emission byte-parity is impossible — only `atol`
+  comparison is valid. `emission_atol` set to **0.006** (2× max observed drift) in
+  `manifest.json`. This also **front-loaded the Phase-3 risk**: the wav2vec2 ONNX
+  export works and drift is small, so the alignment ONNX path is de-risked early.
 - The trivial parity test demonstrates a C++ function result matching Python.
   **Done:** `bindings/test/test_core_parity.py` — the first ported algorithm,
   `edit_distance` (WER/CER, lifted verbatim from the Python baseline), matches the
