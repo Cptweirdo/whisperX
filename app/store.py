@@ -30,7 +30,7 @@ TRANSLATION_BASENAME = f"{ARTIFACT_BASENAME}.translation"
 _COLUMNS = (
     "id", "filename", "audio_filename", "status", "stage", "error", "options",
     "language", "diarized", "model", "num_segments", "duration",
-    "translations", "created_at", "updated_at",
+    "translations", "stats", "created_at", "updated_at",
 )
 
 _SCHEMA = """
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     num_segments  INTEGER,
     duration      REAL,
     translations  TEXT,
+    stats         TEXT,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -90,6 +91,8 @@ class SessionStore:
             self._db.execute("ALTER TABLE sessions ADD COLUMN stage TEXT")
         if "translations" not in cols:
             self._db.execute("ALTER TABLE sessions ADD COLUMN translations TEXT")
+        if "stats" not in cols:
+            self._db.execute("ALTER TABLE sessions ADD COLUMN stats TEXT")
 
     @property
     def db_path(self) -> str:
@@ -347,11 +350,13 @@ class SessionStore:
         self._update(session_id, duration=duration)
 
     def mark_done(self, session_id: str, *, language: Optional[str], diarized: bool,
-                  model: str, num_segments: int, duration: float) -> None:
+                  model: str, num_segments: int, duration: float,
+                  stats: Optional[dict] = None) -> None:
         self._update(
             session_id, status="done", stage=None, error=None, language=language,
             diarized=1 if diarized else 0, model=model,
             num_segments=num_segments, duration=duration,
+            stats=json.dumps(stats) if stats else None,
         )
 
     def mark_error(self, session_id: str, message: str) -> None:
@@ -498,6 +503,12 @@ def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
             d["translations"] = json.loads(d["translations"])
         except (ValueError, TypeError):
             d["translations"] = {}
+    # Old rows predate the column → NULL → stays falsy (no stats button rendered).
+    if d.get("stats"):
+        try:
+            d["stats"] = json.loads(d["stats"])
+        except (ValueError, TypeError):
+            d["stats"] = {}
     if d.get("diarized") is not None:
         d["diarized"] = bool(d["diarized"])
     return d

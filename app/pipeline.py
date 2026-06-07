@@ -19,7 +19,9 @@ import os
 import platform
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Optional
 
@@ -200,6 +202,56 @@ def eta_seconds(stage: str, duration: Optional[float]) -> Optional[float]:
     if rtf is None or not duration:
         return None
     return rtf * duration
+
+
+_MACHINE_INFO: Optional[dict] = None
+
+
+def _machine_info() -> dict:
+    """Fingerprint the host running the pipeline (computed once, then cached).
+
+    Used to record *which machine* produced a transcription alongside its
+    per-stage timings. Every lookup is best-effort — a failure (e.g. torch not
+    importable, no GPU) records ``None`` for that field rather than raising, so
+    gathering stats can never break a job.
+    """
+    global _MACHINE_INFO
+    if _MACHINE_INFO is not None:
+        return _MACHINE_INFO
+
+    info: dict = {
+        "platform": None,
+        "arch": None,
+        "python": None,
+        "cpu_count": None,
+        "gpu": None,
+        "torch": None,
+        "whisperx": None,
+    }
+    try:
+        info["platform"] = platform.platform()
+        info["arch"] = platform.machine()
+        info["python"] = platform.python_version()
+        info["cpu_count"] = os.cpu_count()
+    except Exception:  # noqa: BLE001 - never let fingerprinting break a job
+        logger.debug("machine info: platform lookup failed", exc_info=True)
+    try:
+        import torch
+
+        info["torch"] = torch.__version__
+        if torch.cuda.is_available():
+            info["gpu"] = torch.cuda.get_device_name(0)
+    except Exception:  # noqa: BLE001 - torch missing / no GPU / driver error
+        logger.debug("machine info: torch/cuda lookup failed", exc_info=True)
+    try:
+        from importlib.metadata import version
+
+        info["whisperx"] = version("whisperx")
+    except Exception:  # noqa: BLE001 - package metadata unavailable
+        logger.debug("machine info: whisperx version lookup failed", exc_info=True)
+
+    _MACHINE_INFO = info
+    return info
 
 
 @dataclass
@@ -508,6 +560,7 @@ def run_job(
     audio_path: str,
     output_dir: str,
     *,
+    model: Optional[str] = None,
     language: Optional[str] = None,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
@@ -519,13 +572,17 @@ def run_job(
     """Run the full pipeline for one audio file.
 
     Returns the transcription result dict (segments + word_segments, with
-    ``speaker`` keys when diarization ran), plus ``duration`` (seconds) and
-    ``num_segments``. Download artifacts are written to ``output_dir`` named
-    ``<artifact_basename>.<fmt>`` so their paths are deterministic.
+    ``speaker`` keys when diarization ran), plus ``duration`` (seconds),
+    ``num_segments`` and ``stats`` (per-stage wall-clock timings + the config
+    and machine that produced them — see :func:`_machine_info`). Download
+    artifacts are written to ``output_dir`` named ``<artifact_basename>.<fmt>``
+    so their paths are deterministic.
     """
     import whisperx
     from whisperx.audio import SAMPLE_RATE
     from whisperx.utils import get_writer
+
+    timings: dict[str, float] = {}
 
     def _stage(name: str) -> None:
         if cancel_event is not None and cancel_event.is_set():
@@ -534,33 +591,45 @@ def run_job(
         if progress is not None:
             progress(name)
 
+    job_started = time.perf_counter()
+
     _stage("decoding")
     logger.info("Decoding audio: %s", audio_path)
+    t0 = time.perf_counter()
     audio = whisperx.load_audio(audio_path)  # 16kHz mono float32, decoded once
+    timings["decoding"] = time.perf_counter() - t0
     duration = len(audio) / SAMPLE_RATE
     if on_duration is not None:
         on_duration(duration)  # report early so later stages can be ETA'd live
 
     _stage("transcribing")
     logger.info("Transcribing (batch_size=%d)", BATCH_SIZE)
+    t0 = time.perf_counter()
     result = bundle.asr.transcribe(audio, batch_size=BATCH_SIZE, language=language)
+    timings["transcribing"] = time.perf_counter() - t0
 
     lang = result["language"]
     _stage("loading_align")  # bundle.align_model may download/load a ~1.26 GB model
+    t0 = time.perf_counter()
     align_model, align_meta = bundle.align_model(lang)
+    timings["loading_align"] = time.perf_counter() - t0
     _stage("aligning")
     logger.info("Aligning (language=%s)", lang)
+    t0 = time.perf_counter()
     result = whisperx.align(
         result["segments"], align_model, align_meta, audio, _align_device(bundle.device)
     )
+    timings["aligning"] = time.perf_counter() - t0
 
     if bundle.diarize is not None:
         _stage("diarizing")
         logger.info("Diarizing (min=%s max=%s)", min_speakers, max_speakers)
+        t0 = time.perf_counter()
         diarize_df = bundle.diarize(
             audio, min_speakers=min_speakers, max_speakers=max_speakers
         )
         result = whisperx.assign_word_speakers(diarize_df, result)
+        timings["diarizing"] = time.perf_counter() - t0
         result["diarized"] = True
     else:
         result["diarized"] = False
@@ -579,6 +648,30 @@ def run_job(
         writer(result, name_stem, WRITER_OPTIONS)
         artifacts[fmt] = os.path.join(output_dir, f"{artifact_basename}.{fmt}")
     result["artifacts"] = artifacts
+
+    # Per-step timing + the config/machine that produced it. Set *after* the
+    # writers run so it stays out of the downloadable transcript.json/srt/… —
+    # stats are persisted on the session row (the durable source of truth), not
+    # the artifacts. Rounded to keep the JSON blob compact.
+    timings["total"] = time.perf_counter() - job_started
+    result["stats"] = {
+        "timings": {k: round(v, 3) for k, v in timings.items()},
+        "config": {
+            "model": model,
+            "device": bundle.device,
+            "compute_type": _compute_for(bundle.device),
+            "batch_size": BATCH_SIZE,
+            "vad_method": "pyannote",
+            "language": lang,
+            "task": "transcribe",
+            "diarize": bundle.diarize is not None,
+            "min_speakers": min_speakers,
+            "max_speakers": max_speakers,
+        },
+        "machine": _machine_info(),
+        "audio_duration": round(duration, 3),
+        "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
 
     logger.info("Job complete: %d segments", result["num_segments"])
     return result

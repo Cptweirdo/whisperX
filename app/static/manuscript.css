@@ -464,6 +464,39 @@ body, body * { font-kerning: normal; }
 .trans-chip sl-icon.caret { font-size: 11px; opacity: 0.7; }
 .trans-chip.is-on { color: var(--rubric); background: var(--rubric-soft); border-color: rgba(164,64,47,0.3); }
 
+/* small icon button beside the translate chip — opens the pipeline-stats modal */
+.stats-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; cursor: pointer;
+  color: var(--on-surface-variant); background: var(--surface-container-high);
+  border: 1px solid transparent; border-radius: var(--radius-lg);
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.stats-chip:hover { background: var(--surface-container-highest); color: var(--on-surface); }
+.stats-chip sl-icon { font-size: 14px; }
+
+/* pipeline-stats modal body */
+.stats__section { margin-bottom: 22px; }
+.stats__section:last-child { margin-bottom: 0; }
+.stats__head {
+  font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.09em;
+  text-transform: uppercase; color: var(--on-surface-variant); margin-bottom: 10px;
+}
+.stats__table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.stats__table th {
+  text-align: left; font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--on-surface-faint);
+  padding: 0 0 6px; border-bottom: 1px solid var(--outline-soft);
+}
+.stats__table th:not(:first-child), .stats__table td:not(:first-child) { text-align: right; }
+.stats__table td { padding: 6px 0; border-bottom: 1px solid var(--outline-soft); }
+.stats__table tr:last-child td { border-bottom: 0; }
+.stats__total td { font-weight: 600; color: var(--on-surface); }
+.stats__note { font-family: var(--mono); font-size: 11px; color: var(--on-surface-faint); margin-top: 8px; }
+.stats__dl { display: grid; grid-template-columns: max-content 1fr; gap: 7px 18px; margin: 0; font-size: 13.5px; }
+.stats__dl dt { color: var(--on-surface-variant); }
+.stats__dl dd { margin: 0; text-align: right; color: var(--on-surface); word-break: break-word; }
+
 .menu-scrim { position: fixed; inset: 0; z-index: 25; }
 .lang-menu {
   position: absolute; top: calc(100% + 8px); left: 0; width: 320px; z-index: 30;

@@ -34,6 +34,15 @@
           </button>
         </div>
       </div>
+      {% if session.stats %}
+      {# Pipeline stats — real per-stage timings + the config/machine that ran
+         them. Only shown for recordings transcribed after timing was added. #}
+      <button class="stats-chip" id="stats-btn" type="button"
+              title="Pipeline stats" aria-label="Pipeline stats"
+              onclick="document.getElementById('stats-modal').show()">
+        <sl-icon name="speedometer2"></sl-icon>
+      </button>
+      {% endif %}
       <span class="chip">{{ "Diarized" if session.diarized else "Transcript" }}</span>
       <span class="tr__hero-date">{{ session.date }} · {{ session.dur }}</span>
     </div>
@@ -148,6 +157,74 @@
     <sl-button variant="primary" id="speaker-save">Save</sl-button>
   </div>
 </sl-dialog>
+
+{% if session.stats %}
+{# Pipeline stats modal — rendered server-side from the durable session row.
+   Opened by #stats-btn beside the Translate chip. #}
+{% set s = session.stats %}
+{% set timing_labels = {
+  "decoding": "Decode audio", "transcribing": "Transcribe",
+  "loading_align": "Load align model", "aligning": "Align",
+  "diarizing": "Diarize", "total": "Total"} %}
+{% set config_labels = {
+  "model": "Model", "device": "Device", "compute_type": "Compute type",
+  "batch_size": "Batch size", "vad_method": "VAD method", "language": "Language",
+  "task": "Task", "diarize": "Diarization",
+  "min_speakers": "Min speakers", "max_speakers": "Max speakers"} %}
+{% set machine_labels = {
+  "platform": "Platform", "arch": "Architecture", "python": "Python",
+  "cpu_count": "CPU cores", "gpu": "GPU", "torch": "torch", "whisperx": "whisperx"} %}
+<sl-dialog id="stats-modal" label="Pipeline stats" style="--width:560px">
+  <div class="stats">
+    <div class="stats__section">
+      <div class="stats__head">Timings</div>
+      <table class="stats__table">
+        <thead><tr><th>Stage</th><th>Time</th><th>RTF</th></tr></thead>
+        <tbody>
+        {% for key, label in timing_labels.items() if key in s.timings %}
+          {% set secs = s.timings[key] %}
+          <tr{% if key == 'total' %} class="stats__total"{% endif %}>
+            <td>{{ label }}</td>
+            <td class="mono">{{ "%.1f"|format(secs) }}s</td>
+            <td class="mono">{% if s.audio_duration %}{{ "%.2f"|format(secs / s.audio_duration) }}&times;{% else %}&mdash;{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% if s.audio_duration %}
+      <div class="stats__note">RTF = stage time &divide; {{ "%.0f"|format(s.audio_duration) }}s of audio (lower is faster).</div>
+      {% endif %}
+    </div>
+
+    <div class="stats__section">
+      <div class="stats__head">Configuration</div>
+      <dl class="stats__dl">
+        {% for key, label in config_labels.items() if s.config.get(key) is not none %}
+        <dt>{{ label }}</dt>
+        <dd class="mono">{% if key == 'diarize' %}{{ "On" if s.config[key] else "Off" }}{% else %}{{ s.config[key] }}{% endif %}</dd>
+        {% endfor %}
+      </dl>
+    </div>
+
+    <div class="stats__section">
+      <div class="stats__head">Machine</div>
+      <dl class="stats__dl">
+        {% for key, label in machine_labels.items() if s.machine.get(key) is not none %}
+        <dt>{{ label }}</dt>
+        <dd class="mono">{{ s.machine[key] }}</dd>
+        {% endfor %}
+      </dl>
+    </div>
+
+    {% if s.finished_at %}
+    <div class="stats__note">Recorded {{ s.finished_at }}</div>
+    {% endif %}
+  </div>
+  <div slot="footer" style="display:flex;justify-content:flex-end">
+    <sl-button variant="primary" onclick="document.getElementById('stats-modal').hide()">Close</sl-button>
+  </div>
+</sl-dialog>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
