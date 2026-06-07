@@ -85,10 +85,15 @@ The C++ core lets us drop most of it. Items map to the current code in
   diarization is on, derive ASR-batching windows from its speech regions and skip
   the standalone VAD model; when off, run a light silero pass. *(Caveat:
   pyannote-seg ≠ silero, so the sharing flows diarization→ASR, not the reverse.)*
-- **Models resident + stage pipelining.** Python loads→runs→frees each model
-  sequentially for memory (`transcribe.py:124-234`). A server keeps all models
-  loaded and **overlaps stages** (align chunk N-1 while ASR runs chunk N) instead of
-  three full passes — throughput win, no reload churn.
+- **Models resident** + *(optional)* **stage pipelining.** Python loads→runs→frees
+  each model sequentially for memory (`transcribe.py:124-234`). A server keeps all
+  models loaded (**adopted** — no reload churn; also makes sleep/resume instant, see
+  the memory decision below). **Overlapping stages** (align chunk N-1 while ASR runs
+  chunk N) is a further throughput option but is **deferred for simplicity** — the
+  committed model is one job at a time, run to completion (see
+  [`cpp-core-migration-briefs.md`](./cpp-core-migration-briefs.md) §
+  "Memory management"). Revisit pipelining only if single-job latency becomes a
+  bottleneck.
 
 ### B. Collapse four ML stacks into one runtime
 Python uses **four** inference stacks: CTranslate2 (Whisper), torch/HF (wav2vec2),
