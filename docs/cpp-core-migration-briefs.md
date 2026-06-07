@@ -208,6 +208,47 @@ Source: `alignment.py:80` (`load_align_model`), `:117` (`align`), `:425`
 - Replace **nltk punkt** sentence splitting with **ICU** or a rule-based splitter.
 - Port **wildcard/OOV char handling**.
 
+### Parallelization (how alignment goes fast)
+**Structural fact:** Phase 2 of `align()` (`alignment.py:207-411`) is **independent
+per segment** — each segment reads a *disjoint, read-only* audio slice
+(`audio[:, f1:f2]`, `:246`), runs its own wav2vec2 forward pass, builds its own
+trellis, and writes its own output entry. There is **no cross-segment state**
+(`segment_data` is precomputed in Phase 1; weights/dictionary/audio are read-only).
+That independence is exactly why the `:245` TODO exists, and it gives three
+parallelization axes, in payoff order:
+
+1. **Batch the forward passes (the big win, the `:245` TODO).** Stack N segments
+   into one ORT inference instead of one call per segment — the forward pass
+   dominates cost, and per-call overhead + the `<400`-sample re-pad (`:248`) amortize
+   away. Data-parallel on the GPU/NPU. Two **non-negotiable correctness rules**:
+   - **Bucket by length.** Segments vary 1 s↔25 s; naive padding to a common length
+     wastes most of the compute, so group similar lengths per batch.
+   - **Mask padded frames.** Padding must not leak into emissions. The torchaudio
+     path passes `lengths` (`:258`); the **HF path currently does not** (`:260`), so
+     a batched port *must* add the attention mask or padded segments corrupt their
+     batch-mates. This is both a perf detail **and a golden-parity gate**: batched
+     inference is numerically ≈ per-segment **only if** masks/lengths are correct.
+   - *Stronger variant:* compute emissions over **larger contiguous spans once and
+     slice per segment** (adjacent segments re-run overlapping audio today). Care:
+     transformer attention is global over its input window, so big-window emissions
+     ≠ small-slice emissions at boundaries — use overlap.
+2. **Thread-pool the per-segment CPU glue.** Trellis DP, `backtrack`, and char→word
+   assembly are independent per segment → `std::for_each(std::execution::par, …)`
+   over segments. (Python can't: GIL-bound. **This is a concrete C++-core win.**)
+3. **The per-trellis time-scan stays sequential — and that's fine.** `get_trellis`
+   (`:438-444`) is an inherent Viterbi recurrence (row `t+1` depends on row `t`);
+   it's already **vectorized across the token dimension**, and a ≤30 s segment is
+   ~1500 frames × tens of tokens — trivial. (Associative-scan Viterbi could
+   parallelize the time axis in O(log n) depth, but it's unnecessary; the trellis is
+   cheap vs the model.)
+
+**Scope note:** this is **within-stage data parallelism** — distinct from, and far
+safer than, the cross-stage **stage pipelining** deferred in
+[`cpp-core-spa-architecture.md`](./cpp-core-spa-architecture.md) §4A. Batching the
+aligner adds no mid-job complexity and is fully compatible with "one job at a time,
+run to completion." It is the recommended Phase 3 approach: **batch inference
+(bucket + mask) + thread-pool the Viterbi/assembly; keep the time-scan sequential.**
+
 ### Validation
 - **CTC emissions** (post log-softmax) match golden within fp32 epsilon.
 - **Trellis matrix and backtrack path exact**; `merge_repeats`/`merge_words`
