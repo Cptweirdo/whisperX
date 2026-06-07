@@ -283,7 +283,7 @@ run to completion." It is the recommended Phase 3 approach: **batch inference
   reproduce each. `torchaudio.functional.forced_align` is a reference but is the
   same algorithm — do we lean on it for cross-checking?
 - **Per-language model proliferation** — 5 + 38 models. Export pipeline for all?
-  Which to bundle vs download? (Ties to the Flutter/mobile asset strategy.)
+  Which to bundle vs download? (Ties to the model-asset / download strategy.)
 
 ---
 

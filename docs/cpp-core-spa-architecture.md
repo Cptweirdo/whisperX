@@ -1,12 +1,13 @@
 # C++ Engine Core + SPA — Architecture & Pipeline Streamlining
 
 > Architecture for rewriting the WhisperX pipeline as a **headless C++ engine
-> core** with thin adapters — an HTTP/SSE server behind a web **SPA** (desktop +
-> cloud) and **FFI** for mobile/Flutter. Builds on
-> [`pipeline-reference.md`](./pipeline-reference.md) (the stage spec),
-> [`single-language-runtime-options.md`](./single-language-runtime-options.md)
-> (why C++ is the native substrate), and the
-> [Flutter plan](./flutter-migration.md) (the alternative delivery).
+> core** with thin adapters — primarily an HTTP/SSE server behind a web **SPA**
+> (desktop + cloud), plus a pybind11 oracle and an optional FFI adapter for
+> embedding. Builds on [`pipeline-reference.md`](./pipeline-reference.md) (the
+> stage spec) and [`single-language-runtime-options.md`](./single-language-runtime-options.md)
+> (why C++ + ORT). The *how* lives in
+> [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md) and the per-phase
+> [`cpp-core-migration-briefs.md`](./cpp-core-migration-briefs.md).
 
 ## 1. Context & goal
 
@@ -21,10 +22,11 @@ adapters.**
 
 **Principles**
 - One **headless engine core** (no UI, no transport) — the reusable artifact.
-- **Adapters**, not a monolith: HTTP/SSE server (→ SPA, desktop + cloud), FFI
-  (→ mobile/Flutter), pybind11 (→ keep Python `app/` + `tests/` as the oracle).
-- **All four models on one runtime (ONNX Runtime)** — collapse Python's four ML
-  stacks into one.
+- **Adapters**, not a monolith: HTTP/SSE server (→ SPA, desktop + cloud),
+  pybind11 (→ keep Python `app/` + `tests/` as the oracle), and an optional C-ABI
+  FFI adapter for embedding.
+- **Models on one runtime (ONNX Runtime)**, with ASR pluggable (§4B) — collapse
+  Python's four ML stacks toward one.
 - The Python pipeline remains the **spec and parity oracle**, not a dependency.
 
 ## 2. The engine core + adapters
@@ -37,36 +39,29 @@ adapters.**
                 └──────────────────────────────────────────┘
                   ▲              ▲                ▲
    ┌──────────────┘   ┌──────────┘     ┌──────────┘
-   │ HTTP/SSE server  │ FFI (JNI /     │ pybind11
-   │ (Crow/Drogon/…)  │  Swift interop)│ (reference/tests)
-   ▼                  ▼                ▼
- Web SPA           Mobile UI         Python app/ + pytest
- (desktop+cloud)   (native/Flutter)  (golden-vector oracle)
+   │ HTTP/SSE server  │ pybind11       │ FFI (C ABI)
+   │ (Crow/Drogon/…)  │ (reference/    │ (optional,
+   ▼                  │  tests)        │  embedding)
+ Web SPA              ▼                ▼
+ (desktop+cloud)   Python app/ +     embedding host
+                   pytest oracle
 ```
 
 The core knows nothing about HTTP, FFI, or UI. Each adapter is a thin shell. The
 result `schema.py` shapes become the **API/FFI contract**.
 
-## 3. Two delivery models (the desktop/cloud-vs-mobile split)
+## 3. Delivery: server + SPA (desktop + cloud)
 
-"C++ backend + SPA" is the **desktop/cloud** delivery. Mobile reuses the *same
-core* but with a different adapter — because an embedded localhost HTTP server is
-awkward on mobile.
+The primary delivery is **C++ core + HTTP/SSE server + web SPA**, run as a desktop
+app (server bundled behind a webview) or a self-hosted/cloud service. Desktop
+bundles get **lean** — a native binary + static SPA assets, with **no
+`python-build-standalone`, no torch/CUDA, no cuDNN matching** — so the existing
+packaging pain largely disappears; an existing webview shell just points at the C++
+server instead of Flask.
 
-| | Server + SPA | FFI + UI |
-|---|---|---|
-| Targets | Windows/macOS/Linux desktop, cloud/self-host | Android, iOS |
-| Transport | HTTP + SSE (progress) | direct function calls (JNI / Swift) |
-| UI | web SPA in a webview (Tauri/CEF/system) or browser | native, Flutter, or WebView |
-| Fit | ✅ excellent | ✅ the right mobile path |
-| Anti-pattern | — | ❌ don't run a localhost HTTP server in-app; ❌ remote server breaks offline |
-
-**One core, two front doors.** Desktop bundles get lean (native binary + static SPA
-assets) — no `python-build-standalone`, no torch/CUDA, no cuDNN matching, so the
-bulk of [`windows-port-options.md`](./windows-port-options.md) /
-[`MACOS_INSTALLER.md`](../MACOS_INSTALLER.md) packaging pain disappears. The
-existing Tauri shell (`packaging/macos/tauri`) just points at the C++ server
-instead of Flask.
+The same core also exposes an **optional C-ABI FFI adapter** for embedding the
+engine directly in another host (no localhost server). That's a secondary path and
+not the focus here.
 
 ## 4. Pipeline streamlining
 
@@ -158,8 +153,9 @@ decode once → raw 16k buffer (shared, zero-copy spans)
                                                      ▼
                                         assemble result · write
 ```
-One runtime · one decode · models resident · stages pipelined · glue in tight C++
-— versus four ML stacks, up-to-3× decode, sequential load/unload, pandas/nltk today.
+One runtime (ASR pluggable) · one decode · models resident · one job at a time ·
+glue in tight C++ — versus four ML stacks, up-to-3× decode, sequential
+load/unload, pandas/nltk today.
 
 ## 5. Tech choices
 
@@ -170,8 +166,8 @@ One runtime · one decode · models resident · stages pipelined · glue in tigh
 | Audio decode | **ffmpeg libraries** (`libavformat`/`libavcodec`/`libswresample`), linked in-process | **no ffmpeg subprocess** (Option B): one universal decode path for all formats incl. M4A/AAC/MP4/video; decode to float in-memory; LGPL build |
 | HTTP/SSE server | **Drogon** or **oat++** (perf, WebSocket/SSE) · **cpp-httplib** (header-only, simple) | SSE for progress, mirroring `app/` |
 | SPA | React / Svelte / SolidJS | true client-rendered SPA over a JSON/SSE API |
-| Build | CMake + vcpkg/Conan; cross-compile per platform | the main ergonomic cost |
-| Mobile adapter | JNI (Android) · Swift C-interop (iOS) · or via Flutter FFI | reuses the core, no server |
+| Build | CMake + vcpkg/Conan; per-desktop-OS builds | the main ergonomic cost |
+| FFI adapter (optional) | C ABI for embedding | reuses the core, no server |
 | Python oracle | pybind11 | keep `app/` + `tests/` as parity reference |
 
 > **Note on the SPA:** the current `app/` frontend is **htmx + SSE (server-rendered),
@@ -192,7 +188,7 @@ core/                         # libwhisperx (C++) — no transport/UI
   pipeline/   orchestrator (mirror transcribe_task), progress events
 adapters/
   server/     HTTP/SSE (Drogon/oatpp) → SPA
-  ffi/        C ABI for JNI/Swift/Flutter
+  ffi/        C ABI (optional, embedding)
   py/         pybind11 module (oracle)
 web/          SPA (React/Svelte)
 bindings/test golden vectors + parity tests
@@ -200,7 +196,7 @@ bindings/test golden vectors + parity tests
 
 ## 7. Golden-parity strategy (unchanged)
 
-Same discipline as the Flutter plan: dump intermediates from Python `whisperx`
+The golden-vector discipline: dump intermediates from Python `whisperx`
 (VAD/merged chunks, CTC emissions/trellis, backtrack path, word timings,
 diarization turns, speaker labels) into golden JSON; assert the C++ core matches
 within tolerance (`merge_chunks` boundaries, trellis path, speaker labels exact,
@@ -211,10 +207,9 @@ functions directly from the existing pytest oracle.
 
 | # | Decision | Recommendation |
 |---|---|---|
-| C1 | **Primary delivery** — server-centric (desktop+cloud) vs device-centric (offline mobile) | If desktop+cloud lead, this architecture is cleanest; if mobile-first, Flutter+FFI is more direct and the server buys less |
-| C2 | **Inference runtime** — ✅ *resolved: all ONNX Runtime* | **All-ORT** (ONNX Runtime + sherpa-onnx) is the committed runtime for every stage and platform — one runtime, one threading model, transformer-friendly, and sherpa-onnx supplies 3/4 models off-the-shelf. LiteRT is dropped. |
+| C2 | **Inference runtime** — ✅ *resolved: ONNX Runtime* | **ORT + sherpa-onnx** for VAD/align/diarize; **ASR pluggable** (sherpa-onnx default, whisper.cpp/GGML for Apple-Silicon Metal, §4B). One runtime, transformer-friendly, sherpa supplies 3/4 models. LiteRT dropped. |
 | C3 | **Diarization-drives-VAD coupling** vs independent VAD | Coupling saves a segmentation pass; keep independent if simplicity preferred |
-| C4 | **SPA framework + webview shell** (reuse Tauri vs CEF vs system) | Reuse the existing Tauri shell; pick one SPA framework |
+| C4 | **SPA framework + webview shell** | Reuse the existing webview shell; pick one SPA framework |
 | C5 | **Own engine in C++** vs consume sherpa-onnx as-is | You already get a C++ core free via sherpa; bespoke C++ adds value mainly for the server, alignment, and pybind oracle |
 
 ## 9. Roadmap
@@ -225,28 +220,26 @@ functions directly from the existing pytest oracle.
 | 1 | Transcribe + VAD | silero VAD + **merge_chunks port**; matches Python segment text on golden clips |
 | 2 | Alignment | wav2vec2 ORT (batched) + **Viterbi port**; golden word-timing parity *(highest risk — early)* |
 | 3 | Diarization | sherpa diarize + **interval-tree assign port**; shared-segmentation option |
-| 4 | Server + SPA | Drogon/oatpp HTTP+SSE; SPA transcribe→progress→export; reuse Tauri shell on desktop |
+| 4 | Server + SPA | Drogon/oatpp HTTP+SSE; SPA transcribe→progress→export; reuse the webview shell on desktop |
 | 5 | pybind oracle + CI | pybind11 module; golden-parity tests green in CI |
-| 6 | Mobile FFI | C-ABI consumed via JNI/Swift (or Flutter FFI); on-device run |
-| 7 | Package | desktop installers (lean), signing; cloud image |
+| 6 | Package | desktop installers (lean), signing; cloud image |
+| 7 | *(optional)* FFI adapter | C-ABI for embedding the engine in another host |
 
 ## 10. Risks
 
 | Risk | Mitigation |
 |---|---|
-| C++ memory safety / build complexity (CMake, 5-platform cross-compile) | vcpkg/Conan; sanitizers; keep the core small and pure |
+| C++ memory safety / build complexity (CMake, per-desktop-OS builds) | vcpkg/Conan; sanitizers; keep the core small and pure |
 | wav2vec2 ONNX export / drift | validate early (phase 2); golden emission tests; pin opset |
-| Mobile server anti-pattern | use FFI on mobile, not HTTP |
-| SPA = extra frontend rewrite | scope it; reuse Tauri shell; or keep htmx initially behind the same server |
+| SPA = extra frontend rewrite | scope it; reuse the webview shell; or keep htmx initially behind the same server |
 | Diarization quality vs full pyannote | sherpa pyannote-seg + CAM++; A/B on real clips |
 | Losing Python reference | pybind11 keeps `app/`+`tests/` as oracle |
 
 ## 11. References
 
 - **Migration plan (the *how*)**: [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md) — strangler-fig via pybind11, session-DB compatibility, headless test + timing suite, build tooling
+- **Per-phase briefs**: [`cpp-core-migration-briefs.md`](./cpp-core-migration-briefs.md)
 - Pipeline spec: [`pipeline-reference.md`](./pipeline-reference.md)
-- Why C++ is the substrate: [`single-language-runtime-options.md`](./single-language-runtime-options.md)
-- Alternative delivery: [`flutter-migration.md`](./flutter-migration.md)
-- Per-platform context: [synthesis](./packaging-shared-vs-bespoke.md) · [windows](./windows-port-options.md) · [`MACOS_INSTALLER.md`](../MACOS_INSTALLER.md)
+- Why C++ + ORT: [`single-language-runtime-options.md`](./single-language-runtime-options.md)
 - ONNX Runtime (C++ API, EPs): <https://onnxruntime.ai/docs/>
 - sherpa-onnx (C++ VAD/ASR/diarization): <https://github.com/k2-fsa/sherpa-onnx>

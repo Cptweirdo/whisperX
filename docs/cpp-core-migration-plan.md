@@ -198,8 +198,8 @@ code**.
 ## 5. Build tooling — standardize on CMake (+ Ninja + a package manager)
 
 **Yes, ditch Make for the C++ core — adopt CMake.** Raw Makefiles can't express
-what this project needs: a single build that targets Windows, macOS, Linux,
-**and** Android/iOS, fetches native dependencies, and produces three different
+what this project needs: a single build that targets the desktop OSes (Windows,
+macOS, Linux), fetches native dependencies, and produces three different
 artifacts (a shared lib, a pybind extension, a server binary) from one tree.
 Reasoning:
 
@@ -208,34 +208,31 @@ Reasoning:
   Catch2, Google Benchmark, nlohmann/json, pybind11** are all CMake-native (most
   offer `find_package` / `FetchContent` / `add_subdirectory`). Consuming them
   with hand-written Makefiles means reverse-engineering each one's flags.
-- **Cross-compilation is a first-class concept** via **toolchain files** — the
-  same mechanism Android NDK (`android.toolchain.cmake`) and iOS toolchains use.
-  This is exactly the multi-platform matrix the cpp-core doc commits to; Make has
-  no equivalent and would need bespoke per-platform glue.
+- **Cross-platform builds are a first-class concept** via **toolchain files** —
+  the standard mechanism for per-OS desktop builds; Make has no equivalent and
+  would need bespoke per-platform glue.
 - **Package managers integrate cleanly** — **vcpkg** (manifest mode,
   `CMAKE_TOOLCHAIN_FILE`) or **Conan**. Pick *one* per the usual rule; **vcpkg**
   is the lighter default given our libs are all in its registry. This replaces
   the "manual dependency vendoring" pain the cpp-core doc flagged as the main
   ergonomic cost.
 - **Ninja as the generator** for fast incremental builds; CMake still emits
-  Visual Studio / Xcode projects when an IDE or platform signing flow needs them
-  (relevant to the existing Tauri/macOS packaging).
+  Visual Studio / Xcode projects when an IDE or platform signing flow needs them.
 - **CTest** ties the test + benchmark targets together (§3) and into CI.
 
 Alternatives considered and why not (now):
 - **Meson** — cleaner syntax, genuinely nice, but **most of our dependencies and
   the ML runtimes publish CMake, not Meson**, so we'd be swimming upstream on the
   exact libraries that matter. Reasonable only if we owned the whole dep tree.
-- **Bazel / Buck** — excellent hermetic, cached, multi-language builds with
-  strong iOS/Android support, *but* the ML runtimes aren't Bazel-native, BUILD
-  files for ORT/sherpa would be ours to maintain, and the setup cost only pays
-  off at monorepo scale. Revisit only if this grows into a large polyglot
-  monorepo.
+- **Bazel / Buck** — excellent hermetic, cached, multi-language builds, *but* the
+  ML runtimes aren't Bazel-native, BUILD files for ORT/sherpa would be ours to
+  maintain, and the setup cost only pays off at monorepo scale. Revisit only if
+  this grows into a large polyglot monorepo.
 - **Plain Make** — fine for a single-platform leaf binary; **wrong for a
-  5-platform, dependency-heavy, multi-artifact core**. Ditch it for the engine.
+  multi-OS, dependency-heavy, multi-artifact core**. Ditch it for the engine.
 
-Recommendation: **CMake + Ninja + vcpkg**, toolchain files per mobile target,
-CTest for tests/benches. Keep the existing Python `uv` workflow and the Tauri
+Recommendation: **CMake + Ninja + vcpkg**, per-OS toolchain files, CTest for
+tests/benches. Keep the existing Python `uv` workflow and the Tauri
 `cargo` build as-is — CMake governs only the new C++ core, and the pybind
 artifact is what the Python side consumes.
 
@@ -277,9 +274,9 @@ pybind oracle keeps `app/` + `tests/` authoritative throughout.
 ## 8. References
 
 - Architecture decision: [`cpp-core-spa-architecture.md`](./cpp-core-spa-architecture.md)
+- Per-phase briefs: [`cpp-core-migration-briefs.md`](./cpp-core-migration-briefs.md)
 - Stage-by-stage spec: [`pipeline-reference.md`](./pipeline-reference.md)
-- Why C++ is the substrate: [`single-language-runtime-options.md`](./single-language-runtime-options.md)
-- Alternative delivery: [`flutter-migration.md`](./flutter-migration.md)
+- Why C++ + ORT: [`single-language-runtime-options.md`](./single-language-runtime-options.md)
 - SQLiteCpp: <https://github.com/SRombauts/SQLiteCpp> · nlohmann/json: <https://github.com/nlohmann/json>
 - Catch2: <https://github.com/catchorg/Catch2> · Google Benchmark: <https://github.com/google/benchmark> · nanobench: <https://github.com/martinus/nanobench>
 - CMake: <https://cmake.org/> · vcpkg: <https://vcpkg.io/> · ONNX Runtime: <https://onnxruntime.ai/docs/> · sherpa-onnx: <https://github.com/k2-fsa/sherpa-onnx>
