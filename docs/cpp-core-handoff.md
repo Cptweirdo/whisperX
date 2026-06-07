@@ -207,9 +207,25 @@ token; **3B** (the heavy ONNX wav2vec2 forward) is the remaining slice.
   build (`WHISPERX_CORE_AUDIO=OFF`) unaffected. Goldens gained per-segment `dictionary` +
   `clean_cdx` (`golden/dump_goldens.py --align-io`) so the replay is torch-free.
 - **3B remaining:** the C++ ONNX wav2vec2 forward (raw `Ort::Session` on 2B's vendored
-  sherpa ORT, batched + length-masked), emissions vs golden within `emission_atol = 0.006`,
-  model-asset export-on-demand. Inherits the 2B build facts: link ORT **shared**, the
-  sherpa-`nlohmann_json` guard, decode-once `AudioBuffer::slice`.
+  sherpa ORT, batched + length-masked), emissions vs golden within `emission_atol = 0.006`.
+  Inherits the 2B build facts: link ORT **shared**, the sherpa-`nlohmann_json` guard,
+  decode-once `AudioBuffer::slice`.
+- **3B model assets — the ONNX mirror (landed, pre-3B).** The aligner consumes a *path
+  to a parity-valid `.onnx`*, produced **offline** (PyTorch is build/CI tooling, never the
+  runtime) and hosted on **`KonstantK/wav2vec2-align-onnx`** (HF public repo — free, CDN,
+  reuses the `huggingface_hub` cache/sha/revision-pin path the original weights already
+  use). `golden/export_align_onnx.py` reuses `load_align_model` + the two
+  `DEFAULT_ALIGN_MODELS_{TORCH,HF}` tables (the model registry) and a `loader-type→wrapper`
+  dispatch, so **any of the 43 languages exports via `--lang <code>` with no code change**;
+  `model.onnx` emits **raw logits** (opset 17, dynamic axes; consumer applies log_softmax +
+  the OOV wildcard column) and `meta.json` ships the `dictionary`/`blank_id` so tokenization
+  needs no torch. Each export is **self-checked against the golden emissions before upload**;
+  re-runs **skip already-published models** (keyed on opset + upstream revision) unless
+  `--force`. Validated round-trip (export→upload→**download**→ORT) by the opt-in
+  `bindings/test/test_align_onnx_mirror.py` (`RUN_MIRROR=1`): every golden `seg{i}_emission`
+  reproduced within `emission_atol` across all 8 clips / both loader families (en+de
+  torchaudio, ru HF). Producer is swappable (torch-export now → CI-hosted later) with the
+  C++ seam unchanged. Phase-5 packaging decides which langs bundle vs lazy-download.
 
 ## Where to start
 

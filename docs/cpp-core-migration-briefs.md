@@ -741,6 +741,28 @@ forward) is the remaining slice. The settled facts:
 build facts (link ORT **shared**; sherpa-`nlohmann_json` guard; decode-once `AudioBuffer::slice`
 is the `audio[:, f1:f2]` per-segment read) — see "Build/runtime inheritance from Phase 2B".
 
+**Model-asset mirror (landed, pre-3B).** Resolves the "per-language model proliferation /
+which to bundle vs download" unknown for the *asset* side. **Run vs. produce are separate:**
+ONNX is portable → C++/ORT runs wav2vec2 with no Python; only the one-time **conversion**
+needs PyTorch, and that's **offline tooling**, never the runtime. We publish our **own**
+parity-pinned export (public mirrors cover ~1 of our 3 and aren't `emission_atol`-validated
+or hash-pinned) to **`KonstantK/wav2vec2-align-onnx`** (HF public repo, free + CDN, reusing
+the `huggingface_hub` cache/sha/revision infra the original weights already use; R2 is the
+only-if-we-drop-HF alternative). `golden/export_align_onnx.py` is **extensible by data not
+code** — it imports `whisperx.alignment`'s `load_align_model` + `DEFAULT_ALIGN_MODELS_*`
+tables and dispatches on `loader-type → wrapper` (torchaudio `model(x)[0]` / HF
+`model(x).logits`), so `--lang <code>` exports any of the 43; `model.onnx` = **raw logits**
+(opset 17, dynamic `{batch,time}` axes; consumer does log_softmax + the OOV wildcard column,
+matching `alignment.py:285,295-302`); `meta.json` carries `dictionary` + `blank_id` for a
+torch-free tokenizer. Idempotent (skips already-published unless `--force`), self-checked
+vs the golden emissions pre-upload. The C++ 3B seam only consumes *a path to a parity-valid
+`.onnx`* — producer swappable (torch-export now → CI-host later) without C++ change. Round
+trip pinned by the opt-in `bindings/test/test_align_onnx_mirror.py` (`RUN_MIRROR=1`): every
+golden `seg{i}_emission` reproduced under ORT from the **downloaded** onnx within
+`emission_atol` across all 8 clips / both loader families. *Known gap:* the export omits the
+torchaudio `lengths` input, so a **<400-sample** segment (the `alignment.py:270` masked
+re-pad) would diverge — none in the goldens; revisit when 3B adds bucket+mask batching.
+
 ### Goals
 - **Export wav2vec2-CTC to ONNX** (start `WAV2VEC2_ASR_BASE_960H`, English), pin
   opset, run on ORT.
