@@ -10,15 +10,18 @@
 
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "audio/audio_constants.hpp"
 #include "build_info.hpp"
 #include "db/session_store.hpp"
 #include "edits/edits.hpp"
 #include "text/edit_distance.hpp"
 #include "text/sequence_matcher.hpp"
+#include "vad/merge_chunks.hpp"
 
 namespace py = pybind11;
 using nlohmann::json;
@@ -311,6 +314,38 @@ void bind_edits(py::module_& m) {
         "(a, b, size) tuples.");
 }
 
+// whisperx/vads/vad.py::Vad.merge_chunks — packs VAD speech segments into
+// ≤chunk_size windows. Exposed for the whisperx.vads.vad facade (`vad` token)
+// and the parity oracle; the audio hyperparameters ride along as module attrs.
+void bind_vad(py::module_& m) {
+    namespace audio = whisperx::audio;
+    m.attr("SAMPLE_RATE") = audio::kSampleRate;
+    m.attr("N_FFT") = audio::kNFft;
+    m.attr("HOP_LENGTH") = audio::kHopLength;
+    m.attr("CHUNK_LENGTH") = audio::kChunkLength;
+    m.attr("N_SAMPLES") = audio::kNSamples;
+    m.attr("N_FRAMES") = audio::kNFrames;
+    m.attr("N_SAMPLES_PER_TOKEN") = audio::kNSamplesPerToken;
+    m.attr("FRAMES_PER_SECOND") = audio::kFramesPerSecond;
+    m.attr("TOKENS_PER_SECOND") = audio::kTokensPerSecond;
+
+    using SegTuple = std::tuple<double, double, std::optional<std::string>>;
+    m.def(
+        "merge_chunks",
+        [](const std::vector<SegTuple>& segments, double chunk_size, double onset,
+           std::optional<double> offset) {
+            std::vector<whisperx::vad::VadSegment> v;
+            v.reserve(segments.size());
+            for (const auto& [s, e, sp] : segments) v.push_back({s, e, sp});
+            return json_to_py(
+                whisperx::vad::merge_chunks(v, chunk_size, onset, offset));
+        },
+        py::arg("segments"), py::arg("chunk_size"), py::arg("onset") = 0.5,
+        py::arg("offset") = py::none(),
+        "Vad.merge_chunks: segments as (start, end, speaker|None) tuples -> list "
+        "of {start, end, segments:[[s,e],…]} chunks.");
+}
+
 }  // namespace
 
 PYBIND11_MODULE(whisperx_core, m) {
@@ -339,4 +374,5 @@ PYBIND11_MODULE(whisperx_core, m) {
 
     bind_session_store(m);
     bind_edits(m);
+    bind_vad(m);
 }

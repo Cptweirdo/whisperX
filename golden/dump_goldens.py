@@ -120,6 +120,14 @@ def _wrap_vad(pipe, sink: dict):
 
     def spy(segments, chunk_size, onset, offset):
         merged = orig(segments, chunk_size, onset, offset)
+        # Raw pre-merge VAD segments — the *fixed input* the decoupled merge_chunks
+        # parity gate replays through the C++ port (silero ≠ pyannote and torch
+        # silero ≠ ORT silero, so the model output can't be byte-compared, but the
+        # merge is pure and exactly reproducible from this input).
+        sink["segments"] = [
+            {"start": round(float(s.start), 4), "end": round(float(s.end), 4),
+             "speaker": s.speaker}
+            for s in segments]
         sink["merged_chunks"] = [
             {"start": round(float(m["start"]), 4), "end": round(float(m["end"]), 4),
              "n_segments": len(m["segments"])}
@@ -216,6 +224,52 @@ def _dump_clip(name, meta, *, wx, pipe, align_cache, diarizer, outdir):
     }
 
 
+def _dump_vad_only(clips, outdir, *, wx, pipe):
+    """Surgically (re)write only the raw VAD segments into each ``*.vad.json``.
+
+    The decoupled merge_chunks parity gate needs the raw pre-merge segments as a
+    fixed input; the original goldens stored only the merged chunks. This runs
+    just the (cheap) silero VAD — no whisper / align / diarize — and augments each
+    ``*.vad.json`` in place, asserting the merge of the captured segments still
+    reproduces the committed ``merged_chunks`` (a drift guard) before overwriting.
+    The pinned tensor goldens and the measured tolerance budget are left untouched.
+    """
+    from whisperx.audio import SAMPLE_RATE
+    from whisperx.vads.vad import Vad
+
+    man = json.loads((outdir / "manifest.json").read_text())
+    changed = 0
+    for name, meta in sorted(clips.items()):
+        vad_path = outdir / f"{name}.vad.json"
+        existing = json.loads(vad_path.read_text())
+        p = existing["params"]
+        audio = wx.load_audio(str(GOLDEN / meta["file"]))
+        waveform = pipe.vad_model.preprocess_audio(audio)
+        raw = pipe.vad_model({"waveform": waveform, "sample_rate": SAMPLE_RATE})
+        merged = Vad._py_merge_chunks(raw, p["chunk_size"], p["onset"], p["offset"])
+        new_merged = [
+            {"start": round(float(m["start"]), 4), "end": round(float(m["end"]), 4),
+             "n_segments": len(m["segments"])} for m in merged]
+        if new_merged != existing["merged_chunks"]:
+            print(f"! {name}: merged_chunks drift vs committed golden — skipped "
+                  f"(silero non-determinism / version change)")
+            continue
+        out = {
+            "segments": [
+                {"start": round(float(s.start), 4), "end": round(float(s.end), 4),
+                 "speaker": s.speaker} for s in raw],
+            "merged_chunks": existing["merged_chunks"],
+            "params": p,
+        }
+        vad_path.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n")
+        man["clips"][name]["artifacts"]["vad"]["sha256"] = _sha256(vad_path)
+        changed += 1
+        print(f"  {name:16} +{len(out['segments'])} raw segments")
+    (outdir / "manifest.json").write_text(
+        json.dumps(man, indent=2, ensure_ascii=False) + "\n")
+    print(f"\naugmented {changed}/{len(clips)} vad.json -> {outdir}/manifest.json")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -224,6 +278,9 @@ def main():
     ap.add_argument("--compute", default="int8")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--no-diarize", action="store_true")
+    ap.add_argument("--vad-only", action="store_true",
+                    help="only (re)write raw VAD segments into *.vad.json (cheap; "
+                         "no whisper/align/diarize; preserves tensor goldens)")
     ap.add_argument("--outdir", default=str(OUTDIR))
     args = ap.parse_args()
 
@@ -239,6 +296,11 @@ def main():
     import whisperx as wx
     pipe = wx.load_model(args.model, device=args.device,
                          compute_type=args.compute, vad_method="silero")
+
+    if args.vad_only:
+        _dump_vad_only(clips, outdir, wx=wx, pipe=pipe)
+        return
+
     align_cache: dict = {}
 
     diarizer = None

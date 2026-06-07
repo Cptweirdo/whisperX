@@ -56,6 +56,7 @@ add_library(whisperx_core_lib STATIC
   core/text/sequence_matcher.cpp
   core/edits/edits.cpp
   core/db/session_store.cpp
+  core/vad/merge_chunks.cpp
   core/build_info.cpp)
 target_include_directories(whisperx_core_lib PUBLIC core)
 target_link_libraries(whisperx_core_lib PUBLIC
@@ -97,7 +98,8 @@ if(WHISPERX_CORE_TESTS)
     core/tests/test_edit_distance.cpp
     core/tests/test_session_store.cpp
     core/tests/test_sequence_matcher.cpp
-    core/tests/test_edits.cpp)
+    core/tests/test_edits.cpp
+    core/tests/test_merge_chunks.cpp)
   target_link_libraries(whisperx_core_tests
     PRIVATE whisperx_core_lib Catch2::Catch2WithMain)
 

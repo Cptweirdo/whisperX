@@ -1,4 +1,16 @@
 {
+  "segments": [
+    {
+      "start": 0.482,
+      "end": 3.582,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 3.842,
+      "end": 8.67,
+      "speaker": "UNKNOWN"
+    }
+  ],
   "merged_chunks": [
     {
       "start": 0.482,

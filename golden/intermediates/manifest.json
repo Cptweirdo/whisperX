@@ -43,7 +43,7 @@
         },
         "vad": {
           "file": "de_dialog.vad.json",
-          "sha256": "5304d214f2ac71e4566693cd2e6dffdd49bba9a536e585318f5b135b9212d420"
+          "sha256": "c9462ab87689dd2ca7aeb35b7cb47b83c59c7ea2b5a675377805d170876ef661"
         },
         "align": {
           "file": "de_dialog.align.json",
@@ -78,7 +78,7 @@
         },
         "vad": {
           "file": "en_dialog.vad.json",
-          "sha256": "b5eff78b693671eabd41ec4f47b72035329fb206373fab3f521faea7d63f3509"
+          "sha256": "077640505a1ee20b6e7f7881a0afd426a9a38fd38f1fed2a3b52afb6adfe38e5"
         },
         "align": {
           "file": "en_dialog.align.json",
@@ -112,7 +112,7 @@
         },
         "vad": {
           "file": "en_libri.vad.json",
-          "sha256": "260e07d95db0a7a37fd1686f8425c57157a0a24dfd9e1e95312e26ddb1685fbc"
+          "sha256": "3044d3d8b72e73f9aede3929b8118c56e168fd3a9a51d0159eb2c02cf067f4b5"
         },
         "align": {
           "file": "en_libri.align.json",
@@ -145,7 +145,7 @@
         },
         "vad": {
           "file": "ru_cv_71085.vad.json",
-          "sha256": "9cd234699c167b8c07fd9809f7d98716034c1da182fa19ec2836051466e59e38"
+          "sha256": "3e1bb103907f98612234d5a7f78e93c7344743f5c0ef66aa628b50b21a5f7a60"
         },
         "align": {
           "file": "ru_cv_71085.align.json",
@@ -178,7 +178,7 @@
         },
         "vad": {
           "file": "ru_cv_71379.vad.json",
-          "sha256": "366f9d959ea6445f15485ddfda383f9d3c1d3bb166851dab27ebb44e1c5442c0"
+          "sha256": "431c591b60f61301cc4a3982bbd5a160185d0ceb1917e9251a390c834dff115b"
         },
         "align": {
           "file": "ru_cv_71379.align.json",
@@ -211,7 +211,7 @@
         },
         "vad": {
           "file": "ru_cv_71606.vad.json",
-          "sha256": "56a379a3d0338dce57071e1c5d624d33dc86be0196e86a06a9206f3871a1ac96"
+          "sha256": "dad7b10dc4f13a8e4fa27fc9ca5419c86d2997daeb0c4709a27b8638dc64d64c"
         },
         "align": {
           "file": "ru_cv_71606.align.json",
@@ -244,7 +244,7 @@
         },
         "vad": {
           "file": "ru_cv_79125.vad.json",
-          "sha256": "91514b35f239d7d47d1033ef6d20c388467f9a78e5b034e579cafecaf35f91aa"
+          "sha256": "e2888e9e8a60fadcf80528f0b6a23704f5cbf16463a399a6bfb2e69bf6554eeb"
         },
         "align": {
           "file": "ru_cv_79125.align.json",
@@ -277,7 +277,7 @@
         },
         "vad": {
           "file": "ru_dialog.vad.json",
-          "sha256": "5612f99918dba267a2de52f36342b5870ac6e8ff4ab53b21f1b0d69b46f4f2b4"
+          "sha256": "7556f4435a795a3f7df87cd662014e960c3cabc071bebfbb0cf1174c64dd2ef6"
         },
         "align": {
           "file": "ru_dialog.align.json",

@@ -460,6 +460,47 @@ the VAD segments it and `merge_chunks` packs voiced spans into ≤30 s windows.
 Source: `audio.py:25` (`load_audio`, `SAMPLE_RATE=16000`), `vads/vad.py:19`
 (`Vad.merge_chunks`), `vads/silero.py`.
 
+### Status — slice 2A landed (`merge_chunks` + `vad` token); slice 2B pending (decode)
+Phase 2 is **split into two composable slices** (the Phase 1 pattern). **2A** — the
+pure, dep-free algorithm IP — is **landed**; **2B** — the heavy in-process ffmpeg
+decode + ORT silero VAD — is the remaining work.
+
+**Slice 2A (landed).** `Vad.merge_chunks` is ported verbatim to
+`core/vad/merge_chunks.{hpp,cpp}` (`whisperx::vad`, everything `nlohmann::json`), with
+the audio hyperparameters in `core/audio/audio_constants.hpp`. It's wired into the
+always-built `whisperx_core_lib` (no new deps) and exposed via pybind
+(`merge_chunks(segments, chunk_size, onset, offset)` + the constants as module attrs).
+`whisperx/vads/vad.py::Vad.merge_chunks` is now a **facade** (same shape as the
+`app/edits.py` one): the original body is `_py_merge_chunks` (the oracle); the public
+static routes to C++ when **`vad`** ∈ `WHISPERX_CORE_STAGES`, restoring the inner
+`(start,end)` tuples so the result is byte-identical. Routing the one static covers
+**both** Silero and Pyannote (they delegate to it).
+
+**Decoupled VAD golden (the decision).** silero ≠ pyannote, and torch.hub JIT silero ≠
+ORT/sherpa silero, so the live VAD segments are **not** byte-comparable across engines.
+Per the decoupled-golden rule (fact 3) the **raw pre-merge segments** are now dumped as
+a *fixed input* golden — `golden/dump_goldens.py`'s `_wrap_vad` spy records them, and a
+new `--vad-only` mode surgically (re)writes just the `segments` field into each
+`golden/intermediates/*.vad.json` (cheap: silero only, no whisper/align/diarize),
+asserting the merge of the captured segments still reproduces the committed
+`merged_chunks` before overwriting (so the pinned tensor goldens + measured tolerance
+budget are untouched). `merge_chunks` is then gated **exactly** on that fixed input; the
+model's own segments are judged only by a loose boundary tolerance (deferred to 2B).
+
+**Validation — met.** `core/tests/test_merge_chunks.cpp` (6 Catch2 cases under
+ASan/UBSan: the flush condition, the `curr_end-curr_start>0` guard, final append,
+onset/offset-ignored, speaker-irrelevance). `bindings/test/test_vad_parity.py`:
+per-function parity vs `_py_merge_chunks` on adversarial lists **plus** golden-replay
+(the 8 `*.vad.json` raw segments → C++ → committed `merged_chunks`, exact). 40/40 CTest,
+73 bindings green, full `uv run pytest tests/` green (226 passed) with
+`WHISPERX_CORE_STAGES` unset, `vad`, and `db,edits,vad` (tokens compose); `import
+whisperx` clean.
+
+**Slice 2B (pending).** In-process `libav*` decode (`core/audio/decode.{hpp,cpp}` +
+the shared `AudioBuffer`) replacing the ffmpeg subprocess, the ORT silero VAD producing
+the raw segments, behind a **`decode`** token, with vcpkg wiring + a dedicated CI job.
+Gates: PCM sample-for-sample parity vs `whisperx.load_audio`; decode-once; bench RTF.
+
 ### Goals
 - **In-memory decode** to float32/16 k/mono via the **ffmpeg libraries**
   (`libavformat` + `libavcodec` + `libswresample`) **linked in-process — no
@@ -487,11 +528,13 @@ Source: `audio.py:25` (`load_audio`, `SAMPLE_RATE=16000`), `vads/vad.py:19`
   right after decode. Keep these green when the C++ decode swaps in.
 
 ### Unknowns / open questions
-- **VAD model mismatch** — WhisperX's *default* VAD is **pyannote**
-  (`vads/pyannote.py`), but the plan defaults the C++ core to **silero**. Goldens
-  for `merge_chunks` must be generated with **silero** to be comparable (silero ≠
-  pyannote segmentation). Do we standardize golden generation on silero, or keep
-  pyannote VAD as an option and golden both?
+- ~~**VAD model mismatch**~~ **(resolved — decoupled golden, slice 2A).** Rather than
+  golden a specific live VAD, the **raw pre-merge segments** are dumped as a *fixed
+  input* (silero, via `dump_goldens.py --vad-only`) and `merge_chunks` is tested
+  **exactly** on them; the VAD model's own segments are judged only by a loose boundary
+  tolerance. So the silero-vs-pyannote / torch-vs-ORT segmentation difference no longer
+  needs to be byte-reconciled — `merge_chunks` parity is engine-independent by
+  construction.
 - **ffmpeg build/license/size (Option B residuals)** — build a **default LGPL**
   ffmpeg (no `--enable-gpl`/`--enable-nonfree`; native AAC decoder, no `fdk-aac`;
   MP3 patents expired); dynamic-link or LGPL-compliant static. Open: **codec/format
@@ -501,6 +544,101 @@ Source: `audio.py:25` (`load_audio`, `SAMPLE_RATE=16000`), `vads/vad.py:19`
   goldens) are reproducible across builds.
 - **silero version/thresholds** — `vad_onset=0.500`, `vad_offset=0.363`,
   min_duration on/off — exact parity with the sherpa-onnx silero build?
+
+### Slice 2B — in-process `libav*` decode + ORT silero VAD (`decode` token) — execution plan
+The remaining Phase-2 work, and the first slice to pull a **heavy native toolchain**
+(ffmpeg `libav*`, ONNX Runtime, sherpa-onnx) into the build. It replaces the ffmpeg
+**subprocess** with linked libraries, decoding **once** to a shared float32/16 kHz/mono
+buffer the later stages slice, and produces the raw VAD segments slice 2A's
+`merge_chunks` already consumes. Gated behind a new composable **`decode`** token
+(independent of `db`/`edits`/`vad`).
+
+**Scope.**
+- **(A) Decode** — `core/audio/decode.{hpp,cpp}` (`whisperx::audio`):
+  `AudioBuffer load_audio(const std::string& path, int sr = kSampleRate)`. Open/demux
+  with `libavformat` (`avformat_open_input` → `avformat_find_stream_info` →
+  `av_find_best_stream(AVMEDIA_TYPE_AUDIO)`), decode with `libavcodec`
+  (`avcodec_send_packet`/`receive_frame`), and resample/downmix/reformat with
+  `libswresample` to **mono / 16 kHz / `AV_SAMPLE_FMT_S16`**, then `sample / 32768.0f`
+  → float32. This reproduces the current subprocess (`-ac 1 -ar 16000 -f s16le -acodec
+  pcm_s16le`, `audio.py:44-65`) so the PCM is **sample-for-sample** identical (same
+  decoder + same `swresample`). One universal path for every format (WAV/MP3/FLAC/Ogg +
+  M4A/AAC, MP4/MOV, MKV/WebM, video — demux the audio stream, ignore video).
+- **(B) Shared buffer** — `core/audio/audio_buffer.hpp`: `struct AudioBuffer {
+  std::vector<float> samples; int sample_rate = kSampleRate;
+  std::span<const float> slice(size_t f0, size_t f1) const; }`. The "decode once" buffer
+  every later C++ stage slices zero-copy (ASR chunks, align `audio[:, f1:f2]`). In the
+  pybind seam `load_audio` returns a numpy float32 array (today's contract); the buffer
+  matters end-to-end once Phases 3–5 are native.
+- **(C) ORT silero VAD** — wrap sherpa-onnx's silero `VoiceActivityDetector` (ORT) to
+  emit raw `{start, end, "UNKNOWN"}` segments, fed straight into
+  `whisperx::vad::merge_chunks` (slice 2A). Thresholds mirror `default_vad_options`
+  (`vad_onset=0.5`, window/hop per the sherpa silero config). Per the **decoupled**
+  decision its segments are **not** chased to byte-parity with torch silero — only a
+  loose boundary tolerance.
+- **(D) pybind + facade** — bind `load_audio` (→ numpy) and the VAD entry; make
+  `whisperx/audio.py::load_audio` a **facade** (the 2A pattern): route to
+  `whisperx_core.load_audio` when **`decode`** ∈ `WHISPERX_CORE_STAGES`, keep the
+  subprocess body as `_py_load_audio` (the oracle). `app/pipeline.py` is unchanged — it
+  already calls `load_audio` once.
+
+**Build / deps (the heavy part).**
+- `vcpkg.json` — add **`ffmpeg`** with a trimmed feature set (LGPL default: no
+  `--enable-gpl`/`--enable-nonfree`, native AAC decoder, no `fdk-aac`; keep only the
+  demuxers/decoders we need — `mov`/`matroska`/`ogg`/`wav`/`mp3`/`flac`/`aac` etc. — and
+  drop muxers/encoders/video filters to cut size). `onnxruntime` is already declared.
+- **sherpa-onnx** is **not in the vcpkg registry** (see the `vcpkg.json` `$notes`) →
+  vendor it / build from source via `FetchContent` or an `ExternalProject`, pinned to a
+  release tag, linking its static VAD lib + ORT.
+- `CMakeLists.txt` — a `WHISPERX_CORE_AUDIO` option (**default OFF** so the dep-free
+  Phase-0/1/2A build and the existing fast CI are unchanged; **ON** under the vcpkg
+  toolchain). When ON: `find_package(FFMPEG)` (`libavformat`/`libavcodec`/
+  `libswresample`/`libavutil`) + ORT + sherpa-onnx, compile `decode.cpp` + the VAD TU
+  into `whisperx_core`, and add a **`bench/`** target (Google Benchmark) for decode + VAD
+  RTF.
+- **CI** (`.github/workflows/cpp-core.yml`) — a **new vcpkg job** (manifest mode +
+  binary caching to keep build time bounded) that configures with
+  `WHISPERX_CORE_AUDIO=ON`, runs the decode-parity + a VAD smoke + the bench, and
+  extends the stage-token matrix to include `vad` and `decode`. The existing
+  FetchContent-only job stays as the fast lane.
+
+**Validation (definition of done).**
+- **PCM parity** — `bindings/test/test_decode_parity.py`: C++ `load_audio` vs
+  `whisperx.load_audio` (subprocess) on **every** golden clip incl. the **m4a/AAC** one.
+  Already-16 kHz-mono clips exercise pure decode + s16 conversion (expected
+  bit-exact); the m4a exercises the AAC decoder + (no-op) resample. Tolerance tight
+  (`atol` ≈ a couple LSB) to absorb only legitimate resampler/dither differences.
+- **Decode-once** — assert one decode call services all downstream consumers; the
+  host-visible contract (`run_job` decodes once, `duration == len(audio)/SAMPLE_RATE`,
+  `on_duration` fires once) stays green with `decode` on
+  (`tests/test_pipeline_contract.py`).
+- **VAD smoke** — the ORT silero path runs end-to-end on a golden clip and its segments
+  feed `merge_chunks` without error (quality is the loose-boundary check, not parity).
+- **Bench RTF** for decode + VAD recorded (seeds Phase 6).
+- Full `uv run pytest tests/` green with `WHISPERX_CORE_STAGES` ∈ {unset, `decode`,
+  `vad,decode`, `db,edits,vad,decode`}; `import whisperx` clean.
+
+**Suggested build order.** (1) `decode.cpp` + `AudioBuffer` + the `WHISPERX_CORE_AUDIO`
+CMake/vcpkg plumbing + PCM-parity test — this is the deterministic, high-value half and
+de-risks the toolchain. (2) the vcpkg CI job. (3) the ORT silero VAD + bench (depends on
+sherpa-onnx vendoring, the looser half).
+
+**Risks / open decisions (carry forward).**
+- **Resampler/dither parity** — the ffmpeg CLI and the linked `swresample` must use the
+  **same engine + dither**: default `swr` (not soxr) and the *same* `dither_method`/
+  scale, or s16 output will differ by ±1 LSB. For the 16 kHz-mono goldens resampling is
+  a no-op (so parity is exact); the risk is real only for off-rate inputs — pin the swr
+  options explicitly and document the tolerance.
+- **Downmix coefficients** — stereo→mono uses ffmpeg's default matrix; match it (moot
+  for the mono goldens, relevant for real stereo input).
+- **silero model asset** — which silero ONNX (sherpa's bundled `silero_vad.onnx`) and
+  where it's fetched/vendored from; pin the revision.
+- **sherpa-onnx vs hand-rolled VAD** — if vendoring sherpa proves heavy, an alternative
+  is a thin ORT-only re-implementation of silero windowing; decided during build.
+- **ffmpeg version pin + license/size** — pin the ffmpeg version (decode determinism),
+  finalize the LGPL feature-trim + distribution sign-off (the Option-B residuals above).
+- **pybind in CI headroom** — the manylinux + vcpkg build-time budget (binary caching is
+  the mitigation).
 
 ---
 

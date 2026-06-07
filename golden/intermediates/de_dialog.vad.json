@@ -1,4 +1,111 @@
 {
+  "segments": [
+    {
+      "start": 1.282,
+      "end": 2.27,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 2.562,
+      "end": 4.51,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 4.674,
+      "end": 6.11,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 6.498,
+      "end": 8.67,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 10.082,
+      "end": 12.798,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 12.962,
+      "end": 13.63,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 15.938,
+      "end": 23.422,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 25.858,
+      "end": 27.806,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 28.61,
+      "end": 32.446,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 32.738,
+      "end": 34.59,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 37.538,
+      "end": 40.126,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 40.322,
+      "end": 43.422,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 44.706,
+      "end": 45.982,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 46.178,
+      "end": 47.07,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 47.202,
+      "end": 47.838,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 49.666,
+      "end": 52.126,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 54.658,
+      "end": 57.47,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 57.922,
+      "end": 58.526,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 60.066,
+      "end": 61.854,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 62.626,
+      "end": 63.006,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 63.138,
+      "end": 64.382,
+      "speaker": "UNKNOWN"
+    }
+  ],
   "merged_chunks": [
     {
       "start": 1.282,

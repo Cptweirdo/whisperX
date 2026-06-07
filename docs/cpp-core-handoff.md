@@ -122,6 +122,34 @@ tokens. Full detail in the Phase 1 brief; the settled facts for later phases:
   sidecar writes with a separate `files_lock_`; pybind calls keep the GIL (behaviour
   == today's Python store). GIL-release is a later tuning.
 
+## Phase 2 — slice 2A landed (`merge_chunks` + `vad` token); 2B pending (decode)
+
+Phase 2 is **split into two composable slices** (the Phase 1 pattern). The pure,
+dep-free algorithm IP landed first; the heavy in-process decode + ORT VAD is next.
+
+- **`merge_chunks` is native (`vad` token).** `core/vad/merge_chunks.{hpp,cpp}` is a
+  verbatim port of `whisperx/vads/vad.py::Vad.merge_chunks` (`whisperx::vad`, all
+  `nlohmann::json`), in the always-built `whisperx_core_lib` (no new deps), with the
+  audio hyperparameters in `core/audio/audio_constants.hpp`. `whisperx/vads/vad.py` is
+  now a **facade**: `Vad.merge_chunks` routes to C++ when **`vad`** ∈
+  `WHISPERX_CORE_STAGES` (keeping `_py_merge_chunks` as the oracle), covering both the
+  Silero and Pyannote backends (they delegate to it). `WHISPERX_CORE_STAGES` now carries
+  `db` / `edits` / `vad`, composably.
+- **VAD parity is decoupled (settled).** silero ≠ pyannote and torch silero ≠ ORT
+  silero, so live VAD segments aren't byte-comparable across engines. The **raw
+  pre-merge segments** are dumped as a *fixed input* golden (`dump_goldens.py --vad-only`
+  augments each `golden/intermediates/*.vad.json`, drift-guarded against the committed
+  `merged_chunks`, leaving the tensor goldens untouched); `merge_chunks` is gated
+  **exactly** on that input, the model's own segments only by a loose tolerance.
+- **Parity proven.** `core/tests/test_merge_chunks.cpp` (Catch2/ASan) +
+  `bindings/test/test_vad_parity.py` (per-function + golden-replay, exact). 40/40 CTest,
+  73 bindings, full pytest green (226) across `WHISPERX_CORE_STAGES` ∈ {unset, `vad`,
+  `db,edits,vad`}.
+- **Slice 2B (pending):** in-process `libav*` decode (`core/audio/decode.{hpp,cpp}` +
+  the shared `AudioBuffer`) replacing the ffmpeg subprocess, the ORT silero VAD, behind
+  a **`decode`** token, with vcpkg wiring + a dedicated CI job — gated by PCM
+  sample-for-sample parity, decode-once, and bench RTF.
+
 ## Where to start
 
 **Phase 0 is a decision gate, not just CMake setup.** Deliver: the `whisperx_core`
