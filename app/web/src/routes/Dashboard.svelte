@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { sessions } from "../lib/stores/sessions.svelte";
-  import { models } from "../lib/stores/models.svelte";
   import { ui } from "../lib/stores/ui.svelte";
   import FeatureCard from "../components/dashboard/FeatureCard.svelte";
   import LibrarySummary from "../components/dashboard/LibrarySummary.svelte";

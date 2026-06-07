@@ -4,7 +4,6 @@
   import { router } from "../lib/router.svelte";
   import { settings } from "../lib/stores/settings.svelte";
   import { models } from "../lib/stores/models.svelte";
-  import { backup } from "../lib/stores/backup.svelte";
   import { notify } from "../lib/stores/toast.svelte";
   import BackupCard from "../components/settings/BackupCard.svelte";
 
@@ -238,7 +237,7 @@
             <div class="ob__summaryItem"><div class="k">Backend</div><div class="v">{backendName}</div></div>
           </div>
           <div style="margin-top:40px">
-            <button type="button" class="btn-primary lg" loading={finishing} onclick={finish}>Enter Manuscript <sl-icon name="arrow-right"></sl-icon></button>
+            <button type="button" class="btn-primary lg" disabled={finishing} onclick={finish}>Enter Manuscript <sl-icon name="arrow-right"></sl-icon></button>
           </div>
         </div>
       </section>

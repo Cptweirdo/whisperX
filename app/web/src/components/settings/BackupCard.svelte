@@ -9,8 +9,8 @@
   const state = $derived(s?.state ?? "disabled");
   let folder = $state("");
   let busy = $state("");
-  let restoreModal = $state<any>(null);
-  let remote = $state<any>(null);
+  let restoreModal: any = $state(null);
+  let remote: any = $state(null);
   let remoteLoading = $state(false);
 
   $effect(() => {
