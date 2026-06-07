@@ -214,16 +214,17 @@ functions directly from the existing pytest oracle.
 
 ## 9. Roadmap
 
-| Phase | Goal | Exit criteria |
-|---|---|---|
-| 0 | Core skeleton | CMake builds `libwhisperx`; decode-once + sherpa Whisper transcribes a WAV |
-| 1 | Transcribe + VAD | silero VAD + **merge_chunks port**; matches Python segment text on golden clips |
-| 2 | Alignment | wav2vec2 ORT (batched) + **Viterbi port**; golden word-timing parity *(highest risk — early)* |
-| 3 | Diarization | sherpa diarize + **interval-tree assign port**; shared-segmentation option |
-| 4 | Server + SPA | Drogon/oatpp HTTP+SSE; SPA transcribe→progress→export; reuse the webview shell on desktop |
-| 5 | pybind oracle + CI | pybind11 module; golden-parity tests green in CI |
-| 6 | Package | desktop installers (lean), signing; cloud image |
-| 7 | *(optional)* FFI adapter | C-ABI for embedding the engine in another host |
+> The **authoritative, compat-aware roadmap** lives in
+> [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md) §6, with detailed
+> per-phase execution briefs in
+> [`cpp-core-migration-briefs.md`](./cpp-core-migration-briefs.md). In short:
+> **0** scaffold + golden generator + decision gate · **1** DB layer (SQLiteCpp,
+> replaces `store.py`) · **2** decode-once + VAD/`merge_chunks` · **3** alignment
+> (batched wav2vec2 + Viterbi — *highest risk, early*) · **4a** ASR backends /
+> **4b** diarize + assign · **5** writers + end-to-end · **6** timing gates.
+> Server/SPA packaging and the optional FFI adapter follow once the engine is
+> green. (This supersedes an earlier draft roadmap that numbered the phases
+> differently — see the migration plan as the single source of truth.)
 
 ## 10. Risks
 

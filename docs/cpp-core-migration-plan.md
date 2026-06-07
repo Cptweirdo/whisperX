@@ -154,8 +154,9 @@ anywhere**. The C++ suite measures it for real: wrap each stage in
 `std::chrono::steady_clock` (or the bench framework's timer), report per-stage ms
 and **RTF = stage_seconds / audio_seconds**, and gate regressions in CI. This
 does double duty: it *validates the cpp-core streamlining claims* (decode-once,
-batched alignment, models-resident + pipelining) with numbers, and it *replaces
-the guessed RTF constants with measured ones* that feed the real ETA.
+batched alignment, models-resident) with numbers, and it *replaces the guessed RTF
+constants with measured ones* that feed the real ETA. (Stage pipelining is
+deferred — not measured.)
 
 ### 3c. Framework choice
 
@@ -244,17 +245,21 @@ briefs** (context · goals · validation · unknowns) live in
 
 | Phase | Goal | Exit criteria |
 |---|---|---|
-| 0 | pybind scaffold + golden generator | `whisperx_core` importable from `app/`; goldens dumped for N clips; CMake + Ninja + vcpkg + CTest + Catch2 green |
-| 1 | DB layer in C++ (SQLiteCpp) behind the same `store.py` API surface | round-trips a **real pre-existing** `sessions.db`; migrations idempotent; backup snapshot/swap pass |
-| 2 | decode-once + VAD / `merge_chunks` | C++ chunks == golden; per-stage bench RTF recorded |
-| 3 | **alignment** — batched wav2vec2 (ORT) + Viterbi — *highest risk, early* | word-timing parity within tolerance; trellis path exact |
-| 4 | ASR (sherpa/ORT) + diarize + `assign_word_speakers` | segment text + speaker labels == golden |
-| 5 | writers + end-to-end | `transcript.{srt,vtt,txt,json}` byte-identical; full `run_job` parity |
+| 0 | scaffold + golden generator + **decision gate** | `whisperx_core` importable; goldens dumped for the **EN/DE/RU** clip set (pinned lib + model revisions, transcript stored separately); ASan/LSan + CMake + Ninja + vcpkg + CTest + Catch2 green |
+| 1 | DB layer (SQLiteCpp) **replacing** `store.py` | full `store.py` API parity; round-trips a **real pre-existing** `sessions.db`; migrations idempotent; backup snapshot/swap pass |
+| 2 | decode-once (ffmpeg libs) + VAD / `merge_chunks` | C++ chunks == golden; per-stage bench RTF recorded |
+| 3 | **alignment** — batched wav2vec2 (ORT) + Viterbi — *highest risk, early* | word-timing parity within tolerance; trellis path exact (fed Python ASR text) |
+| 4a | **ASR backends** (sherpa-onnx ORT first; whisper.cpp/GGML follow-on) | each backend gated by **WER/CER** (not byte-equality); `device` selection wired |
+| 4b | **diarize + `assign_word_speakers`** | assign glue exact on fixed turn sets; diarization quality A/B |
+| 5 | writers + end-to-end | writers byte-identical **on a fixed transcript**; `run_job` per-stage parity |
 | 6 | timing gates in CI | per-stage benchmarks tracked; regression budget enforced |
 
 Phases 0–1 deliver the safety net (oracle + DB compat) before any model is
 touched; 3 retires the biggest risk; 5 proves end-to-end parity; the strangler
-flag (`WHISPERX_CORE_STAGES`) lets each phase ship behind a toggle.
+flag (`WHISPERX_CORE_STAGES`) lets each phase ship behind a toggle. **4a/4b are
+independent sub-tracks** and need not ship together. Validation follows the
+**decoupled-golden** rule (briefs §"How to read", fact 3): downstream stages tested
+on a fixed transcript, ASR judged by WER.
 
 ## 7. Risks & verification
 
