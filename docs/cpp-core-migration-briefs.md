@@ -151,8 +151,13 @@ Source: `audio.py:25` (`load_audio`, `SAMPLE_RATE=16000`), `vads/vad.py:19`
 (`Vad.merge_chunks`), `vads/silero.py`.
 
 ### Goals
-- **In-memory decode** to float32/16 k/mono via **dr_libs/miniaudio** (+ ffmpeg
-  *libraries*, not subprocess, for compressed formats) — replacing `load_audio`.
+- **In-memory decode** to float32/16 k/mono via the **ffmpeg libraries**
+  (`libavformat` + `libavcodec` + `libswresample`) **linked in-process — no
+  subprocess** (replacing `load_audio`/`audio.py:44`). One decode path for **all**
+  formats incl. WAV/MP3/FLAC/Ogg **and** the hard ones (M4A/AAC, MP4/MOV, MKV/WebM,
+  video). **Decision: Option B** — universal ffmpeg-libs over a tiered
+  dr_libs+ffmpeg split, for one consistent code path and decode/resample parity
+  with the current (ffmpeg-based) pipeline.
 - **silero VAD** through sherpa-onnx (ONNX Runtime).
 - A faithful **`merge_chunks` port** (chunk_size, onset/offset, the voiced-span
   packing) producing the same chunk boundaries.
@@ -161,7 +166,8 @@ Source: `audio.py:25` (`load_audio`, `SAMPLE_RATE=16000`), `vads/vad.py:19`
 
 ### Validation
 - Decoded PCM matches `whisperx.load_audio` output **sample-for-sample within a
-  small tolerance** on the golden clips (resampler differences bounded).
+  small tolerance** — and parity should be *tight*, since both use ffmpeg's own
+  `swresample` (same decoder + resampler as today, just linked vs spawned).
 - **Merged chunk boundaries == golden** (`vads/vad.py::merge_chunks`), exact.
 - Decode-once verified: one decode call services all downstream consumers.
 - Bench RTF for decode + VAD recorded for Phase 6 baselining.
@@ -172,12 +178,13 @@ Source: `audio.py:25` (`load_audio`, `SAMPLE_RATE=16000`), `vads/vad.py:19`
   for `merge_chunks` must be generated with **silero** to be comparable (silero ≠
   pyannote segmentation). Do we standardize golden generation on silero, or keep
   pyannote VAD as an option and golden both?
-- **Resampler parity** — ffmpeg's `swr` vs miniaudio's resampler differ slightly;
-  what sample-level tolerance is acceptable, and does it propagate to mel/emissions
-  enough to matter?
-- **Compressed-format coverage** — mp3/m4a/etc. via linked ffmpeg libs vs dr_libs
-  alone. Which formats must v1 support, and is linking ffmpeg libs (licensing,
-  binary size) acceptable, or do we restrict inputs?
+- **ffmpeg build/license/size (Option B residuals)** — build a **default LGPL**
+  ffmpeg (no `--enable-gpl`/`--enable-nonfree`; native AAC decoder, no `fdk-aac`;
+  MP3 patents expired); dynamic-link or LGPL-compliant static. Open: **codec/format
+  trimming** (strip muxers/encoders/video filters we never use to cut binary size),
+  the final size budget, and a legal sign-off for distribution.
+- **Decode determinism** — ffmpeg version pinned so decoded buffers (hence
+  goldens) are reproducible across builds.
 - **silero version/thresholds** — `vad_onset=0.500`, `vad_offset=0.363`,
   min_duration on/off — exact parity with the sherpa-onnx silero build?
 

@@ -180,7 +180,7 @@ libs**.
 |---|---|---|
 | `faster-whisper` / `ctranslate2`, `pyannote`, `silero`, `torch` (four ML stacks) | **ONNX Runtime + sherpa-onnx** | one runtime; VAD + ASR + diarization off-the-shelf |
 | `torch`/`transformers` wav2vec2 + numpy Viterbi | **ORT model + own Viterbi** (ref: torchaudio `forced_align`; the C++ kernel in `MahmoudAshraf97/ctc-forced-aligner`) | the one DIY model — no clean standalone lib in any language |
-| `ffmpeg` **subprocess** (`audio.py:44`) | **dr_libs / miniaudio** (+ ffmpeg *libraries* for compressed formats) | link and decode to float in-memory; **no subprocess** |
+| `ffmpeg` **subprocess** (`audio.py:44`) | **ffmpeg *libraries*** (`libav*`), linked in-process (Option B) | one universal decode path (incl. M4A/AAC/MP4/video); decode to float in-memory; **no subprocess**; LGPL build |
 | `numpy` arrays · `torch.stft` mel (`audio.py:112`) | **Eigen** (or **xtensor** for an n-d, numpy-feel API) + KissFFT/pocketfft | the mel can also be baked into the ORT graph |
 | `pandas` DataFrames (`alignment.py:325,395`; `diarize.py:170`) | **plain structs + std loops** | DataFrames are incidental scaffolding, not needed |
 | `nltk` punkt (`alignment.py:189`) | **ICU** sentence/word break (or a small rule-based splitter) | |

@@ -167,7 +167,7 @@ One runtime · one decode · models resident · stages pipelined · glue in tigh
 |---|---|---|
 | Inference | **ONNX Runtime** (C++) + **sherpa-onnx** (VAD/ASR/diarize) | one runtime; EPs for GPU/ANE/NNAPI |
 | wav2vec2 align | ORT model + own Viterbi | the one DIY model |
-| Audio decode | dr_libs / miniaudio / libsndfile (+ ffmpeg libs for compressed) | **no ffmpeg subprocess**; link libs, decode to float in-memory |
+| Audio decode | **ffmpeg libraries** (`libavformat`/`libavcodec`/`libswresample`), linked in-process | **no ffmpeg subprocess** (Option B): one universal decode path for all formats incl. M4A/AAC/MP4/video; decode to float in-memory; LGPL build |
 | HTTP/SSE server | **Drogon** or **oat++** (perf, WebSocket/SSE) · **cpp-httplib** (header-only, simple) | SSE for progress, mirroring `app/` |
 | SPA | React / Svelte / SolidJS | true client-rendered SPA over a JSON/SSE API |
 | Build | CMake + vcpkg/Conan; cross-compile per platform | the main ergonomic cost |
