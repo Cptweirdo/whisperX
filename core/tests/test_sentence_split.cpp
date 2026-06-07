@@ -40,9 +40,15 @@ TEST_CASE("contract invariants on a sweep", "[split]") {
         "No. 5 is here. Done.", "Pi is 3.14 today. Yes.",
         "Wait... what? Go home.", "Привет мир. Как дела?",
         "the cat sat the dog ran", "Tab\tand\nnewline. Next.",
-        "Multiple   spaces.   Here.", "\"Run!\" She left."};
+        "Multiple   spaces.   Here.", "\"Run!\" She left.",
+        "Dr. Müller kam an. Er sprach.", "Am 1. Januar kam er.",
+        "Es war 1990. Danach kam Ruhe.", "Schön. Ärgerlich.",
+        "M. Dupont est arrivé. Il parle.", "Ça suffit. Écoute-moi.",
+        "Voir art. 5 ici. Fin."};
     for (const auto& t : texts) check_invariants(sentence_spans(t, "en"), ncp(t));
     for (const auto& t : texts) check_invariants(sentence_spans(t, "ru"), ncp(t));
+    for (const auto& t : texts) check_invariants(sentence_spans(t, "de"), ncp(t));
+    for (const auto& t : texts) check_invariants(sentence_spans(t, "fr"), ncp(t));
 }
 
 TEST_CASE("basic terminators split before a capital", "[split]") {
@@ -122,6 +128,58 @@ TEST_CASE("degenerate inputs", "[split][edge]") {
     REQUIRE(sentence_spans("\t\n ", "en").empty());
     REQUIRE(sentence_spans("x", "en") == Spans{{0, 1}});
     REQUIRE(sentence_spans("Single sentence no period", "en") == Spans{{0, 25}});
+}
+
+TEST_CASE("English decimals/fractions do not split", "[split][en][number]") {
+    // Internal decimal period has no following whitespace -> never a boundary,
+    // regardless of locale. The trailing terminator is a real sentence end.
+    REQUIRE(sentence_spans("The ratio is 1.23 exactly. Done.", "en").size() == 2);
+    REQUIRE(sentence_spans("It is 1.23. Next.", "en").size() == 2);
+    REQUIRE(sentence_spans("Value 0.5 and 1.25 here. Ok.", "en").size() == 2);
+}
+
+TEST_CASE("German: terminators and accented capitals", "[split][de]") {
+    // Ä/Ö/Ü are Latin-1 uppercase starters -> split before them.
+    REQUIRE(sentence_spans("Schön. Ärgerlich.", "de").size() == 2);
+    REQUIRE(sentence_spans("Die Sonne geht unter. Es wird dunkel.", "de").size() == 2);
+    REQUIRE(sentence_spans("Wie geht es dir? Mir gut. Gehen wir!", "de").size() == 3);
+}
+
+TEST_CASE("German: Moses abbreviations suppress the boundary", "[split][de][abbrev]") {
+    REQUIRE(sentence_spans("Dr. Müller kam an. Er sprach.", "de").size() == 2);
+    REQUIRE(sentence_spans("Prof. Bauer und St. Gallen. Ja.", "de").size() == 2);
+    REQUIRE(sentence_spans("Siehe Nr. 5 unten. Dort.", "de").size() == 2);
+    REQUIRE(sentence_spans("Kauf Brot usw. Das reicht. Ende.", "de").size() == 2);
+    // internal-period abbreviations: suppressed via the single-letter prefixes.
+    REQUIRE(sentence_spans("Das war z.B. wichtig. Merk dir.", "de").size() == 2);
+    REQUIRE(sentence_spans("Es ist d.h. fertig. Gut.", "de").size() == 2);
+}
+
+TEST_CASE("German: ordinal abbreviations 1. 2.", "[split][de][ordinal]") {
+    // "<digit(s)>." before a capital is a German ordinal (1. = 1st) -> no split.
+    REQUIRE(sentence_spans("Am 1. Januar kam er.", "de") == Spans{{0, 20}});
+    REQUIRE(sentence_spans("Treffen am 1. und 2. Mai.", "de").size() == 1);
+    // a real boundary after the ordinal's clause still splits.
+    REQUIRE(sentence_spans("Der 3. Platz reicht. Gut.", "de").size() == 2);
+    // 4-digit year is NOT an ordinal -> the sentence boundary stays.
+    REQUIRE(sentence_spans("Es war 1990. Danach kam Ruhe.", "de").size() == 2);
+    // the rule is de-gated: English is unaffected (period after a lone digit splits).
+    REQUIRE(sentence_spans("It was 1. Then came 2.", "en").size() == 2);
+}
+
+TEST_CASE("French: terminators and accented capitals", "[split][fr]") {
+    REQUIRE(sentence_spans("Le soleil se couche. La nuit tombe.", "fr").size() == 2);
+    REQUIRE(sentence_spans("Ça suffit. Écoute-moi.", "fr").size() == 2);
+    REQUIRE(sentence_spans("Comment ça va? Très bien. Allons-y!", "fr").size() == 3);
+}
+
+TEST_CASE("French: Moses abbreviations suppress the boundary", "[split][fr][abbrev]") {
+    REQUIRE(sentence_spans("M. Dupont est arrivé. Il parle.", "fr").size() == 2);
+    REQUIRE(sentence_spans("Voir art. 5 et fig. 2 ici. Fin.", "fr").size() == 2);
+    REQUIRE(sentence_spans("Cf. chap. 3 ici. Voilà.", "fr").size() == 2);
+    // French ordinals are written "1er/1re", not "1." -> no de-style ordinal rule:
+    // a lone digit then period before a capital splits like a normal number.
+    REQUIRE(sentence_spans("Au 1. Mai ici.", "fr").size() == 2);
 }
 
 TEST_CASE("unknown language falls back to English prefixes", "[split]") {

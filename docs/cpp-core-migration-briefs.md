@@ -716,8 +716,12 @@ forward) is the remaining slice. The settled facts:
   linking forces a Go/Rust toolchain; its only edge — byte-fidelity — is moot once divergence
   is accepted, and its case/adaptive machinery degrades on short ASR segments). The splitter
   **reproduces punkt exactly on every golden transcript**, so `words.json` needed **no
-  re-baseline**; on an adversarial en+ru corpus it agrees 77% (divergences documented +
-  pinned).
+  re-baseline**; on an adversarial **en+ru+de+fr** corpus it agrees 80% (divergences
+  documented + pinned). **German ordinals** ("1." = 1st, e.g. "Am 1. Januar") get a
+  de-gated suppression rule (`sentence_split.cpp`): a ≤2-digit token before a starter is
+  treated as non-breaking, so ordinals converge with punkt while 3-/4-digit year-final
+  sentences ("…1990. Danach…") and bare decimals ("1.23") still split correctly. de/fr
+  abbreviations + accented-capital starts are covered in `test_sentence_split.cpp`.
 - **Downstream blast-radius of any splitter divergence (analysed):** only segment/paragraph/
   cue structure + interpolated edges of *untimed* words on multi-sentence segments — never
   aligned-word timing, never speaker labels, never transcript text. The abbreviation
@@ -726,7 +730,7 @@ forward) is the remaining slice. The settled facts:
   clips (torch-free golden replay); `align_assemble` words match `words.json` within ±1
   frame / ±0.01; the splitter is pinned against a committed **punkt baseline**
   (`bindings/test/sentence_split_baseline.json` ← `golden/sentence_split_corpus.py`) with
-  contract invariants asserted on every input; **56/56 CTest** under ASan/UBSan
+  contract invariants asserted on every input; **62/62 CTest** under ASan/UBSan
   (`test_trellis.cpp`, `test_sentence_split.cpp`); `tests/test_word_timestamp_interpolation.py`
   green under `align`; full `uv run pytest tests/` green (226) across `WHISPERX_CORE_STAGES`
   ∈ {unset, `align`, `vad,align`, `db,edits,vad,align`}; dep-free build unaffected. The align

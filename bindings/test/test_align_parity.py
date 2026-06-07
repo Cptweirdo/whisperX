@@ -169,5 +169,13 @@ def test_sentence_spans_edge_cases():
     assert wc.sentence_spans("   ", "en") == []
     assert wc.sentence_spans("x", "en") == [(0, 1)]
     assert wc.sentence_spans("Hello world", "en") == [(0, 11)]  # no terminator
+    # English decimal: internal dot never splits; trailing terminator does -> 2 spans
+    assert len(wc.sentence_spans("It is 1.23. Next.", "en")) == 2
+    # German ordinal "1." is non-breaking (de-gated, <=2 digits) -> single span
+    assert wc.sentence_spans("Am 1. Januar kam er.", "de") == [(0, 20)]
+    # German 4-digit year is not an ordinal -> the boundary stays
+    assert len(wc.sentence_spans("Es war 1990. Danach kam Ruhe.", "de")) == 2
+    # French abbreviation "M." suppresses the boundary
+    assert len(wc.sentence_spans("M. Dupont est arrivé. Il parle.", "fr")) == 2
     # unknown language falls back to the en prefix list without crashing
     _invariants([list(s) for s in wc.sentence_spans("Mr. Smith ran. He left.", "xx")], 23)

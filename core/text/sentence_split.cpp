@@ -87,6 +87,18 @@ bool is_closing(char32_t c) {
            c == 0x203A /*›*/;
 }
 
+// Non-empty token of only ASCII digits (size() == digit count, ASCII == 1 byte).
+bool is_all_ascii_digits(const std::string& tok) {
+    if (tok.empty()) return false;
+    for (unsigned char ch : tok)
+        if (ch < '0' || ch > '9') return false;
+    return true;
+}
+// Languages that abbreviate ordinals as "<digit>." (e.g. German "1." = "1st").
+// Scoped to German per the current corpus; cs/sk/sl/sv/da/nl share the convention
+// and can be added here later.
+bool is_german_ordinal_lang(std::string_view lang) { return lang == "de"; }
+
 }  // namespace
 
 std::vector<std::pair<std::size_t, std::size_t>> sentence_spans(
@@ -137,6 +149,14 @@ std::vector<std::pair<std::size_t, std::size_t>> sentence_spans(
                 if (pfx.plain.count(tok)) {
                     suppress = true;
                 } else if (pfx.numeric.count(tok) && is_digit(cp[w])) {
+                    suppress = true;
+                } else if (is_german_ordinal_lang(lang) &&
+                           is_all_ascii_digits(tok) && tok.size() <= 2) {
+                    // German ordinal "1." / "2." / … / "99." before a starter
+                    // (e.g. "Am 1. Januar") — suppress like an abbreviation. Capped
+                    // at 2 digits so 3-/4-digit year-final sentences ("…1990. Danach…")
+                    // still split, the way #NUMERIC_ONLY# can't disambiguate. A bare
+                    // decimal "1.23" never reaches here (no whitespace after the dot).
                     suppress = true;
                 }
             }

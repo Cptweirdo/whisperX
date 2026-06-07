@@ -1335,6 +1335,1034 @@
   },
   {
     "id": 55,
+    "lang": "de",
+    "text": "Die Sonne ging unter. Das Tal wurde dunkel. Vögel verstummten.",
+    "punkt": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        43
+      ],
+      [
+        44,
+        62
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        43
+      ],
+      [
+        44,
+        62
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 56,
+    "lang": "de",
+    "text": "Ich ging nach Hause. Sie blieb.",
+    "punkt": [
+      [
+        0,
+        20
+      ],
+      [
+        21,
+        31
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        20
+      ],
+      [
+        21,
+        31
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 57,
+    "lang": "de",
+    "text": "Wie geht es dir? Mir gut. Gehen wir!",
+    "punkt": [
+      [
+        0,
+        16
+      ],
+      [
+        17,
+        25
+      ],
+      [
+        26,
+        36
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        16
+      ],
+      [
+        17,
+        25
+      ],
+      [
+        26,
+        36
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 58,
+    "lang": "de",
+    "text": "Warte... hast du das gehört? Nein? Seltsam.",
+    "punkt": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        34
+      ],
+      [
+        35,
+        43
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        34
+      ],
+      [
+        35,
+        43
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 59,
+    "lang": "de",
+    "text": "Er rief: „Halt!“ Dann rannte er.",
+    "punkt": [
+      [
+        0,
+        32
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        32
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 60,
+    "lang": "de",
+    "text": "Schön war es. Ärgerlich blieb der Rest. Übrigens, gut gemacht.",
+    "punkt": [
+      [
+        0,
+        13
+      ],
+      [
+        14,
+        39
+      ],
+      [
+        40,
+        62
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        13
+      ],
+      [
+        14,
+        39
+      ],
+      [
+        40,
+        62
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 61,
+    "lang": "de",
+    "text": "Dr. Müller traf Prof. Bauer im Labor. Sie sprachen.",
+    "punkt": [
+      [
+        0,
+        37
+      ],
+      [
+        38,
+        51
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        37
+      ],
+      [
+        38,
+        51
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 62,
+    "lang": "de",
+    "text": "Das war z.B. wichtig. Merk dir das.",
+    "punkt": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        35
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        35
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 63,
+    "lang": "de",
+    "text": "Kauf Brot, Milch usw. Vergiss es nicht.",
+    "punkt": [
+      [
+        0,
+        39
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        39
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 64,
+    "lang": "de",
+    "text": "Siehe Nr. 5 unten. Dort ist die Skizze.",
+    "punkt": [
+      [
+        0,
+        18
+      ],
+      [
+        19,
+        39
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        18
+      ],
+      [
+        19,
+        39
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 65,
+    "lang": "de",
+    "text": "Es ist d.h. fertig. Endlich.",
+    "punkt": [
+      [
+        0,
+        19
+      ],
+      [
+        20,
+        28
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        19
+      ],
+      [
+        20,
+        28
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 66,
+    "lang": "de",
+    "text": "Wir trafen uns in St. Gallen. Es war schön.",
+    "punkt": [
+      [
+        0,
+        29
+      ],
+      [
+        30,
+        43
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        29
+      ],
+      [
+        30,
+        43
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 67,
+    "lang": "de",
+    "text": "Das kostet ca. 30 Euro. Günstig genug.",
+    "punkt": [
+      [
+        0,
+        14
+      ],
+      [
+        15,
+        23
+      ],
+      [
+        24,
+        38
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        23
+      ],
+      [
+        24,
+        38
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 68,
+    "lang": "de",
+    "text": "Am 1. Januar beginnt es. Pünktlich um acht.",
+    "punkt": [
+      [
+        0,
+        24
+      ],
+      [
+        25,
+        43
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        24
+      ],
+      [
+        25,
+        43
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 69,
+    "lang": "de",
+    "text": "Der 3. und 4. Platz reichen. Gut so.",
+    "punkt": [
+      [
+        0,
+        13
+      ],
+      [
+        14,
+        28
+      ],
+      [
+        29,
+        36
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        36
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 70,
+    "lang": "de",
+    "text": "Sie kam am 2. Mai an. Wir warteten.",
+    "punkt": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        35
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        35
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 71,
+    "lang": "de",
+    "text": "Es war 1990. Danach kam Ruhe.",
+    "punkt": [
+      [
+        0,
+        12
+      ],
+      [
+        13,
+        29
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        12
+      ],
+      [
+        13,
+        29
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 72,
+    "lang": "de",
+    "text": "Version 1.2.3 erschien. Dann 1.2.4.",
+    "punkt": [
+      [
+        0,
+        23
+      ],
+      [
+        24,
+        35
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        23
+      ],
+      [
+        24,
+        35
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 73,
+    "lang": "de",
+    "text": "ich glaube wir sollten das jetzt einfach mal in ruhe besprechen",
+    "punkt": [
+      [
+        0,
+        63
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        63
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 74,
+    "lang": "de",
+    "text": "wie lange brauchst du denn noch für diese eine kleine aufgabe",
+    "punkt": [
+      [
+        0,
+        61
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        61
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 75,
+    "lang": "de",
+    "text": "ein gedanke ganz ohne ein richtiges ende",
+    "punkt": [
+      [
+        0,
+        40
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        40
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 76,
+    "lang": "de",
+    "text": "Hallo.",
+    "punkt": [
+      [
+        0,
+        6
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        6
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 77,
+    "lang": "de",
+    "text": "Ja.",
+    "punkt": [
+      [
+        0,
+        3
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        3
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 78,
+    "lang": "fr",
+    "text": "Le soleil se couchait. La vallée s'assombrit. Les oiseaux se turent.",
+    "punkt": [
+      [
+        0,
+        22
+      ],
+      [
+        23,
+        45
+      ],
+      [
+        46,
+        68
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        22
+      ],
+      [
+        23,
+        45
+      ],
+      [
+        46,
+        68
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 79,
+    "lang": "fr",
+    "text": "Je suis rentré. Elle est restée.",
+    "punkt": [
+      [
+        0,
+        15
+      ],
+      [
+        16,
+        32
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        15
+      ],
+      [
+        16,
+        32
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 80,
+    "lang": "fr",
+    "text": "Quelle heure est-il ? Il est midi. Allons-y !",
+    "punkt": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        34
+      ],
+      [
+        35,
+        45
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        34
+      ],
+      [
+        35,
+        45
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 81,
+    "lang": "fr",
+    "text": "Attends... tu as entendu ça ? Non ? Étrange.",
+    "punkt": [
+      [
+        0,
+        29
+      ],
+      [
+        30,
+        35
+      ],
+      [
+        36,
+        44
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        29
+      ],
+      [
+        30,
+        35
+      ],
+      [
+        36,
+        44
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 82,
+    "lang": "fr",
+    "text": "Il a crié : « Arrête ! » Puis il a couru.",
+    "punkt": [
+      [
+        0,
+        22
+      ],
+      [
+        23,
+        41
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        41
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 83,
+    "lang": "fr",
+    "text": "Ça suffit. Écoute-moi bien. Allons à l'École.",
+    "punkt": [
+      [
+        0,
+        10
+      ],
+      [
+        11,
+        27
+      ],
+      [
+        28,
+        45
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        10
+      ],
+      [
+        11,
+        27
+      ],
+      [
+        28,
+        45
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 84,
+    "lang": "fr",
+    "text": "M. Dupont a rencontré M. Martin. Ils ont parlé.",
+    "punkt": [
+      [
+        0,
+        32
+      ],
+      [
+        33,
+        47
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        32
+      ],
+      [
+        33,
+        47
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 85,
+    "lang": "fr",
+    "text": "Voir art. 5 et fig. 2 ici. La fin.",
+    "punkt": [
+      [
+        0,
+        9
+      ],
+      [
+        10,
+        19
+      ],
+      [
+        20,
+        26
+      ],
+      [
+        27,
+        34
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        26
+      ],
+      [
+        27,
+        34
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 86,
+    "lang": "fr",
+    "text": "Cf. chap. 3 puis etc. Voilà tout.",
+    "punkt": [
+      [
+        0,
+        3
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        10,
+        21
+      ],
+      [
+        22,
+        33
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        33
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 87,
+    "lang": "fr",
+    "text": "MM. Durand et Petit sont venus. Bien.",
+    "punkt": [
+      [
+        0,
+        3
+      ],
+      [
+        4,
+        31
+      ],
+      [
+        32,
+        37
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        31
+      ],
+      [
+        32,
+        37
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 88,
+    "lang": "fr",
+    "text": "La version 1.2.3 est sortie. Puis 1.2.4.",
+    "punkt": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        40
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        40
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 89,
+    "lang": "fr",
+    "text": "Il coûte 3,50 euros. Assez bon marché.",
+    "punkt": [
+      [
+        0,
+        20
+      ],
+      [
+        21,
+        38
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        20
+      ],
+      [
+        21,
+        38
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 90,
+    "lang": "fr",
+    "text": "je pense que nous devrions simplement en discuter calmement maintenant",
+    "punkt": [
+      [
+        0,
+        70
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        70
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 91,
+    "lang": "fr",
+    "text": "combien de temps te faut-il encore pour cette petite tâche",
+    "punkt": [
+      [
+        0,
+        58
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        58
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 92,
+    "lang": "fr",
+    "text": "une pensée sans véritable fin",
+    "punkt": [
+      [
+        0,
+        29
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        29
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 93,
+    "lang": "fr",
+    "text": "Bonjour.",
+    "punkt": [
+      [
+        0,
+        8
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        8
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 94,
+    "lang": "fr",
+    "text": "Oui.",
+    "punkt": [
+      [
+        0,
+        4
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        4
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 95,
     "lang": "en",
     "text": "the sun set overthe hills. The valley grew dark. Birds fell silent.",
     "punkt": [
@@ -1368,7 +2396,7 @@
     "matches_punkt": true
   },
   {
-    "id": 56,
+    "id": 96,
     "lang": "en",
     "text": "I went home. Shestayed.",
     "punkt": [
@@ -1394,7 +2422,7 @@
     "matches_punkt": true
   },
   {
-    "id": 57,
+    "id": 97,
     "lang": "en",
     "text": "What time is  it? It is noon. Let us go!",
     "punkt": [
@@ -1428,7 +2456,7 @@
     "matches_punkt": true
   },
   {
-    "id": 58,
+    "id": 98,
     "lang": "en",
     "text": "wait... did you hear  that? No? Strange.",
     "punkt": [
@@ -1462,7 +2490,7 @@
     "matches_punkt": true
   },
   {
-    "id": 59,
+    "id": 99,
     "lang": "en",
     "text": "He shouted, \"Stop right there!\" Thenhe ran.",
     "punkt": [
@@ -1488,7 +2516,7 @@
     "matches_punkt": true
   },
   {
-    "id": 60,
+    "id": 100,
     "lang": "en",
     "text": "She asked (quietly). He didnot answer.",
     "punkt": [
@@ -1514,7 +2542,7 @@
     "matches_punkt": true
   },
   {
-    "id": 61,
+    "id": 101,
     "lang": "en",
     "text": "Mr. Smith met Dr. Jones ta the lab. They talked.",
     "punkt": [
@@ -1540,7 +2568,7 @@
     "matches_punkt": true
   },
   {
-    "id": 62,
+    "id": 102,
     "lang": "en",
     "text": "We met at 5 p.m. and left by 7. Itwas short.",
     "punkt": [
@@ -1566,7 +2594,7 @@
     "matches_punkt": true
   },
   {
-    "id": 63,
+    "id": 103,
     "lang": "en",
     "text": "the U.S.economy grew. Markets rose.",
     "punkt": [
@@ -1592,7 +2620,7 @@
     "matches_punkt": true
   },
   {
-    "id": 64,
+    "id": 104,
     "lang": "en",
     "text": "see e.g. the appendix. Also cf. chapter3.",
     "punkt": [
@@ -1626,7 +2654,7 @@
     "matches_punkt": false
   },
   {
-    "id": 65,
+    "id": 105,
     "lang": "en",
     "text": "visit No. 5 Baker St. today. Ringtwice.",
     "punkt": [
@@ -1656,7 +2684,7 @@
     "matches_punkt": false
   },
   {
-    "id": 66,
+    "id": 106,
     "lang": "en",
     "text": "J.  R. R. Tolkien wrote books. Many books.",
     "punkt": [
@@ -1682,7 +2710,7 @@
     "matches_punkt": true
   },
   {
-    "id": 67,
+    "id": 107,
     "lang": "en",
     "text": "It cost $3.50 total. Cheap enough.",
     "punkt": [
@@ -1708,7 +2736,7 @@
     "matches_punkt": true
   },
   {
-    "id": 68,
+    "id": 108,
     "lang": "en",
     "text": "version 1.2.3 shipped. Then 1.2.4 followed.",
     "punkt": [
@@ -1734,7 +2762,7 @@
     "matches_punkt": true
   },
   {
-    "id": 69,
+    "id": 109,
     "lang": "en",
     "text": "The meeting ison 01.02.2026 sharp. Be early.",
     "punkt": [
@@ -1760,7 +2788,7 @@
     "matches_punkt": true
   },
   {
-    "id": 70,
+    "id": 110,
     "lang": "en",
     "text": "prof. Adams and  Sen. Lee spoke. Loudly.",
     "punkt": [
@@ -1790,7 +2818,7 @@
     "matches_punkt": false
   },
   {
-    "id": 71,
+    "id": 111,
     "lang": "en",
     "text": "i like to use a forward approach when resolving an issue with someone",
     "punkt": [
@@ -1808,7 +2836,7 @@
     "matches_punkt": true
   },
   {
-    "id": 72,
+    "id": 112,
     "lang": "en",
     "text": "how high do i know you or you can also ask is there something i can help",
     "punkt": [
@@ -1826,7 +2854,7 @@
     "matches_punkt": true
   },
   {
-    "id": 73,
+    "id": 113,
     "lang": "en",
     "text": "well glasses how long have you needed  a zen what do you need a zen for",
     "punkt": [
@@ -1844,7 +2872,7 @@
     "matches_punkt": true
   },
   {
-    "id": 74,
+    "id": 114,
     "lang": "en",
     "text": "this is a thought witohut an ending",
     "punkt": [
@@ -1862,7 +2890,7 @@
     "matches_punkt": true
   },
   {
-    "id": 75,
+    "id": 115,
     "lang": "en",
     "text": "first sentence here. and a trailing fragment",
     "punkt": [
@@ -1884,7 +2912,7 @@
     "matches_punkt": false
   },
   {
-    "id": 76,
+    "id": 116,
     "lang": "en",
     "text": "\"Run!\" she cried. We  ran.",
     "punkt": [
@@ -1914,7 +2942,7 @@
     "matches_punkt": false
   },
   {
-    "id": 77,
+    "id": 117,
     "lang": "en",
     "text": "He  said: 'maybe later.' nobody moved.",
     "punkt": [
@@ -1936,7 +2964,7 @@
     "matches_punkt": false
   },
   {
-    "id": 78,
+    "id": 118,
     "lang": "en",
     "text": "3.14 is pi. 2.72 ise.",
     "punkt": [
@@ -1962,7 +2990,7 @@
     "matches_punkt": true
   },
   {
-    "id": 79,
+    "id": 119,
     "lang": "en",
     "text": "email me at a.b@c.complease. thanks",
     "punkt": [
@@ -1984,7 +3012,7 @@
     "matches_punkt": false
   },
   {
-    "id": 80,
+    "id": 120,
     "lang": "en",
     "text": "go to example.com/path now.ok",
     "punkt": [
@@ -2002,7 +3030,7 @@
     "matches_punkt": true
   },
   {
-    "id": 81,
+    "id": 121,
     "lang": "en",
     "text": "Tab\tseparated.  And newline\nhere.Done.",
     "punkt": [
@@ -2028,7 +3056,7 @@
     "matches_punkt": true
   },
   {
-    "id": 82,
+    "id": 122,
     "lang": "en",
     "text": "Multiple  spaces   bteween.   Words   here.",
     "punkt": [
@@ -2054,7 +3082,7 @@
     "matches_punkt": true
   },
   {
-    "id": 83,
+    "id": 123,
     "lang": "en",
     "text": "a very long run on sentence that simply keeps going and going without any terminal punctuation at all so it should stay as one single spna no matter how many words appear inside of it here we go",
     "punkt": [
@@ -2072,7 +3100,7 @@
     "matches_punkt": true
   },
   {
-    "id": 84,
+    "id": 124,
     "lang": "ru",
     "text": "Солнце село за холмы. Долина поетмнела. Птицыумолкли.",
     "punkt": [
@@ -2106,7 +3134,7 @@
     "matches_punkt": true
   },
   {
-    "id": 85,
+    "id": 125,
     "lang": "ru",
     "text": "я пошёлдомой. Она осталась.",
     "punkt": [
@@ -2132,7 +3160,7 @@
     "matches_punkt": true
   },
   {
-    "id": 86,
+    "id": 126,
     "lang": "ru",
     "text": "которыйчас? Полдень. Идём!",
     "punkt": [
@@ -2166,7 +3194,7 @@
     "matches_punkt": true
   },
   {
-    "id": 87,
+    "id": 127,
     "lang": "ru",
     "text": "Подожди... ты слышал тэо? Нет? Странно.",
     "punkt": [
@@ -2200,7 +3228,7 @@
     "matches_punkt": true
   },
   {
-    "id": 88,
+    "id": 128,
     "lang": "ru",
     "text": "Онкрикну:л «Стой!» Потом убежал.",
     "punkt": [
@@ -2222,7 +3250,7 @@
     "matches_punkt": false
   },
   {
-    "id": 89,
+    "id": 129,
     "lang": "ru",
     "text": "Я жвиув г. Москве. Тут красиво.",
     "punkt": [
@@ -2248,7 +3276,7 @@
     "matches_punkt": true
   },
   {
-    "id": 90,
+    "id": 130,
     "lang": "ru",
     "text": "это т.е. очень важно.Запомни.",
     "punkt": [
@@ -2266,7 +3294,7 @@
     "matches_punkt": true
   },
   {
-    "id": 91,
+    "id": 131,
     "lang": "ru",
     "text": "Купи хле,б молоко и т.д. Не забудь.",
     "punkt": [
@@ -2288,7 +3316,7 @@
     "matches_punkt": false
   },
   {
-    "id": 92,
+    "id": 132,
     "lang": "ru",
     "text": "См. рис. 5 ниже.Там  схема.",
     "punkt": [
@@ -2310,7 +3338,7 @@
     "matches_punkt": false
   },
   {
-    "id": 93,
+    "id": 133,
     "lang": "ru",
     "text": "Версия 1.2.3 вышл.а Потом 1.2.4.",
     "punkt": [
@@ -2328,7 +3356,7 @@
     "matches_punkt": true
   },
   {
-    "id": 94,
+    "id": 134,
     "lang": "ru",
     "text": "из всех социальных сетей я предпочитаю 3-ю. Просто так.",
     "punkt": [
@@ -2350,7 +3378,7 @@
     "matches_punkt": false
   },
   {
-    "id": 95,
+    "id": 135,
     "lang": "ru",
     "text": "я стою где-то часов 5-6. Какие качества ценю в людях?",
     "punkt": [
@@ -2376,7 +3404,7 @@
     "matches_punkt": true
   },
   {
-    "id": 96,
+    "id": 136,
     "lang": "ru",
     "text": "я скорее тех кому вечно подна потому что я даже летом хожу в кофты",
     "punkt": [
@@ -2394,7 +3422,7 @@
     "matches_punkt": true
   },
   {
-    "id": 97,
+    "id": 137,
     "lang": "ru",
     "text": "какие изменения в природе вы  замечаете с приходом весны",
     "punkt": [
@@ -2412,7 +3440,7 @@
     "matches_punkt": true
   },
   {
-    "id": 98,
+    "id": 138,
     "lang": "ru",
     "text": "купил iPhone вчера.  Дорого. Но круто.",
     "punkt": [
@@ -2446,7 +3474,7 @@
     "matches_punkt": true
   },
   {
-    "id": 99,
+    "id": 139,
     "lang": "ru",
     "text": "Однозначн.о Я  определённо исполнитель.",
     "punkt": [
@@ -2459,6 +3487,956 @@
       [
         0,
         39
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 140,
+    "lang": "de",
+    "text": "Die Sonen ging unter. Das Tal wurde dunkel. Vögel verstummten.",
+    "punkt": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        43
+      ],
+      [
+        44,
+        62
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        43
+      ],
+      [
+        44,
+        62
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 141,
+    "lang": "de",
+    "text": "Ich ging nach Hause.  Sie blieb.",
+    "punkt": [
+      [
+        0,
+        20
+      ],
+      [
+        22,
+        32
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        20
+      ],
+      [
+        22,
+        32
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 142,
+    "lang": "de",
+    "text": "Wie geht es dir? Mir ugt. Gehen wir!",
+    "punkt": [
+      [
+        0,
+        16
+      ],
+      [
+        17,
+        25
+      ],
+      [
+        26,
+        36
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        16
+      ],
+      [
+        17,
+        25
+      ],
+      [
+        26,
+        36
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 143,
+    "lang": "de",
+    "text": "Warte... hast du das gehört? Nein? Seltsma.",
+    "punkt": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        34
+      ],
+      [
+        35,
+        43
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        34
+      ],
+      [
+        35,
+        43
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 144,
+    "lang": "de",
+    "text": "er rief: „Halt!“ Dann rannte er.",
+    "punkt": [
+      [
+        0,
+        32
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        32
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 145,
+    "lang": "de",
+    "text": "Schön war es. Ärgerlich  blieb der Rest.Übrigens, gut gemacht.",
+    "punkt": [
+      [
+        0,
+        13
+      ],
+      [
+        14,
+        62
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        13
+      ],
+      [
+        14,
+        62
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 146,
+    "lang": "de",
+    "text": "Dr. Müller traf Prof. Bauer im Laobr. Sie sprachen.",
+    "punkt": [
+      [
+        0,
+        37
+      ],
+      [
+        38,
+        51
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        37
+      ],
+      [
+        38,
+        51
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 147,
+    "lang": "de",
+    "text": "Das war z.B. wichtig. Merk  dir das.",
+    "punkt": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        36
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        36
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 148,
+    "lang": "de",
+    "text": "Kauf Brot, Milch usw. Vergiss es nicht.",
+    "punkt": [
+      [
+        0,
+        39
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        39
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 149,
+    "lang": "de",
+    "text": "siehe Nr. 5 unten. Dort ist die Skizze.",
+    "punkt": [
+      [
+        0,
+        18
+      ],
+      [
+        19,
+        39
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        18
+      ],
+      [
+        19,
+        39
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 150,
+    "lang": "de",
+    "text": "Es ist d.h. fertig. Enldich.",
+    "punkt": [
+      [
+        0,
+        19
+      ],
+      [
+        20,
+        28
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        19
+      ],
+      [
+        20,
+        28
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 151,
+    "lang": "de",
+    "text": "wir trafen unsin St. Gallen. Es war schön.",
+    "punkt": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        42
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        42
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 152,
+    "lang": "de",
+    "text": "das  kostet ca. 30 Euro. Günstig genug.",
+    "punkt": [
+      [
+        0,
+        15
+      ],
+      [
+        16,
+        24
+      ],
+      [
+        25,
+        39
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        24
+      ],
+      [
+        25,
+        39
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 153,
+    "lang": "de",
+    "text": "am 1. Januar beginnt se. Pünktlich um acht.",
+    "punkt": [
+      [
+        0,
+        24
+      ],
+      [
+        25,
+        43
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        24
+      ],
+      [
+        25,
+        43
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 154,
+    "lang": "de",
+    "text": "Der 3. und 4. Platz  reichen. Gut so.",
+    "punkt": [
+      [
+        0,
+        13
+      ],
+      [
+        14,
+        29
+      ],
+      [
+        30,
+        37
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        29
+      ],
+      [
+        30,
+        37
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 155,
+    "lang": "de",
+    "text": "sie kam am 2. Mai an.Wir warteten.",
+    "punkt": [
+      [
+        0,
+        34
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        34
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 156,
+    "lang": "de",
+    "text": "Es war 1990. Danach kam  Ruhe.",
+    "punkt": [
+      [
+        0,
+        12
+      ],
+      [
+        13,
+        30
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        12
+      ],
+      [
+        13,
+        30
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 157,
+    "lang": "de",
+    "text": "Version 1.2.3 erschien. Dann 1..24.",
+    "punkt": [
+      [
+        0,
+        23
+      ],
+      [
+        24,
+        35
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        23
+      ],
+      [
+        24,
+        35
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 158,
+    "lang": "de",
+    "text": "ich glaube wir sollten das jetzt einfach malin ruhe besprechen",
+    "punkt": [
+      [
+        0,
+        62
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        62
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 159,
+    "lang": "de",
+    "text": "wielange brauchst du denn noch für diese eine kleine aufgabe",
+    "punkt": [
+      [
+        0,
+        60
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        60
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 160,
+    "lang": "de",
+    "text": "ein gedanke ganz ohne ein  richtiges ende",
+    "punkt": [
+      [
+        0,
+        41
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        41
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 161,
+    "lang": "fr",
+    "text": "Le soleil secouchait. La vallée s'assombrit. Les oisaeux se turent.",
+    "punkt": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        44
+      ],
+      [
+        45,
+        67
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        44
+      ],
+      [
+        45,
+        67
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 162,
+    "lang": "fr",
+    "text": "Je suisrentré. Elle  est restée.",
+    "punkt": [
+      [
+        0,
+        14
+      ],
+      [
+        15,
+        32
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        14
+      ],
+      [
+        15,
+        32
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 163,
+    "lang": "fr",
+    "text": "quelle heure est-il ? Il est mdii. Allons-y !",
+    "punkt": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        34
+      ],
+      [
+        35,
+        45
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        21
+      ],
+      [
+        22,
+        34
+      ],
+      [
+        35,
+        45
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 164,
+    "lang": "fr",
+    "text": "Attends... tu as entendu ça  ? Non ? Étrange.",
+    "punkt": [
+      [
+        0,
+        30
+      ],
+      [
+        31,
+        36
+      ],
+      [
+        37,
+        45
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        30
+      ],
+      [
+        31,
+        36
+      ],
+      [
+        37,
+        45
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 165,
+    "lang": "fr",
+    "text": "Il a crié : « Arrête ! » Puis il a couru.",
+    "punkt": [
+      [
+        0,
+        22
+      ],
+      [
+        23,
+        41
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        41
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 166,
+    "lang": "fr",
+    "text": "Ça suffit. Écoute-moi bien. Allonsà l'École.",
+    "punkt": [
+      [
+        0,
+        10
+      ],
+      [
+        11,
+        27
+      ],
+      [
+        28,
+        44
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        10
+      ],
+      [
+        11,
+        27
+      ],
+      [
+        28,
+        44
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 167,
+    "lang": "fr",
+    "text": "m. Dupont a rencontré M. Martin. Ils ont parlé.",
+    "punkt": [
+      [
+        0,
+        32
+      ],
+      [
+        33,
+        47
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        32
+      ],
+      [
+        33,
+        47
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 168,
+    "lang": "fr",
+    "text": "Voir art. 5  et fig.2 ici. La fin.",
+    "punkt": [
+      [
+        0,
+        9
+      ],
+      [
+        10,
+        26
+      ],
+      [
+        27,
+        34
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        26
+      ],
+      [
+        27,
+        34
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 169,
+    "lang": "fr",
+    "text": "cf. chap. 3 puis etc. Voiàl tout.",
+    "punkt": [
+      [
+        0,
+        3
+      ],
+      [
+        4,
+        9
+      ],
+      [
+        10,
+        33
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        33
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 170,
+    "lang": "fr",
+    "text": "MM. Durand et Petit sont  venus. Bien.",
+    "punkt": [
+      [
+        0,
+        3
+      ],
+      [
+        4,
+        32
+      ],
+      [
+        33,
+        38
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        32
+      ],
+      [
+        33,
+        38
+      ]
+    ],
+    "matches_punkt": false
+  },
+  {
+    "id": 171,
+    "lang": "fr",
+    "text": "la version 1.2.3 est sortie. Puis 1.2.4.",
+    "punkt": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        40
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        28
+      ],
+      [
+        29,
+        40
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 172,
+    "lang": "fr",
+    "text": "il coûte 3,50 euros. Assez bon marché.",
+    "punkt": [
+      [
+        0,
+        20
+      ],
+      [
+        21,
+        38
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        20
+      ],
+      [
+        21,
+        38
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 173,
+    "lang": "fr",
+    "text": "je pense que nous devrions  simplement endiscuter calmement maintenant",
+    "punkt": [
+      [
+        0,
+        70
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        70
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 174,
+    "lang": "fr",
+    "text": "combien detemps te faut-il encore pour cette petite tâche",
+    "punkt": [
+      [
+        0,
+        57
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        57
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 175,
+    "lang": "fr",
+    "text": "une pensée sans véritablefni",
+    "punkt": [
+      [
+        0,
+        28
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        28
+      ]
+    ],
+    "matches_punkt": true
+  },
+  {
+    "id": 176,
+    "lang": "fr",
+    "text": "Bojnour.",
+    "punkt": [
+      [
+        0,
+        8
+      ]
+    ],
+    "cpp": [
+      [
+        0,
+        8
       ]
     ],
     "matches_punkt": true

@@ -108,6 +108,67 @@ RU = [
     "Однозначно. Я определённо исполнитель.",
 ]
 
+DE = [
+    # clean multi-sentence
+    "Die Sonne ging unter. Das Tal wurde dunkel. Vögel verstummten.",
+    "Ich ging nach Hause. Sie blieb.",
+    "Wie geht es dir? Mir gut. Gehen wir!",
+    "Warte... hast du das gehört? Nein? Seltsam.",
+    "Er rief: „Halt!“ Dann rannte er.",
+    # accented capitals as starters
+    "Schön war es. Ärgerlich blieb der Rest. Übrigens, gut gemacht.",
+    # abbreviations — should NOT split
+    "Dr. Müller traf Prof. Bauer im Labor. Sie sprachen.",
+    "Das war z.B. wichtig. Merk dir das.",
+    "Kauf Brot, Milch usw. Vergiss es nicht.",
+    "Siehe Nr. 5 unten. Dort ist die Skizze.",
+    "Es ist d.h. fertig. Endlich.",
+    "Wir trafen uns in St. Gallen. Es war schön.",
+    "Das kostet ca. 30 Euro. Günstig genug.",
+    # German ordinals: "1." = 1st — should NOT split
+    "Am 1. Januar beginnt es. Pünktlich um acht.",
+    "Der 3. und 4. Platz reichen. Gut so.",
+    "Sie kam am 2. Mai an. Wir warteten.",
+    # year-final counter-case: 4-digit -> DOES split
+    "Es war 1990. Danach kam Ruhe.",
+    "Version 1.2.3 erschien. Dann 1.2.4.",
+    # lowercase / ASR-shaped — expect single span
+    "ich glaube wir sollten das jetzt einfach mal in ruhe besprechen",
+    "wie lange brauchst du denn noch für diese eine kleine aufgabe",
+    # no terminal punctuation
+    "ein gedanke ganz ohne ein richtiges ende",
+    # edge
+    "Hallo.",
+    "Ja.",
+]
+
+FR = [
+    # clean multi-sentence
+    "Le soleil se couchait. La vallée s'assombrit. Les oiseaux se turent.",
+    "Je suis rentré. Elle est restée.",
+    "Quelle heure est-il ? Il est midi. Allons-y !",
+    "Attends... tu as entendu ça ? Non ? Étrange.",
+    "Il a crié : « Arrête ! » Puis il a couru.",
+    # accented capitals as starters
+    "Ça suffit. Écoute-moi bien. Allons à l'École.",
+    # abbreviations — should NOT split
+    "M. Dupont a rencontré M. Martin. Ils ont parlé.",
+    "Voir art. 5 et fig. 2 ici. La fin.",
+    "Cf. chap. 3 puis etc. Voilà tout.",
+    "MM. Durand et Petit sont venus. Bien.",
+    # numbers
+    "La version 1.2.3 est sortie. Puis 1.2.4.",
+    "Il coûte 3,50 euros. Assez bon marché.",
+    # lowercase / ASR-shaped — expect single span
+    "je pense que nous devrions simplement en discuter calmement maintenant",
+    "combien de temps te faut-il encore pour cette petite tâche",
+    # no terminal punctuation
+    "une pensée sans véritable fin",
+    # edge
+    "Bonjour.",
+    "Oui.",
+]
+
 
 def garble(text: str, rng: random.Random) -> str:
     """Small deterministic perturbations: drop a space, lowercase a start, double
@@ -148,11 +209,14 @@ def main():
     splitters = {
         "en": nltk_load("tokenizers/punkt_tab/english.pickle"),
         "ru": nltk_load("tokenizers/punkt_tab/russian.pickle"),
+        "de": nltk_load("tokenizers/punkt_tab/german.pickle"),
+        "fr": nltk_load("tokenizers/punkt_tab/french.pickle"),
     }
 
     rng = random.Random(20260607)
     items = []
-    raw = [("en", t) for t in EN] + [("ru", t) for t in RU]
+    raw = ([("en", t) for t in EN] + [("ru", t) for t in RU] +
+           [("de", t) for t in DE] + [("fr", t) for t in FR])
     # add garbled variants of the non-trivial items
     for lang, t in list(raw):
         if len(t) >= 8:
