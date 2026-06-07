@@ -1,4 +1,4 @@
-"""Flask + htmx frontend for WhisperX (CPU-only, with diarization).
+"""Flask JSON API for WhisperX, serving the Svelte SPA (app/web -> static/spa).
 
 Run:  python -m app.server     (or  flask --app app.server run)
 Config: put HF_TOKEN (and optional WHISPERX_* overrides) in app/.env.
@@ -58,8 +58,6 @@ from flask import (  # noqa: E402 - load .env first
     Response,
     abort,
     jsonify,
-    redirect,
-    render_template,
     request,
     send_file,
 )
@@ -75,7 +73,7 @@ from app.translation import DEFAULT_SERVICE, SERVICES  # noqa: E402
 from app.sse import Broker, sse_response  # noqa: E402
 from app.jobs import JobQueue  # noqa: E402
 from app.edits import distinct_speakers, group_turns, next_speaker_key  # noqa: E402
-from app.render import render_markdown, render_transcript, resolve_label  # noqa: E402
+from app.render import render_markdown, resolve_label  # noqa: E402
 from app.store import SessionStore  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -95,11 +93,9 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
 @app.errorhandler(413)
 def _too_large(_e):
-    # Flask aborts the request before create_session() runs, so render a clean
-    # message into the upload dialog's #dialog-status (htmx innerHTML swap)
-    # instead of leaking werkzeug's default HTML / a bare console 413.
-    msg = f"File too large. The maximum upload size is {MAX_UPLOAD_MB / 1000:.1f} GB."
-    return f'<div class="dialog-error" role="alert">{msg}</div>', 413
+    # Flask aborts the upload before the route runs; return JSON the SPA surfaces.
+    return jsonify({"error": "File too large.",
+                    "max_mb": MAX_UPLOAD_MB}), 413
 
 
 # --- View formatting (dashboard cards + transcript header) -------------------
@@ -224,12 +220,6 @@ _manager = pipeline.ModelManager(
 )
 
 
-@app.context_processor
-def _inject_device() -> dict:
-    """Expose the live compute-device label to every template (sidebar chip)."""
-    return {"device_label": pipeline.DEVICE_LABELS.get(_manager.device, _manager.device)}
-
-
 def _warm_models() -> None:
     """Warm the active Whisper model + the shared diarizer in the background."""
     try:
@@ -320,76 +310,6 @@ def healthz():
 
 
 # --- Backup endpoints (thin: all logic lives in BackupService) ----------------
-@app.get("/backup/status")
-def backup_status():
-    return jsonify(_backup.status())
-
-
-@app.post("/backup/link")
-def backup_link():
-    """Run the OAuth consent flow (loopback) then report what's on the remote."""
-    from app.backup import LinkOutcome, oauth
-    try:
-        oauth.link_interactive()
-    except Exception as exc:  # noqa: BLE001 - surface to caller
-        return jsonify({"error": str(exc)}), 400
-    if _backup.interval and _backup.is_linked():
-        _backup.start_periodic()
-    a = _backup.assess_link()
-    # Fresh remote -> seed; empty local -> auto-restore; in-sync -> nothing. A
-    # DIVERGED remote is left for the client to resolve via /backup/bootstrap/*.
-    if a.outcome == LinkOutcome.FRESH:
-        _seed_initial_backup()
-    elif a.outcome == LinkOutcome.REMOTE_ONLY:
-        _seed_initial_restore()
-    return jsonify({"linked": True, "outcome": a.outcome.value,
-                    "remote": a.remote.__dict__})
-
-
-@app.post("/backup/unlink")
-def backup_unlink():
-    from app.backup import oauth
-    oauth.unlink()
-    return jsonify({"linked": False})
-
-
-@app.post("/backup/now")
-def backup_now():
-    if not _backup.is_linked():
-        return jsonify({"error": "backup backend is not linked"}), 409
-    _run_backup_async()  # progress + result land on /backup/status/events
-    return jsonify(_backup.status()), 202
-
-
-@app.post("/backup/restore")
-def backup_restore():
-    try:
-        restored = _backup.restore()
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 409
-    return jsonify({"restored": restored})
-
-
-@app.post("/backup/bootstrap/adopt")
-def backup_adopt():
-    """Bootstrap choice 'load existing': pull the remote down."""
-    try:
-        restored = _backup.adopt_remote()
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 409
-    return jsonify({"restored": restored})
-
-
-@app.post("/backup/bootstrap/overwrite")
-def backup_overwrite():
-    """Bootstrap choice 'start fresh': push local over the remote."""
-    try:
-        result = _backup.overwrite_remote()
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 409
-    return jsonify(result.__dict__)
-
-
 # --- Backup UI (partial-rendering, htmx-swapped — mirrors the HF-token card) ---
 # These power the Settings "Backup & Restore" card and the onboarding step. They
 # reuse the same BackupService as the JSON routes above, but render HTML
@@ -426,30 +346,6 @@ def _human_ago(iso: str | None) -> str | None:
     return when.astimezone().strftime("%b %-d, %H:%M")
 
 
-def _backup_ctx(notice: str | None = None, notice_ok: bool = True,
-                remote=None, error: str | None = None) -> dict:
-    """Template context shared by the Settings card and the onboarding step."""
-    status = _backup.status()
-    backend = status.get("backend")
-    return {
-        "backup": status,
-        "backup_provider": _PROVIDER_LABELS.get(backend, backend or "Cloud backup"),
-        "backup_notice": notice,
-        "backup_notice_ok": notice_ok,
-        "backup_remote": remote,
-        "backup_remote_size": _human_size(remote.total_size) if remote else None,
-        "backup_error": error,
-        "backup_last_human": _human_ago(status.get("last_backup_at")),
-        # User-chosen Drive folder (gdrive only): prefills the connect field and
-        # labels the connected card. Stored in the keyring, never in the data dir.
-        "backup_folder": backup_pkg.gdrive_folder() if backend == "gdrive" else None,
-    }
-
-
-def _render_backup(template: str, **ctx_overrides):
-    return render_template(template, **_backup_ctx(**ctx_overrides))
-
-
 def _remote_json(remote) -> dict | None:
     """JSON view of a RemoteState (restore/conflict prompts)."""
     if not remote or not getattr(remote, "exists", False):
@@ -484,12 +380,9 @@ def _backup_json(remote=None, notice: str | None = None, notice_ok: bool = True)
 # stream. The browser swaps #backup-card in place, so auto/periodic/manual pushes,
 # failures, and "last backup at X" all show live without a reload.
 def _backup_status_event() -> dict:
-    """Re-render the Settings backup card for the persistent status stream.
-
-    Renders inside an app context (publish may run on a background job thread). In
-    the CONFLICT state it re-probes the remote and passes it through so the
-    Load/Start-fresh prompt is preserved rather than overwritten by a status push.
-    """
+    """Backup sync state for the persistent status stream (JSON; the SPA renders
+    the card). In the CONFLICT state it re-probes the remote so the Load/Start-fresh
+    prompt is preserved rather than overwritten by a status push."""
     state = _backup.status().get("state")
     remote = None
     if state == "conflict":
@@ -498,10 +391,7 @@ def _backup_status_event() -> dict:
             remote = rs if rs.exists else None
         except Exception:  # noqa: BLE001 - fall back to the plain card
             remote = None
-    with app.app_context():
-        html = _render_backup("partials/_backup_card.html", remote=remote)
-    return {"type": "backup", "state": state, "html": html,
-            "status": _backup_json(remote=remote)}
+    return {"type": "backup", "state": state, "status": _backup_json(remote=remote)}
 
 
 def _publish_backup() -> None:
@@ -544,21 +434,18 @@ _backup_link_lock = threading.Lock()
 _backup_link = {"active": False, "result": None}  # result: last terminal SSE event
 
 
-def _start_backup_link(template: str) -> None:
-    """Begin the consent flow in the background (idempotent while one runs).
-
-    ``template`` is the partial rendered into the terminal SSE event so the page
-    that started the link gets a fragment shaped for its own container.
-    """
+def _start_backup_link() -> None:
+    """Begin the OAuth consent flow in the background (idempotent while one runs).
+    The terminal result lands on BACKUP_CHANNEL as JSON the SPA renders."""
     with _backup_link_lock:
         if _backup_link["active"]:
             return
         _backup_link["active"] = True
         _backup_link["result"] = None
-    threading.Thread(target=_run_backup_link, args=(template,), daemon=True).start()
+    threading.Thread(target=_run_backup_link, daemon=True).start()
 
 
-def _run_backup_link(template: str) -> None:
+def _run_backup_link() -> None:
     from app.backup import LinkOutcome, oauth
     after = None  # "seed" | "restore" — a background op to kick AFTER publishing
     try:
@@ -574,13 +461,9 @@ def _run_backup_link(template: str) -> None:
         elif a.outcome == LinkOutcome.REMOTE_ONLY:
             after = "restore"    # empty local: pull the existing backup down
         remote = a.remote if a.outcome == LinkOutcome.DIVERGED else None
-        with app.app_context():
-            html = _render_backup(template, remote=remote)
-        event = {"status": "linked", "html": html, "backup": _backup_json(remote=remote)}
+        event = {"status": "linked", "backup": _backup_json(remote=remote)}
     except Exception as exc:  # noqa: BLE001 - report to the page over SSE
-        with app.app_context():
-            html = _render_backup(template, notice=str(exc), notice_ok=False)
-        event = {"status": "error", "html": html, "message": str(exc),
+        event = {"status": "error", "message": str(exc),
                  "backup": _backup_json(notice=str(exc), notice_ok=False)}
     with _backup_link_lock:
         _backup_link["active"] = False
@@ -639,15 +522,6 @@ def _apply_backup_folder(name: str | None) -> None:
         _backup.backend.set_folder(backup_pkg.gdrive_folder())
 
 
-def _backup_connecting(card_id: str | None, target: str, swap: str) -> str:
-    """Render the 'waiting for sign-in' fragment for a given page container."""
-    return render_template(
-        "partials/_backup_connecting.html",
-        backup_card_id=card_id, backup_target=target, backup_swap=swap,
-        **_backup_ctx(),
-    )
-
-
 @app.get("/backup/events")
 def backup_events():
     """Server-Sent Events stream for the OAuth consent flow.
@@ -665,195 +539,6 @@ def backup_events():
         BACKUP_CHANNEL,
         pending=pending,
         terminal=lambda e: e.get("status") in ("linked", "error"),
-    )
-
-
-@app.post("/settings/backup/connect")
-def settings_backup_connect():
-    """Kick off the OAuth consent flow (non-blocking) and return a waiting
-    fragment; the final card arrives over SSE (see /backup/events)."""
-    if _backup.is_linked():
-        return _render_backup("partials/_backup_card.html")
-    _apply_backup_folder(request.form.get("backup_folder"))
-    _start_backup_link("partials/_backup_card.html")
-    return _backup_connecting("backup-card", "#backup-card", "outer")
-
-
-@app.post("/settings/backup/adopt")
-def settings_backup_adopt():
-    try:
-        n = _backup.adopt_remote()
-    except RuntimeError as exc:
-        return _render_backup("partials/_backup_card.html",
-                              notice=str(exc), notice_ok=False)
-    return _render_backup("partials/_backup_card.html",
-                          notice=f"Loaded {n} file{'' if n == 1 else 's'} from the backup.")
-
-
-@app.post("/settings/backup/overwrite")
-def settings_backup_overwrite():
-    try:
-        r = _backup.overwrite_remote()
-    except RuntimeError as exc:
-        return _render_backup("partials/_backup_card.html",
-                              notice=str(exc), notice_ok=False)
-    return _render_backup("partials/_backup_card.html",
-                          notice=f"Backed up — {r.uploaded} uploaded, {r.skipped} unchanged.")
-
-
-@app.post("/settings/backup/now")
-def settings_backup_now():
-    if not _backup.is_linked():
-        return _render_backup("partials/_backup_card.html",
-                              notice="Backup backend is not linked.", notice_ok=False)
-    # Run off-thread so the request returns a "Syncing…" card immediately; the
-    # persistent status stream then flips it to "Up to date · last backup …".
-    _run_backup_async()
-    return _render_backup("partials/_backup_card.html")
-
-
-@app.post("/settings/backup/restore")
-def settings_backup_restore():
-    try:
-        n = _backup.restore()
-    except RuntimeError as exc:
-        return _render_backup("partials/_backup_card.html",
-                              notice=str(exc), notice_ok=False)
-    return _render_backup("partials/_backup_card.html",
-                          notice=f"Restored {n} file{'' if n == 1 else 's'} from the backup.")
-
-
-@app.post("/settings/backup/disconnect")
-def settings_backup_disconnect():
-    from app.backup import oauth
-    oauth.unlink()
-    return _render_backup("partials/_backup_card.html",
-                          notice="Disconnected. Local data is untouched.")
-
-
-@app.get("/settings/backup/remote-info")
-def settings_backup_remote_info():
-    """Detail fragment for the restore modal — probes the remote on open."""
-    try:
-        remote = _backup.bootstrap()
-    except RuntimeError as exc:
-        return _render_backup("partials/_backup_remote_info.html", error=str(exc))
-    return _render_backup("partials/_backup_remote_info.html", remote=remote)
-
-
-@app.post("/onboarding/backup/connect")
-def onboarding_backup_connect():
-    """Non-blocking consent kickoff; the final step fragment arrives over SSE."""
-    if _backup.is_linked():
-        return _render_backup("partials/_backup_onboarding.html")
-    _apply_backup_folder(request.form.get("backup_folder"))
-    _start_backup_link("partials/_backup_onboarding.html")
-    return _backup_connecting(None, "#ob-backup", "inner")
-
-
-@app.post("/onboarding/backup/adopt")
-def onboarding_backup_adopt():
-    try:
-        n = _backup.adopt_remote()
-    except RuntimeError as exc:
-        return _render_backup("partials/_backup_onboarding.html",
-                              notice=str(exc), notice_ok=False)
-    return _render_backup("partials/_backup_onboarding.html",
-                          notice=f"Loaded {n} file{'' if n == 1 else 's'} from your backup.")
-
-
-@app.post("/onboarding/backup/overwrite")
-def onboarding_backup_overwrite():
-    try:
-        _backup.overwrite_remote()
-    except RuntimeError as exc:
-        return _render_backup("partials/_backup_onboarding.html",
-                              notice=str(exc), notice_ok=False)
-    return _render_backup("partials/_backup_onboarding.html",
-                          notice="Started a fresh backup on this account.")
-
-
-@app.post("/onboarding/backup/disconnect")
-def onboarding_backup_disconnect():
-    from app.backup import oauth
-    oauth.unlink()
-    return _render_backup("partials/_backup_onboarding.html")
-
-
-@app.route("/")
-def index():
-    if _sessions.get_setting("onboarded") != "1":
-        return redirect("/onboarding")
-    rows = _sessions.list()  # newest first
-    cards = [_card(r) for r in rows]
-    status = _manager.status()
-    active_error = next(
-        (m["error"] for m in status["models"] if m["name"] == status["active"]), None
-    )
-    pending = [c for c in cards if c["status"] in ("queued", "running")]
-    failed = [c for c in cards if c["status"] == "error"]
-    done = [c for c in cards if c["status"] == "done"]
-    device_label = pipeline.DEVICE_LABELS.get(_manager.device, _manager.device)
-    return render_template(
-        "index.html",
-        featured=cards[0] if cards else None,
-        all_cards=cards,
-        pending_count=len(pending),
-        failed_count=len(failed),
-        done_count=len(done),
-        summary=_summary(rows),
-        default_language=_sessions.get_setting("default_language", ""),
-        models_ready=models_ready(),
-        bundle_error=active_error,
-        diarize_enabled=status["diarize_available"],
-        diarize_error=status["diarize_error"],
-        models=status,
-        device_label=device_label,
-    )
-
-
-def _diarize_card_ctx(notice: str | None = None, notice_ok: bool = True) -> dict:
-    """Template context for the diarization-model Settings card (and its swaps)."""
-    version = diarize_model.derive_version(diarize_model.resolve_local_model())
-    return {
-        "diarize_version": version,
-        "diarize_model_name": diarize_model.REPO_ID,
-        "token_set": bool(secret_store.resolve_hf_token()),
-        "notice": notice,
-        "notice_ok": notice_ok,
-    }
-
-
-def _google_key_ctx(notice: str = "", notice_ok: bool = True) -> dict:
-    return {
-        "key_set": bool(secret_store.resolve_google_api_key()),
-        "notice": notice,
-        "notice_ok": notice_ok,
-    }
-
-
-@app.get("/settings")
-def settings():
-    return render_template(
-        "settings.html",
-        active="settings",
-        default_language=_sessions.get_setting("default_language", ""),
-        models=_manager.status(),
-        translation_service=_sessions.get_setting("translation_service", DEFAULT_SERVICE),
-        translation_services=[
-            {"id": name, "label": cls.label} for name, cls in SERVICES.items()
-        ],
-        google_key=_google_key_ctx(),
-        **_diarize_card_ctx(),
-        **_backup_ctx(),
-    )
-
-
-@app.post("/settings")
-def save_settings():
-    _sessions.set_setting("default_language", request.form.get("default_language", "").strip())
-    return (
-        '<span class="frag frag--ok"><sl-icon name="check-circle"></sl-icon> Saved</span>'
     )
 
 
@@ -884,481 +569,6 @@ def _onboarding_size(active: str) -> str:
     if active in ids:
         return active
     return pipeline.DEFAULT_MODEL if pipeline.DEFAULT_MODEL in ids else "small"
-
-
-@app.get("/onboarding")
-def onboarding():
-    status = _manager.status()
-    return render_template(
-        "onboarding.html",
-        token=secret_store.resolve_hf_token() or "",
-        sizes=ONBOARDING_SIZES,
-        selected_size=_onboarding_size(status["active"]),
-        models=status,
-        diarize_model=secret_store.DIARIZE_MODEL,
-        **_backup_ctx(),
-    )
-
-
-def _verify_fragment(token: str):
-    """Verify a token and return an (ok, html-fragment) pair for the inline notice."""
-    ok, detail = secret_store.verify_token(token)
-    cls = "frag--ok" if ok else "frag--err"
-    icon = "check-circle" if ok else "exclamation-triangle"
-    from markupsafe import escape
-
-    html = (f'<span class="frag {cls}"><sl-icon name="{icon}"></sl-icon> '
-            f'{escape(detail)}</span>')
-    return ok, html
-
-
-@app.post("/onboarding/verify")
-def onboarding_verify():
-    """Live-verify the entered token; the Access step gates 'Continue' on the
-    X-Token-OK header (and shows the returned notice fragment)."""
-    token = request.form.get("token", "").strip()
-    ok, html = _verify_fragment(token)
-    resp = app.make_response(html)
-    resp.headers["X-Token-OK"] = "1" if ok else "0"
-    return resp
-
-
-def _onboarding_store_error(token: str, model: str, exc: Exception):
-    """Re-render onboarding on the Access step with a secret-store error."""
-    return render_template(
-        "onboarding.html",
-        token=token, sizes=ONBOARDING_SIZES,
-        selected_size=_onboarding_size(model), models=_manager.status(),
-        diarize_model=secret_store.DIARIZE_MODEL, store_error=str(exc),
-        **_backup_ctx(),
-    ), 500
-
-
-@app.post("/onboarding")
-def onboarding_finish():
-    """Persist the setup: store the (re-verified) token if one was given, the
-    model, and device, mark onboarded, then redirect to the dashboard.
-
-    The token is **optional** — diarization works out of the box from the
-    vendored model. A token is stored only to enable refreshing that model from
-    Hugging Face. If a token IS supplied it must verify, so we never store junk.
-    """
-    token = request.form.get("token", "").strip()
-    model = request.form.get("model", "").strip()
-    device = request.form.get("device", "").strip()
-
-    try:
-        model = pipeline.WhisperModel(model).value
-    except ValueError:
-        abort(400, f"Unknown model: {model}")
-    if device not in pipeline.DEVICES:
-        abort(400, f"Unknown device: {device}")
-
-    if token:
-        ok, _detail = secret_store.verify_token(token)
-        if not ok:
-            return redirect("/onboarding")
-        try:
-            secret_store.set_hf_token(token)
-        except secret_store.SecretStoreUnavailable as exc:
-            return _onboarding_store_error(token, model, exc)
-
-    _sessions.set_setting("active_model", model)
-    _sessions.set_setting("device", device)
-    _manager.set_active(model)            # background warm
-    if device != _manager.device:
-        try:
-            _manager.set_device(device)   # flush + background warm on new device
-        except ValueError:
-            pass                          # unavailable device: keep current, dashboard shows it
-    _manager.reset_diarize()              # pick up the new token without a restart
-    _sessions.set_setting("onboarded", "1")
-    return redirect("/")
-
-
-@app.post("/settings/hf-token")
-def settings_hf_token():
-    """Verify + store the HF token from Settings; re-render the token card body."""
-    token = request.form.get("hf_token", "").strip()
-    ok, detail = secret_store.verify_token(token)
-    if not ok:
-        return render_template("partials/_hf_token.html",
-                               token_set=bool(secret_store.resolve_hf_token()),
-                               notice=detail, notice_ok=False)
-    try:
-        secret_store.set_hf_token(token)
-    except secret_store.SecretStoreUnavailable as exc:
-        return render_template("partials/_hf_token.html",
-                               token_set=bool(secret_store.resolve_hf_token()),
-                               notice=str(exc), notice_ok=False)
-    _manager.reset_diarize()
-    return render_template("partials/_hf_token.html", token_set=True,
-                           notice="Token saved and verified.", notice_ok=True)
-
-
-@app.post("/settings/hf-token/clear")
-def settings_hf_token_clear():
-    """Remove the stored token; diarization falls back to disabled."""
-    secret_store.delete_hf_token()
-    _manager.reset_diarize()
-    token_set = bool(secret_store.resolve_hf_token())  # env override may still apply
-    notice = ("Cleared the stored token, but HF_TOKEN is still set in the environment."
-              if token_set else "Token cleared. Speaker diarization is now disabled.")
-    return render_template("partials/_hf_token.html", token_set=token_set,
-                           notice=notice, notice_ok=True)
-
-
-@app.post("/settings/google-key")
-def settings_google_key():
-    """Verify + store the Google Translation API key; re-render the key card."""
-    key = request.form.get("google_key", "").strip()
-    ok, detail = secret_store.verify_google_api_key(key)
-    if not ok:
-        return render_template("partials/_google_key.html",
-                               **_google_key_ctx(notice=detail, notice_ok=False))
-    try:
-        secret_store.set_google_api_key(key)
-    except secret_store.SecretStoreUnavailable as exc:
-        return render_template("partials/_google_key.html",
-                               **_google_key_ctx(notice=str(exc), notice_ok=False))
-    return render_template("partials/_google_key.html",
-                           **_google_key_ctx(notice="Key saved and verified.",
-                                             notice_ok=True))
-
-
-@app.post("/settings/google-key/clear")
-def settings_google_key_clear():
-    """Remove the stored Google Translation API key; translation is disabled."""
-    secret_store.delete_google_api_key()
-    key_set = bool(secret_store.resolve_google_api_key())  # env override may apply
-    notice = ("Cleared the stored key, but GOOGLE_TRANSLATE_API_KEY is still set "
-              "in the environment." if key_set
-              else "Key cleared. Translation is now disabled.")
-    return render_template("partials/_google_key.html",
-                           **_google_key_ctx(notice=notice, notice_ok=True))
-
-
-@app.post("/settings/translation-service")
-def settings_translation_service():
-    """Persist the chosen translation service (only 'google' valid for now)."""
-    service = request.form.get("translation_service", "").strip()
-    if service not in SERVICES:
-        abort(400, "Unknown translation service.")
-    _sessions.set_setting("translation_service", service)
-    return (
-        '<span class="frag frag--ok"><sl-icon name="check-circle"></sl-icon> Saved</span>'
-    )
-
-
-@app.post("/settings/diarize-model/refresh")
-def settings_diarize_refresh():
-    """Download the latest pyannote pipeline from HF into the data dir and switch
-    to it. Requires a token (the model is gated); re-renders the model card."""
-    token = secret_store.resolve_hf_token()
-    if not token:
-        return render_template(
-            "partials/_diarize_model.html",
-            **_diarize_card_ctx(
-                notice="Add a Hugging Face token above to fetch model updates.",
-                notice_ok=False,
-            ),
-        )
-    try:
-        dest = diarize_model.vendor(token, dest_root=diarize_model.data_root())
-    except Exception as exc:  # noqa: BLE001 - surface download/network errors to the card
-        logger.exception("Diarization model refresh failed")
-        return render_template(
-            "partials/_diarize_model.html",
-            **_diarize_card_ctx(notice=f"Refresh failed: {exc}", notice_ok=False),
-        )
-    _manager.reset_diarize()  # next job re-resolves to the refreshed copy
-    sha8 = dest.name.rsplit(".", 1)[-1]
-    return render_template(
-        "partials/_diarize_model.html",
-        **_diarize_card_ctx(notice=f"Refreshed to revision {sha8}.", notice_ok=True),
-    )
-
-
-@app.get("/sessions/<session_id>/view")
-def view_session(session_id: str):
-    row = _sessions.get(session_id)
-    if row is None:
-        abort(404)
-    if row["status"] != "done":
-        return redirect("/")
-    source = row.get("language") or ""
-    return render_template(
-        "transcript.html",
-        session=_card(row),
-        transcript=_render_body(session_id),
-        can_undo=_sessions.edit_history_len(session_id) > 0,
-        formats=[f for f in pipeline.OUTPUT_FORMATS
-                 if os.path.exists(_sessions.artifact_path(session_id, f))],
-        google_key_set=bool(secret_store.resolve_google_api_key()),
-        source_lang=source,
-        source_label=_lang_display(source)["native"] if source else "Original",
-        # Targets exclude the source language; the menu/JS adds native names for
-        # any already-translated tag not in this list via `lang_names`.
-        target_languages=[l for l in TRANSLATION_LANGUAGES if l["code"] != source],
-        lang_names={l["code"]: l["native"] for l in TRANSLATION_LANGUAGES},
-        # Translation artifacts: json overlay + srt/vtt/txt (see translate_job).
-        translation_formats=["srt", "vtt", "txt", "json"],
-    )
-
-
-@app.get("/sessions/<session_id>/inline")
-def inline_session(session_id: str):
-    """Transcript fragment for embedding in the new-recording modal."""
-    row = _sessions.get(session_id)
-    if row is None:
-        abort(404)
-    if row["status"] != "done":
-        abort(404)
-    return render_template(
-        "partials/_inline_transcript.html",
-        session=_card(row),
-        transcript=_render_body(session_id),
-    )
-
-
-def _render_body(session_id: str) -> str:
-    """Render the transcript body from the current (edit-overlaid) segments."""
-    result = _sessions.load_result(session_id) or {}
-    segments = _sessions.current_segments(session_id, result.get("segments", []))
-    view = {**result, "segments": segments}
-    return render_transcript(view, _sessions.get_speaker_names(session_id))
-
-
-def _body_response(session_id: str):
-    """Transcript body HTML + an X-Can-Undo header so the client can toggle Undo."""
-    resp = app.make_response(_render_body(session_id))
-    resp.headers["X-Can-Undo"] = "1" if _sessions.edit_history_len(session_id) > 0 else "0"
-    return resp
-
-
-@app.post("/sessions/<session_id>/turns/<int:turn_index>")
-def edit_turn(session_id: str, turn_index: int):
-    """Edit one turn's text (collapses its segments). Returns the re-rendered body.
-
-    Empty text deletes the turn. The whole body is returned (not just the turn) so a
-    deletion that re-merges neighbours and the shifted turn indices stay consistent.
-    """
-    if _sessions.get(session_id) is None:
-        abort(404)
-    try:
-        _sessions.save_turn_edit(session_id, turn_index, request.form.get("text", ""))
-    except IndexError:
-        abort(400, "Unknown turn.")
-    return _body_response(session_id)
-
-
-@app.post("/sessions/<session_id>/undo")
-def undo_edit(session_id: str):
-    """Reverse the most recent turn edit. Returns the re-rendered body."""
-    if _sessions.get(session_id) is None:
-        abort(404)
-    _sessions.undo_turn_edit(session_id)
-    return _body_response(session_id)
-
-
-@app.post("/sessions/<session_id>/rename")
-def rename_session(session_id: str):
-    """Rename a recording's display title (metadata only). Returns the new name."""
-    if _sessions.get(session_id) is None:
-        abort(404)
-    name = request.form.get("name", "").strip()
-    if not name:
-        abort(400, "Name cannot be empty.")
-    _sessions.rename(session_id, name)
-    return name
-
-
-@app.post("/sessions/<session_id>/speakers")
-def rename_speaker(session_id: str):
-    """Assign/clear a display name for a diarized speaker (non-destructive).
-
-    Returns the resolved label as plain text so the client can update every
-    matching chip in place without re-rendering the transcript.
-    """
-    if _sessions.get(session_id) is None:
-        abort(404)
-    speaker = request.form.get("speaker", "").strip()
-    if not speaker:
-        abort(400, "Missing speaker key.")
-    name = request.form.get("name", "").strip()
-    _sessions.set_speaker_name(session_id, speaker, name)
-    return resolve_label(speaker, {speaker: name} if name else None)
-
-
-@app.get("/sessions/<session_id>/speakers")
-def list_speakers(session_id: str):
-    """The session's speakers (key + resolved label) for the reassign picker."""
-    if _sessions.get(session_id) is None:
-        abort(404)
-    result = _sessions.load_result(session_id) or {}
-    segments = _sessions.current_segments(session_id, result.get("segments", []))
-    names = _sessions.get_speaker_names(session_id)
-    return jsonify([
-        {"key": key, "label": resolve_label(key, names)}
-        for key in distinct_speakers(segments)
-    ])
-
-
-@app.post("/sessions/<session_id>/turns/<int:turn_index>/speaker")
-def reassign_turn(session_id: str, turn_index: int):
-    """Reassign one turn to a different speaker (non-destructive overlay edit).
-
-    Send ``speaker=<key>`` to reassign to an existing speaker, or ``name=<name>``
-    alone to enroll a brand-new speaker (a fresh key is minted, named, and assigned).
-    Returns the re-rendered body (full body, since a reassignment can merge turns and
-    shift indices) plus the X-Can-Undo header — same contract as edit_turn.
-    """
-    if _sessions.get(session_id) is None:
-        abort(404)
-    speaker = request.form.get("speaker", "").strip()
-    name = request.form.get("name", "").strip()
-    if not speaker:
-        if not name:
-            abort(400, "Provide a speaker key or a name for a new speaker.")
-        # Enroll a new speaker: mint the next key over everything already in use
-        # (segment keys + any named speakers), name it, then reassign to it.
-        result = _sessions.load_result(session_id) or {}
-        segments = _sessions.current_segments(session_id, result.get("segments", []))
-        names = _sessions.get_speaker_names(session_id)
-        # Reject duplicates: a new speaker can't reuse an existing speaker's label
-        # (custom name or default "Speaker N"), or we'd have two indistinguishable
-        # speakers. Compare case-insensitively on the trimmed name.
-        taken = {resolve_label(k, names).casefold() for k in distinct_speakers(segments)}
-        taken |= {v.casefold() for v in names.values()}
-        if name.casefold() in taken:
-            abort(409, f"A speaker named {name!r} already exists.")
-        existing = set(distinct_speakers(segments)) | set(names)
-        speaker = next_speaker_key(existing)
-    if name:
-        _sessions.set_speaker_name(session_id, speaker, name)
-    try:
-        _sessions.save_turn_reassign(session_id, turn_index, speaker)
-    except IndexError:
-        abort(400, "Unknown turn.")
-    return _body_response(session_id)
-
-
-@app.post("/sessions")
-def create_session():
-    if not models_ready():
-        return render_template("_status.html", state="loading_models", job_id=None), 503
-
-    file = request.files.get("audio")
-    if not file or not file.filename:
-        abort(400, "No audio file uploaded.")
-
-    def _int(name):
-        v = request.form.get(name, "").strip()
-        return int(v) if v.isdigit() else None
-
-    # Per-upload model override; defaults to the active model. Reject unknown names.
-    requested = request.form.get("model", "").strip()
-    if requested:
-        try:
-            model = pipeline.WhisperModel(requested).value
-        except ValueError:
-            abort(400, f"Unknown model: {requested}")
-    else:
-        model = _manager.active
-
-    session_id = uuid.uuid4().hex
-    safe_name = secure_filename(file.filename) or "audio"
-    ext = os.path.splitext(safe_name)[1] or ".bin"
-    audio_filename = f"audio{ext}"
-
-    os.makedirs(_sessions.session_dir(session_id), exist_ok=True)
-    file.save(os.path.join(_sessions.session_dir(session_id), audio_filename))
-
-    # Optional user-supplied display name; falls back to the uploaded file name.
-    display_name = request.form.get("name", "").strip() or file.filename
-
-    _sessions.create(
-        session_id,
-        filename=display_name,
-        audio_filename=audio_filename,
-        options={
-            "language": request.form.get("language", "").strip() or None,
-            "min_speakers": _int("min_speakers"),
-            "max_speakers": _int("max_speakers"),
-        },
-        model=model,
-    )
-    _queue.submit(session_id)
-    return render_template("_status.html", state="queued", job_id=session_id)
-
-
-@app.get("/models")
-def list_models():
-    """Available models, which are loaded/loading, and the active one."""
-    return jsonify(_manager.status())
-
-
-@app.post("/models/active")
-def switch_model():
-    """Dedicated switch endpoint: set + persist the global active model and warm it."""
-    model = (request.form.get("model") or (request.get_json(silent=True) or {}).get("model") or "").strip()
-    try:
-        model = pipeline.WhisperModel(model).value
-    except ValueError:
-        abort(400, f"Unknown model: {model}")
-    status = _manager.set_active(model)         # in-memory switch + background warm
-    _sessions.set_setting("active_model", model)  # survive restart
-    if request.headers.get("HX-Request"):
-        return render_template("_models.html", models=status)
-    return jsonify(status)
-
-
-@app.post("/device")
-def switch_device():
-    """Switch the compute device (cpu/cuda): flush + reload all models, persist it.
-
-    Blocked while any job is queued/running so a switch never reloads models out
-    from under an in-flight pipeline; the user retries once the queue is idle.
-    """
-    device = (request.form.get("device") or (request.get_json(silent=True) or {}).get("device") or "").strip()
-    if device not in pipeline.DEVICES:
-        abort(400, f"Unknown device: {device}")
-    if _sessions.has_active_jobs():
-        if request.headers.get("HX-Request"):
-            return render_template("_device.html", models=_manager.status(), busy=True), 409
-        return jsonify({"error": "busy", **_manager.status()}), 409
-    try:
-        status = _manager.set_device(device)       # flush caches + reload on new device
-    except ValueError as exc:
-        abort(400, str(exc))
-    _sessions.set_setting("device", device)        # survive restart
-    if request.headers.get("HX-Request"):
-        return render_template("_device.html", models=status)
-    return jsonify(status)
-
-
-@app.get("/sessions/<session_id>/status")
-def session_status(session_id: str):
-    row = _sessions.get(session_id)
-    if row is None:
-        abort(404)
-    status = row["status"]
-    if status in ("queued", "running"):
-        device_label = pipeline.DEVICE_LABELS.get(_manager.device, _manager.device)
-        return render_template("_status.html", state=status, job_id=session_id,
-                               device_label=device_label, stage=row.get("stage"))
-    if status == "error":
-        return render_template("_status.html", state="error", job_id=session_id, error=row["error"])
-    # done
-    return render_template(
-        "_result.html",
-        job_id=session_id,
-        transcript=_render_body(session_id),
-        diarized=bool(row.get("diarized")),
-        language=row.get("language"),
-        formats=[f for f in pipeline.OUTPUT_FORMATS
-                 if os.path.exists(_sessions.artifact_path(session_id, f))],
-    )
 
 
 @app.get("/sessions/<session_id>/events")
@@ -1401,27 +611,6 @@ def models_events():
     state has no terminal, so the browser keeps the stream open until navigation.
     """
     return sse_response(_broker, MODELS_CHANNEL, initial=lambda: _models_event(_manager.status()))
-
-
-@app.get("/sessions")
-def list_sessions():
-    keys = ("id", "filename", "status", "error", "language", "diarized",
-            "model", "num_segments", "duration", "created_at", "updated_at")
-    return jsonify([{k: s.get(k) for k in keys} for s in _sessions.list()])
-
-
-@app.get("/sessions/<session_id>")
-def get_session(session_id: str):
-    row = _sessions.get(session_id)
-    if row is None:
-        abort(404)
-    row.pop("audio_filename", None)
-    result = _sessions.load_result(session_id)  # segments/words w/ timestamps
-    if result is not None:
-        # Reflect edits + small-segment coalescing in the exposed data.
-        result["segments"] = _sessions.current_segments(session_id, result.get("segments", []))
-    row["result"] = result
-    return jsonify(row)
 
 
 @app.get("/sessions/<session_id>/audio")
@@ -1473,34 +662,6 @@ TRANSLATION_LANGUAGES = [
 _LANG_BY_CODE = {lang["code"]: lang for lang in TRANSLATION_LANGUAGES}
 
 
-def _lang_display(code: str) -> dict:
-    """{code, name, native} for a tag, falling back to the bare code uppercased."""
-    if code in _LANG_BY_CODE:
-        return _LANG_BY_CODE[code]
-    label = (code or "").upper() or "Original"
-    return {"code": code, "name": label, "native": label}
-
-
-@app.post("/sessions/<session_id>/translate")
-def translate_session(session_id: str):
-    """Queue a background translation of a finished transcript into a target language."""
-    row = _sessions.get(session_id)
-    if row is None:
-        abort(404)
-    if row["status"] != "done":
-        abort(409, "Transcript is not ready to translate.")
-    target = request.form.get("target_language", "").strip()
-    if not _valid_lang(target):
-        abort(400, "Invalid target language.")
-    if not secret_store.resolve_google_api_key():
-        abort(400, "Add a Google Translation API key in Settings first.")
-    service = _sessions.get_setting("translation_service", DEFAULT_SERVICE)
-    if service not in SERVICES:
-        service = DEFAULT_SERVICE
-    _translate_queue.submit(session_id, target, service)
-    return jsonify({"lang": target, "status": "running", "service": service})
-
-
 @app.get("/sessions/<session_id>/translate/events")
 def translate_events(session_id: str):
     """SSE stream of translation progress for one session.
@@ -1521,25 +682,6 @@ def translate_events(session_id: str):
         initial=initial,
         terminal=lambda e: e.get("status") in ("done", "error"),
     )
-
-
-@app.get("/sessions/<session_id>/translation/<lang>")
-def view_translation(session_id: str, lang: str):
-    """Rendered translated transcript for one language (htmx fragment / JSON)."""
-    if _sessions.get(session_id) is None or not _valid_lang(lang):
-        abort(404)
-    overlay = _sessions.load_translation(session_id, lang)
-    if overlay is None:
-        abort(404)
-    # Join the translated strings onto the *current* original: structure, speaker and
-    # turn grouping come from the live transcript, so reassignments/renames show here.
-    result = _sessions.load_result(session_id) or {}
-    orig = _sessions.current_segments(session_id, result.get("segments", []))
-    segs = translation_overlay.apply_overlay(orig, overlay)
-    if request.args.get("format") == "json":
-        return jsonify({"target_language": lang, "segments": segs})
-    view = {"segments": segs, "language": lang}
-    return render_transcript(view, _sessions.get_speaker_names(session_id))
 
 
 @app.get("/sessions/<session_id>/translation/<lang>/download/<fmt>")
@@ -1594,15 +736,6 @@ def export_markdown(session_id: str):
         mimetype="text/markdown",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
-
-
-@app.post("/sessions/<session_id>/delete")
-def delete_session(session_id: str):
-    _queue.cancel(session_id)  # no-op if not running; signals the thread to stop
-    if not _sessions.delete(session_id):
-        abort(404)
-    # htmx swaps the row out on a 200 empty body (it skips 204 No Content).
-    return ("", 200)
 
 
 # =============================================================================
@@ -2124,8 +1257,8 @@ def api_backup_connect():
         return jsonify(_backup_json())
     _apply_backup_folder(_body().get("backup_folder"))
     # Reuse the existing background consent flow; the SPA watches /backup/events
-    # for the terminal {status, backup, remote?} event.
-    _start_backup_link("partials/_backup_card.html")
+    # for the terminal {status, backup} event.
+    _start_backup_link()
     return jsonify({"connecting": True})
 
 
@@ -2178,6 +1311,31 @@ def api_backup_remote_info():
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 409
     return jsonify({"remote": _remote_json(remote)})
+
+
+# --- SPA: serve the built Svelte client for all non-API/SSE/binary paths -------
+# The Vite build lands in static/spa/ (gitignored; built by `cd app/web && bun run
+# build`). Concrete routes above (/api/*, /sessions/<id>/{audio,events,download,…},
+# /healthz, /models/events, /backup/*) win by specificity; everything else returns
+# index.html so the client router can handle deep links and reloads.
+_SPA_DIR = os.path.join(os.path.dirname(__file__), "static", "spa")
+_SPA_RESERVED = {"api", "healthz", "backup", "models", "static", "oauth"}
+
+
+@app.route("/")
+@app.route("/<path:spa_path>")
+def spa(spa_path: str = ""):
+    head = spa_path.split("/", 1)[0]
+    if head in _SPA_RESERVED:
+        abort(404)  # unknown API/asset path — don't return the shell
+    # A built asset request (has a file extension) that no concrete/static route
+    # served is a genuine miss; only bare client routes get the shell.
+    index_html = os.path.join(_SPA_DIR, "index.html")
+    if not os.path.exists(index_html):
+        return ("SPA not built — run: cd app/web && bun run build", 500)
+    if "." in head and not os.path.exists(os.path.join(_SPA_DIR, spa_path)):
+        abort(404)
+    return send_file(index_html)
 
 
 # Kick off model loading at import time (works under both `flask run` and __main__).

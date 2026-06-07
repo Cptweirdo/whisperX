@@ -91,7 +91,7 @@
 <div class="ob">
   <div class="ob__cover">
     <div class="ob__brand">
-      <div class="ob__logo"><img src="/favicon.svg" alt="Manuscript" /></div>
+      <div class="ob__logo"><img src={import.meta.env.BASE_URL + "favicon.svg"} alt="Manuscript" /></div>
       <div>
         <div class="ob__wordmark">Manuscript</div>
         <div class="ob__coverTag">FIRST-RUN SETUP</div>

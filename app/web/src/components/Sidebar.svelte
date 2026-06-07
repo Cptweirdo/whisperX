@@ -4,11 +4,12 @@
   import { models } from "../lib/stores/models.svelte";
 
   const active = $derived(router.current.name);
+  const logo = import.meta.env.BASE_URL + "favicon.svg";
 </script>
 
 <aside class="sb">
   <a class="sb__brand" href="/" use:link>
-    <div class="sb__logo"><img src="/favicon.svg" alt="Manuscript" /></div>
+    <div class="sb__logo"><img src={logo} alt="Manuscript" /></div>
     <div>
       <div class="sb__name">Manuscript</div>
       <div class="sb__tag">WHISPERX · LOCAL</div>
