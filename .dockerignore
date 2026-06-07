@@ -1,6 +1,9 @@
 .git
 .github
 **/__pycache__
+**/node_modules
+app/static/spa
+app/static/vendor
 *.pyc
 .venv
 .venv-web

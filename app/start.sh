@@ -50,17 +50,17 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   exit 1
 fi
 
-# --- Frontend assets: bundled locally into app/static/vendor (gitignored, no ---
-# CDNs). Build with Bun if the bundle is missing. See app/build.ts / app/README.md.
-if [[ ! -d app/static/vendor ]]; then
+# --- Frontend: the Svelte SPA built into app/static/spa (gitignored). Build with
+# Bun/Vite if the build is missing. See app/web/.
+if [[ ! -d app/static/spa ]]; then
   if ! command -v bun >/dev/null 2>&1; then
-    echo "Frontend assets (app/static/vendor) are missing and Bun isn't installed." >&2
+    echo "The web client (app/static/spa) isn't built and Bun isn't installed." >&2
     echo "Install Bun from https://bun.sh, then re-run" \
-         "(or build once:  cd app && bun install && bun run build)." >&2
+         "(or build once:  cd app/web && bun install && bun run build)." >&2
     exit 1
   fi
-  echo "Bundling frontend assets with Bun…"
-  (cd app && bun install && bun run build)
+  echo "Building the web client with Bun/Vite…"
+  (cd app/web && bun install && bun run build)
 fi
 
 # --- Python deps. Idempotent. On Mac this adds the mlx extra. -----------------

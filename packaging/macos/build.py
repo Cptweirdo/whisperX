@@ -205,22 +205,21 @@ def _relativize_symlinks(root: Path) -> None:
 
 # --- app source ------------------------------------------------------------------
 def cmd_app(_args) -> None:
-    # Ensure the frontend bundle exists (app/static/vendor); build with bun if not.
-    vendor = REPO / "app" / "static" / "vendor"
-    if not vendor.exists():
-        print("  building frontend (bun run build)…")
-        run(["bun", "install"], cwd=REPO / "app")
-        run(["bun", "run", "build"], cwd=REPO / "app")
+    # Ensure the web client is built (app/static/spa); build with bun/vite if not.
+    spa = REPO / "app" / "static" / "spa"
+    if not spa.exists():
+        print("  building web client (bun run build)…")
+        run(["bun", "install"], cwd=REPO / "app" / "web")
+        run(["bun", "run", "build"], cwd=REPO / "app" / "web")
 
     dest = RES / "app"
     if dest.exists():
         shutil.rmtree(dest)
 
-    # Copy app/ but skip dev-only / regenerable / user-state dirs.
+    # Copy app/ but skip dev-only / regenerable / user-state dirs. The built SPA
+    # under static/spa IS copied (it's the UI); the web/ source project is not.
     ignore = shutil.ignore_patterns(
-        "__pycache__", "*.pyc", "data", "node_modules", "tests",
-        "src", "*.test.ts", "bunfig.toml", "bun.lock", "package.json",
-        "build.ts", "tsconfig.json",
+        "__pycache__", "*.pyc", "data", "node_modules", "tests", "web",
     )
     shutil.copytree(REPO / "app", dest, ignore=ignore)
     # Drop any committed dev .env so packaged runs don't ship a developer's config.

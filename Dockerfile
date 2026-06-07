@@ -1,4 +1,4 @@
-# CPU-only image for the WhisperX Flask/htmx frontend (app/), built with uv.
+# CPU-only image for the WhisperX Flask JSON API + Svelte SPA (app/), built with uv.
 #
 # torch is pinned to the PyTorch CPU wheel index. We use `uv pip install`
 # (not `uv sync`): pyproject's [tool.uv.sources] routes torch to the CUDA
@@ -6,16 +6,16 @@
 # resolver (sync/lock). `uv pip` is pip-compatible and ignores those sources,
 # so installing CPU torch first keeps the image GPU-free without touching
 # pyproject.
-# --- Frontend assets: bundle the web app's JS/CSS deps with Bun --------------
-# Output (app/static/vendor/) is gitignored, so the image builds it here and the
-# final stage copies it in. See app/build.ts and app/package.json.
+# --- Frontend: build the Svelte SPA (app/web) with Vite/Bun ------------------
+# Output (app/static/spa/) is gitignored, so the image builds it here and the
+# final stage copies it in. Vite's outDir is ../static/spa, so building from
+# /assets/web writes to /assets/static/spa. See app/web/.
 FROM oven/bun:1 AS assets
-WORKDIR /assets
-COPY app/package.json app/bun.lock ./
+WORKDIR /assets/web
+COPY app/web/package.json app/web/bun.lock ./
 RUN bun install --frozen-lockfile
-COPY app/build.ts ./
-COPY app/src ./src
-RUN bun run build          # -> /assets/static/vendor
+COPY app/web ./
+RUN bun run build          # -> /assets/static/spa
 
 # --- Application image -------------------------------------------------------
 FROM python:3.13-slim
@@ -62,13 +62,13 @@ RUN uv pip install --extra-index-url https://download.pytorch.org/whl/cpu \
 # 3) The frontend app.
 COPY app ./app
 
-# Bundled vendor assets from the `assets` stage (gitignored, so not in COPY app above).
-COPY --from=assets /assets/static/vendor ./app/static/vendor
+# Built SPA from the `assets` stage (gitignored, so not in COPY app above).
+COPY --from=assets /assets/static/spa ./app/static/spa
 
 EXPOSE 5000
 
 # Single worker: the JobStore, the model bundle, and the warm-up thread are all
-# process-local in-memory state. Threads handle concurrent htmx polls; the heavy
+# process-local in-memory state. Threads handle concurrent API/SSE requests; the heavy
 # job runs in app's own single-worker executor. Long startup model load -> generous timeout.
 CMD ["uv", "run", "--no-project", "gunicorn", "--bind", "0.0.0.0:5000", \
      "--workers", "1", "--threads", "8", "--timeout", "120", "app.server:app"]

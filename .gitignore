@@ -175,8 +175,14 @@ app/data/
 
 # WhisperX web app: bundled frontend deps (built with `cd app && bun run build`)
 app/static/vendor/
+# WhisperX web app: built Svelte SPA (built with `cd app/web && bun run build`)
+app/static/spa/
 node_modules/
 app/node_modules/
+app/web/node_modules/
+# The Python `lib/` ignore (above) otherwise swallows the SPA's src/lib — keep it.
+!app/web/src/lib/
+!app/web/src/lib/**
 
 # Local sample / test media (large audio, not for the repo)
 samples/
@@ -204,3 +210,11 @@ packaging/macos/tauri/target/
 !packaging/macos/tauri/dist/
 packaging/macos/tauri/dist/*
 !packaging/macos/tauri/dist/index.html
+
+# Throwaway local venv for running the web backend without the full torch stack
+.venv-web/
+
+# Playwright e2e artifacts (app/web)
+app/web/test-results/
+app/web/playwright-report/
+app/web/.playwright/

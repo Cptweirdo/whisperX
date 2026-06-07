@@ -1,15 +1,13 @@
-"""Render a whisperx result dict into transcript HTML.
+"""Render a whisperx result dict into a Markdown transcript.
 
-Produces speaker-grouped *turns*; within a turn every word becomes a
-``<span class="seg" data-start data-end>`` so the transcript view can highlight
-words live against the real audio's currentTime. Words without timestamps
-(punctuation, numerals the aligner dropped) render as plain spans.
+Speaker turns come from :func:`app.edits.group_turns`; the SPA renders the live
+HTML transcript client-side from the JSON API, so only the Markdown export
+remains server-side.
 """
 
 from __future__ import annotations
 
 import re
-from html import escape
 from typing import Optional
 
 from app.edits import group_turns
@@ -39,59 +37,6 @@ def resolve_label(raw: Optional[str], names: Optional[dict] = None) -> str:
     return _speaker_label(raw)
 
 
-# lucide "pencil" icon (https://lucide.dev/icons/pencil), inlined to avoid a dep.
-_PENCIL_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" '
-    'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
-    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83'
-    'l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>'
-    '<path d="m15 5 4 4"/></svg>'
-)
-
-# lucide "arrow-left-right" (https://lucide.dev/icons/arrow-left-right) — the
-# per-turn "reassign speaker" affordance.
-_SWAP_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" '
-    'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
-    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-    '<path d="m16 3 4 4-4 4"/><path d="M20 7H4"/>'
-    '<path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg>'
-)
-
-
-def _word_spans(seg: dict) -> str:
-    """Render a segment's words as timed spans; fall back to the raw text."""
-    words = seg.get("words") or []
-    if not words:
-        text = (seg.get("text") or "").strip()
-        if not text:
-            return ""
-        start, end = seg.get("start"), seg.get("end")
-        attrs = ""
-        if start is not None and end is not None:
-            attrs = f' data-start="{float(start):.3f}" data-end="{float(end):.3f}"'
-        # A translation view marks segments whose source text changed (or were never
-        # translated): they fall back to the original text, flagged as provisional.
-        if seg.get("stale"):
-            return (f'<span class="seg seg--untranslated"{attrs} '
-                    f'title="Not translated yet">{escape(text)}</span> ')
-        return f'<span class="seg"{attrs}>{escape(text)}</span> '
-
-    out = []
-    for w in words:
-        token = (w.get("word") or "").strip()
-        if not token:
-            continue
-        start, end = w.get("start"), w.get("end")
-        if start is not None and end is not None:
-            attrs = f' data-start="{float(start):.3f}" data-end="{float(end):.3f}"'
-        else:
-            attrs = ""
-        out.append(f'<span class="seg"{attrs}>{escape(token)}</span> ')
-    return "".join(out)
-
-
 def render_markdown(result: dict, names: Optional[dict] = None,
                     title: Optional[str] = None) -> str:
     """Render a result as a Markdown transcript: a title heading, then one block
@@ -118,61 +63,3 @@ def render_markdown(result: dict, names: Optional[dict] = None,
         lines.append(text)
         lines.append("")
     return "\n".join(lines) + "\n"
-
-
-def render_transcript(result: dict, names: Optional[dict] = None) -> str:
-    """Group consecutive segments by speaker into turn blocks of timed words.
-
-    ``names`` maps a raw speaker key (e.g. ``SPEAKER_00``) to a user-assigned
-    display name; overrides are applied here only, never written to the result.
-    """
-    segments = result.get("segments", [])
-    if not segments:
-        return '<p class="tr__empty">No speech detected.</p>'
-
-    rows = []
-    for t in group_turns(segments):
-        # Turn indices come straight from group_turns so the edit endpoint and the
-        # rendered DOM agree on what each `data-turn` refers to. Turns with no
-        # visible text are skipped from the DOM but never renumber the rest.
-        html = "".join(_word_spans(segments[k]) for k in t.seg_indices)
-        if not html.strip():
-            continue
-        raw = t.speaker
-        label = resolve_label(raw, names)
-        # Only diarized turns (a real speaker key) get the rename affordance.
-        if raw:
-            key = escape(str(raw), quote=True)
-            speaker_attr = f' data-speaker="{key}"'
-            edit = (
-                f'<button class="turn__edit" type="button" data-speaker="{key}" '
-                f'data-name="{escape(label, quote=True)}" '
-                'title="Edit speaker name" aria-label="Edit speaker name">'
-                f'{_PENCIL_SVG}</button>'
-            )
-            # Reassign affordance: the button toggles a speaker picker that the
-            # client builds (and anchors) inside this .swap-pick wrapper.
-            swap = (
-                '<span class="swap-pick">'
-                f'<button class="turn__swap" type="button" data-turn="{t.index}" '
-                f'data-speaker="{key}" '
-                'title="Reassign speaker" aria-label="Reassign speaker" '
-                f'aria-haspopup="true" aria-expanded="false">{_SWAP_SVG}</button>'
-                '</span>'
-            )
-        else:
-            speaker_attr = ""
-            edit = ""
-            swap = ""
-        rows.append(
-            f'<div class="turn" data-turn="{t.index}">'
-            '<div class="turn__who">'
-            f'<div class="turn__speaker"{speaker_attr}>{escape(label)}</div>'
-            f'{edit}'
-            f'{swap}'
-            f'<div class="turn__time">{_fmt_ts(t.start)}</div>'
-            "</div>"
-            f'<div class="turn__text" data-text="{escape(t.text, quote=True)}">{html}</div>'
-            "</div>"
-        )
-    return "\n".join(rows)
