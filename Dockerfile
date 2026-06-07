@@ -6,16 +6,16 @@
 # resolver (sync/lock). `uv pip` is pip-compatible and ignores those sources,
 # so installing CPU torch first keeps the image GPU-free without touching
 # pyproject.
-# --- Frontend assets: bundle the web app's JS/CSS deps with Bun --------------
-# Output (app/static/vendor/) is gitignored, so the image builds it here and the
-# final stage copies it in. See app/build.ts and app/package.json.
+# --- Frontend: build the Svelte SPA (app/web) with Vite/Bun ------------------
+# Output (app/static/spa/) is gitignored, so the image builds it here and the
+# final stage copies it in. Vite's outDir is ../static/spa, so building from
+# /assets/web writes to /assets/static/spa. See app/web/.
 FROM oven/bun:1 AS assets
-WORKDIR /assets
-COPY app/package.json app/bun.lock ./
+WORKDIR /assets/web
+COPY app/web/package.json app/web/bun.lock ./
 RUN bun install --frozen-lockfile
-COPY app/build.ts ./
-COPY app/src ./src
-RUN bun run build          # -> /assets/static/vendor
+COPY app/web ./
+RUN bun run build          # -> /assets/static/spa
 
 # --- Application image -------------------------------------------------------
 FROM python:3.13-slim
@@ -62,8 +62,8 @@ RUN uv pip install --extra-index-url https://download.pytorch.org/whl/cpu \
 # 3) The frontend app.
 COPY app ./app
 
-# Bundled vendor assets from the `assets` stage (gitignored, so not in COPY app above).
-COPY --from=assets /assets/static/vendor ./app/static/vendor
+# Built SPA from the `assets` stage (gitignored, so not in COPY app above).
+COPY --from=assets /assets/static/spa ./app/static/spa
 
 EXPOSE 5000
 
