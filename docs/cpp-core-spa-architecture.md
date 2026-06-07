@@ -180,7 +180,8 @@ load/unload, pandas/nltk today.
 > reused unchanged (same as the Tauri webview shell). **The JSON/SSE API is now a
 > migration contract** the C++ server must reproduce — the transport-layer analogue of
 > the session-DB contract (migration plan §2), but only relevant at the (out-of-scope)
-> host-swap, not during the strangler phases.
+> host-swap, not during the strangler phases. **Full route-by-route spec:**
+> [`api-reference.md`](./api-reference.md).
 
 ## 6. Proposed structure
 
