@@ -9,8 +9,11 @@
 > Python counterparts**, and what **build tooling** to standardize on.
 >
 > Grounded by reading the real code: `app/store.py` (DB), `app/pipeline.py::run_job`
-> (orchestration), `tests/` (14 files, all pytest), and the six pipeline stages in
-> `whisperx/` (see [`pipeline-reference.md`](./pipeline-reference.md)).
+> (orchestration), `tests/` (pytest — engine + JSON-API + SSE), the SPA tests
+> (`app/web/tests/`: Vitest units + a **Playwright end-to-end suite** under
+> `tests/e2e/` that drives the real Svelte SPA against a seeded Flask backend), and
+> the six pipeline stages in `whisperx/` (see
+> [`pipeline-reference.md`](./pipeline-reference.md)).
 
 ## 1. Migration strategy — strangler-fig via pybind11
 
@@ -119,8 +122,14 @@ repo lacks today: real measurement.
 
 ### 3a. Correctness — golden-parity tests
 
-The repo has **no golden data files today**; tests synthesize inputs and mock the
-models. The port needs ground truth, so we add a **golden-vector generator**: a
+The repo has **no per-stage golden data files today**; the unit tests synthesize
+inputs and mock the models. (It *does* now have a **Playwright end-to-end suite** —
+`app/web/tests/e2e/` — that drives the real Svelte SPA against a seeded Flask
+backend over the JSON/SSE API; that's an **integration oracle**, complementary to
+the per-stage goldens below: once C++ stages swap in behind `WHISPERX_CORE_STAGES`,
+the same e2e run validates the whole pipeline through the real UI, not just stage
+diffs. See §6 / the Phase 5 brief.) The port still needs stage-level ground truth,
+so we add a **golden-vector generator**: a
 script/pytest pass that runs the *real* Python pipeline over a small fixed clip
 set and dumps each stage's intermediates to JSON —
 
@@ -189,7 +198,7 @@ libs**.
 | `json` stdlib | **nlohmann/json** | header-only, STL-native |
 | `pytest` | **Catch2 v3** (+ CTest) | parity + unit (see §3) |
 | *(none — RTF guesses)* | **Google Benchmark / nanobench** | real per-stage timing (see §3) |
-| Flask + SSE (`app/`) | **Drogon / oat++ / cpp-httplib** | only **if/when** the host is swapped — *out of scope here* |
+| Flask JSON API + SSE (`app/`, serving the Svelte SPA) | **Drogon / oat++ / cpp-httplib** | only **if/when** the host is swapped — *out of scope here*; the C++ server must then reproduce the **JSON `/api/*` + SSE contract** the SPA already depends on |
 | `keyring` | OS keychain APIs (same service id) | secrets parity |
 
 The net: the dependency graph shrinks from dozens of Python/transitive packages

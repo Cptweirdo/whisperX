@@ -412,7 +412,12 @@ This is where the strangler flag can flip fully on. Source: `utils.py:443`
   ASR) are validated per-stage, not by end-to-end `transcript.json` byte-equality.
 - Progress events fire in the **correct order** and update the session row's
   `stage` exactly as Python does.
-- The `app/` UI shows a C++-produced session indistinguishably from a Python one.
+- The `app/` UI shows a C++-produced session indistinguishably from a Python one —
+  **assert this with the existing Playwright e2e suite** (`app/web/tests/e2e/`, which
+  drives the real Svelte SPA against the JSON/SSE API): run it with
+  `WHISPERX_CORE_STAGES` off (Python) and on (C++) against the same seeded clip; the
+  SPA-rendered turns/timings/exports must match. This is the integration gate on top
+  of the per-stage goldens, and the point where the strangler flag can flip fully on.
 
 ### Unknowns / open questions
 - **Float formatting / byte-identical JSON** — `transcript.json` byte-equality

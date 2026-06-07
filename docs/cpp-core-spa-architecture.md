@@ -165,15 +165,22 @@ load/unload, pandas/nltk today.
 | wav2vec2 align | ORT model + own Viterbi | the one DIY model |
 | Audio decode | **ffmpeg libraries** (`libavformat`/`libavcodec`/`libswresample`), linked in-process | **no ffmpeg subprocess** (Option B): one universal decode path for all formats incl. M4A/AAC/MP4/video; decode to float in-memory; LGPL build |
 | HTTP/SSE server | **Drogon** or **oat++** (perf, WebSocket/SSE) · **cpp-httplib** (header-only, simple) | SSE for progress, mirroring `app/` |
-| SPA | React / Svelte / SolidJS | true client-rendered SPA over a JSON/SSE API |
+| SPA | ✅ **Svelte 5** (Bun + Vite, `app/web/`) — built | true client-rendered SPA over the JSON/SSE API; already shipped |
 | Build | CMake + vcpkg/Conan; per-desktop-OS builds | the main ergonomic cost |
 | FFI adapter (optional) | C ABI for embedding | reuses the core, no server |
 | Python oracle | pybind11 | keep `app/` + `tests/` as parity reference |
 
-> **Note on the SPA:** the current `app/` frontend is **htmx + SSE (server-rendered),
-> not a true SPA** (see CLAUDE.md htmx/Shoelace notes). "Move to an SPA" is therefore
-> also a frontend rewrite (a JS framework + build) that decouples UI from the backend
-> language — a second workstream, not free.
+> **Note on the SPA (done — was a planned workstream):** the `app/` frontend is now a
+> standalone **Bun + Vite + Svelte 5 SPA** (`app/web/`), and the Flask backend is a
+> **pure JSON API + SSE** (no Jinja/htmx; see CLAUDE.md). The "move to an SPA" this doc
+> once scoped as "a second workstream, not free" is **already complete**, which
+> *de-risks the endgame*: the SPA is transport-agnostic — it talks to a stable
+> **JSON `/api/*` + SSE** contract, not to Flask specifically. So the eventual C++
+> HTTP/SSE server adapter is a pure backend swap behind that contract; the SPA is
+> reused unchanged (same as the Tauri webview shell). **The JSON/SSE API is now a
+> migration contract** the C++ server must reproduce — the transport-layer analogue of
+> the session-DB contract (migration plan §2), but only relevant at the (out-of-scope)
+> host-swap, not during the strangler phases.
 
 ## 6. Proposed structure
 
@@ -190,7 +197,7 @@ adapters/
   server/     HTTP/SSE (Drogon/oatpp) → SPA
   ffi/        C ABI (optional, embedding)
   py/         pybind11 module (oracle)
-web/          SPA (React/Svelte)
+app/web/      SPA — Svelte 5 + Vite + Bun (already built; reused as-is)
 bindings/test golden vectors + parity tests
 ```
 
@@ -209,7 +216,7 @@ functions directly from the existing pytest oracle.
 |---|---|---|
 | C2 | **Inference runtime** — ✅ *resolved: ONNX Runtime* | **ORT + sherpa-onnx** for VAD/align/diarize; **ASR pluggable** (sherpa-onnx default, whisper.cpp/GGML for Apple-Silicon Metal, §4B). One runtime, transformer-friendly, sherpa supplies 3/4 models. LiteRT dropped. |
 | C3 | **Diarization-drives-VAD coupling** vs independent VAD | Coupling saves a segmentation pass; keep independent if simplicity preferred |
-| C4 | **SPA framework + webview shell** | Reuse the existing webview shell; pick one SPA framework |
+| C4 | **SPA framework + webview shell** — ✅ *resolved/done* | **Svelte 5 SPA shipped** (`app/web/`, Bun + Vite) against the JSON/SSE API; Tauri webview shell reused. No longer a workstream. |
 | C5 | **Own engine in C++** vs consume sherpa-onnx as-is | You already get a C++ core free via sherpa; bespoke C++ adds value mainly for the server, alignment, and pybind oracle |
 
 ## 9. Roadmap
@@ -222,7 +229,8 @@ functions directly from the existing pytest oracle.
 > replaces `store.py`) · **2** decode-once + VAD/`merge_chunks` · **3** alignment
 > (batched wav2vec2 + Viterbi — *highest risk, early*) · **4a** ASR backends /
 > **4b** diarize + assign · **5** writers + end-to-end · **6** timing gates.
-> Server/SPA packaging and the optional FFI adapter follow once the engine is
+> The **SPA itself is already built** (Svelte, `app/web/`); only the C++ HTTP/SSE
+> **server** + packaging (and the optional FFI adapter) follow once the engine is
 > green. (This supersedes an earlier draft roadmap that numbered the phases
 > differently — see the migration plan as the single source of truth.)
 
@@ -232,7 +240,7 @@ functions directly from the existing pytest oracle.
 |---|---|
 | C++ memory safety / build complexity (CMake, per-desktop-OS builds) | vcpkg/Conan; sanitizers; keep the core small and pure |
 | wav2vec2 ONNX export / drift | validate early (phase 2); golden emission tests; pin opset |
-| SPA = extra frontend rewrite | scope it; reuse the webview shell; or keep htmx initially behind the same server |
+| ~~SPA = extra frontend rewrite~~ — ✅ done | Resolved: the Svelte SPA (`app/web/`) already ships against the JSON/SSE API; no longer a risk. The remaining transport work is the C++ server reproducing that API contract. |
 | Diarization quality vs full pyannote | sherpa pyannote-seg + CAM++; A/B on real clips |
 | Losing Python reference | pybind11 keeps `app/`+`tests/` as oracle |
 
