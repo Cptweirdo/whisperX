@@ -1,0 +1,153 @@
+{
+  "config": {
+    "model": "tiny",
+    "device": "cpu",
+    "compute_type": "int8",
+    "vad_method": "silero",
+    "diarize": true,
+    "whisperx": "3.8.6",
+    "faster_whisper": "1.2.1",
+    "generated_utc": "2026-06-07T07:08:14Z"
+  },
+  "clips": {
+    "de_dialog": {
+      "lang": "de",
+      "audio_s": 65.152,
+      "segments": 3,
+      "words": 97,
+      "hypothesis": "In meiner Wohnung stehen die Bücher im Wohnzimmer und im Arbeitzimmer. Auch in der Küche finden sich die Kochbücher. Welches Werkzeug benutzt du gerne im Haushalt? Und warum? Wenn ich ein Tier wäre würde ich eine Rauchschweibe sein wollen, weil diese Wunderschönen sinken, wenn sie aus ihrem Winter ein Afrika zurückkommen. Am liebsten mag ich den Herst. und zwar den Anfang des Herbstes, weil es noch angenehm warm ist und gleichzeitig noch nicht kalt. Ich persönlich vor am liebsten ans Meer. Ich lebe in den Nähe der Nordseeküste und gefühlt, gibt es immerwenden. Mal mehr, mal weniger.",
+      "reference": "In meiner Wohnung stehen die Bücher im Wohnzimmer und im Arbeitszimmer. Auch in der Küche finden sich die Kochbücher. Welches Werkzeug benutzt du gerne im Haushalt und warum? Wenn ich ein Tier wäre, würde ich eine Rauchschwalbe sein wollen, weil die so wunderschön singen, wenn sie aus Ihrem Winter in Afrika zurückkommen. Am liebsten mag ich den Herbst. Und zwar den Anfang des Herbstes, weil es noch angenehm warm ist und gleichzeitig noch nicht kalt. Wenn ich ein weiteres Zimmer geschenkt bekäme, würde ich es als Sport- und Gymnastikraum nutzen. Wenn du ein Tier wärst, welches wärst du und warum? Ich persönlich fahre am liebsten ans Meer. Ich lebe in der Nähe der Nordseeküste und gefühlt gibt es immer Wind. Mal mehr, mal weniger.",
+      "wer": 0.2984,
+      "cer": 0.2282,
+      "speakers_true": 4,
+      "speakers_pred": 5,
+      "timings_s": {
+        "transcribe": 3.002,
+        "align": 18.459,
+        "diarize": 170.77
+      },
+      "rtf_total": 2.951
+    },
+    "en_dialog": {
+      "lang": "en",
+      "audio_s": 60.76,
+      "segments": 2,
+      "words": 108,
+      "hypothesis": "I like to use a forward approach when resolving an issue with someone staring at me. I like to ask how high do I know you or you can also ask is there something I can help with? It's day when I wake up or when I go outside I see trees. Do you well, glasses? How long have you needed a Zen? What do you need a Zen for? I'm proud about my I've always enjoyed studying and working with computers in school and out of school. Japanese, Chinese, or starters at least. Who is your favorite celebrity or actor? Maybe the children of the people behind.",
+      "reference": "I like to use a forward approach when, um, resolving an issue of someone staring at me. I like to ask, \"Oh, hi. Do I know you?\", um, or you can also ask, \"Is there something i can help with?\". Each day when I wake up, or when I go outside I see trees. Do you wear glasses? How long have you needed them? What do you need them for? I am proud about my: humour. I've always enjoyed studying and working with computers, in school and out of school. Japanese, Chinese... for starters, at least. Who is your favorite celebrit- celebrity or actor? Uh, maybe the children of the people dying.",
+      "wer": 0.1593,
+      "cer": 0.105,
+      "speakers_true": 4,
+      "speakers_pred": 5,
+      "timings_s": {
+        "transcribe": 2.049,
+        "align": 18.125,
+        "diarize": 158.775
+      },
+      "rtf_total": 2.945
+    },
+    "en_libri": {
+      "lang": "en",
+      "audio_s": 3.505,
+      "segments": 1,
+      "words": 8,
+      "hypothesis": "Concord returned to its place amidst the tents.",
+      "reference": null,
+      "wer": null,
+      "cer": null,
+      "speakers_true": null,
+      "speakers_pred": null,
+      "timings_s": {
+        "transcribe": 0.385,
+        "align": 0.437
+      },
+      "rtf_total": 0.235
+    },
+    "ru_cv_71085": {
+      "lang": "ru",
+      "audio_s": 8.388,
+      "segments": 1,
+      "words": 12,
+      "hypothesis": "Наверное фолк музыка, рог музыка, на стеке в от этих двух направлений.",
+      "reference": "Наверное, фолк-музыка, рок-музыка на стыке вот этих двух направлений.",
+      "wer": 0.3636,
+      "cer": 0.0357,
+      "speakers_true": null,
+      "speakers_pred": null,
+      "timings_s": {
+        "transcribe": 0.46,
+        "align": 2.815
+      },
+      "rtf_total": 0.39
+    },
+    "ru_cv_71379": {
+      "lang": "ru",
+      "audio_s": 8.208,
+      "segments": 1,
+      "words": 19,
+      "hypothesis": "И всех социальных сетей, я больше всего предпочитаю 3-го просто потому, что в нем быстрее проще всего оставлять записи.",
+      "reference": "Из всех социальных сетей я больше всего предпочитаю Твиттер, просто потому что в нём быстрее и проще всего оставлять записи.",
+      "wer": 0.25,
+      "cer": 0.0971,
+      "speakers_true": null,
+      "speakers_pred": null,
+      "timings_s": {
+        "transcribe": 0.512,
+        "align": 2.402
+      },
+      "rtf_total": 0.355
+    },
+    "ru_cv_71606": {
+      "lang": "ru",
+      "audio_s": 9.108,
+      "segments": 1,
+      "words": 16,
+      "hypothesis": "Не очень люблю стрелялки, фэнтези, в целом, любого рпага или хотя бы, чтобы было открытый мир.",
+      "reference": "Я очень люблю стрелялки, фэнтези. В целом, а-а, любое РПГ или хотя бы чтобы был открытый мир.",
+      "wer": 0.3333,
+      "cer": 0.1268,
+      "speakers_true": null,
+      "speakers_pred": null,
+      "timings_s": {
+        "transcribe": 0.496,
+        "align": 3.072
+      },
+      "rtf_total": 0.392
+    },
+    "ru_cv_79125": {
+      "lang": "ru",
+      "audio_s": 8.208,
+      "segments": 1,
+      "words": 15,
+      "hypothesis": "Мой кот любит валяться на полу. Я не очень. Как это знаете, твердовато, что ли?",
+      "reference": "Мой кот любит валяться на полу. Я - не очень. Как-то, знаете, твердовато что ли.",
+      "wer": 0.0667,
+      "cer": 0.0169,
+      "speakers_true": null,
+      "speakers_pred": null,
+      "timings_s": {
+        "transcribe": 0.486,
+        "align": 2.308
+      },
+      "rtf_total": 0.34
+    },
+    "ru_dialog": {
+      "lang": "ru",
+      "audio_s": 66.7,
+      "segments": 3,
+      "words": 112,
+      "hypothesis": "И всех социальных сетей, я больше всего предпочитаю 3-го просто потому, что в нем быстрее проще всего оставлять записи. Я скорее тех, кому вечно подна, потому что я даже, я даже летом, хожу в кофты. Уходные, я в стою где-то часов, 5-6. Какие качества больше всего ценю в людях, искренность и честности? Какие изменения в природе вы замечаете с приходом весны? Я замечаю, как почка на бухадные деревьях. И я спец в троте деревьях. Однозначно. Я, определённо, исполнитель дать, что вещи, которые могут приносить, тебя радости счастья, может быть. Моя работе свойственная работа с людьми. Я люблю. Гадовать настроение людей, смешивать напитки таким образом, чтобы они им точно понравились. Я работаю Бориста.",
+      "reference": "Из всех социальных сетей я больше всего предпочитаю Твиттер, просто потому что в нём быстрее и проще всего оставлять записи. Я скорее из тех, кому вечно холодно, потому что я даже с-с я даже летом хожу с кофтой. В выходные я встаю где-то часов в пять-шесть. Какие качества я больше всего ценю в людях? Искренность и честность. Какие изменения в природе вы замечаете с приходом весны? Я замечаю, как почки набухают на деревьях. Я спец в трате денег. Однозначно. Я определённо склонен считать, что вещи, которые могут приносить тебе радость и счастье, можно купить за деньги. Моей работе свойственна работа с людьми. Я люблю угадывать настроения людей и смешивать напитки таким образом, чтобы они им точно понравились. Я работаю бариста.",
+      "wer": 0.3415,
+      "cer": 0.1419,
+      "speakers_true": 4,
+      "speakers_pred": 3,
+      "timings_s": {
+        "transcribe": 1.87,
+        "align": 26.91,
+        "diarize": 101.973
+      },
+      "rtf_total": 1.96
+    }
+  }
+}

@@ -52,6 +52,11 @@ requires = ["setuptools"]
 # The web app (`app/`) isn't an installed package; put the repo root on sys.path
 # so `import app.*` resolves in tests (whisperx is installed separately).
 pythonpath = ["."]
+markers = [
+    # heavy golden-baseline run (downloads a Whisper model, runs CPU inference over
+    # the golden clip set). Opt-in: `RUN_BASELINE=1 uv run pytest -m baseline`.
+    "baseline: golden-set baseline + timings (opt-in via RUN_BASELINE=1)",
+]
 
 [tool.setuptools]
 include-package-data = true
