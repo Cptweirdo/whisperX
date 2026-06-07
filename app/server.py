@@ -162,6 +162,7 @@ def _card(row: dict) -> dict:
         "stage": row.get("stage"),
         "error": row.get("error"),
         "translations": row.get("translations") or {},
+        "stats": row.get("stats") or None,
     }
 
 
@@ -254,6 +255,7 @@ def run_session(session_id: str, cancel_event=None) -> None:
         audio_path,
         _sessions.session_dir(session_id),
         artifact_basename="transcript",
+        model=model,
         language=opts.get("language"),
         min_speakers=opts.get("min_speakers"),
         max_speakers=opts.get("max_speakers"),
@@ -268,6 +270,7 @@ def run_session(session_id: str, cancel_event=None) -> None:
         model=model,
         num_segments=result.get("num_segments", len(result.get("segments", []))),
         duration=result.get("duration", 0.0),
+        stats=result.get("stats"),
     )
 
 
