@@ -375,6 +375,99 @@ alignment, models-resident + pipelining) rather than assert them.
 
 ---
 
+## Memory management (committed decision)
+
+> **Decision.** Jobs run **to completion** — no mid-job cancellation, no streaming
+> stop. Memory is managed by **(1) memory-mapping read-only model weights**,
+> **(2) a per-job arena for working buffers that is reset at job end**, **(3) a
+> fragmentation-resistant allocator**, and **(4) leak sanitizers in CI**. No exotic
+> memory library, no manual peak-budgeting. Primary target: **desktop standalone
+> and (eventually) a server, ≥ 8 GB RAM, one job at a time** (serial `JobQueue`,
+> as today).
+
+### Why this is enough (the rationale)
+
+The pipeline's memory splits cleanly into two kinds, and only one kind is ours to
+manage:
+
+| Kind | What | Strategy | Cost to us |
+|---|---|---|---|
+| **Read-only model weights** | Whisper (int8 large-v3 ≈ 1.5 GB; small ≈ 0.5 GB), wav2vec2 align (≈ 360 MB/lang), diarization (≈ 30–40 MB), silero (≈ 2 MB) | **`mmap`** the model files (ORT/ggml do this by default) | ~nil — file-backed, OS-shared, evictable under pressure; **not dirty heap we own** |
+| **Working buffers (dirty)** | decoded audio (**~64 KB/s** → 1 hr ≈ 230 MB, 3 hr ≈ 700 MB — the one big variable), mel, ORT activation arena, CTC emissions, Viterbi trellis, result/output structs | **`std::pmr` arena, reset per job** | the only real management, and it's mechanical |
+
+Consequences that justify "simple":
+
+- **Peak footprint is a non-issue at our scale.** Resident models (~2 GB, mostly
+  mmap) + one audio buffer (≤ ~700 MB) + ORT scratch (a few hundred MB) ≈ **< 3.5 GB
+  peak** with a serial queue. At ≥ 8 GB we have wide headroom, so we do **not**
+  budget peak memory or load/unload models. (That tension only appears on mobile,
+  which is out of scope here — see below.)
+- **The real risk is *time*, not peak** — the standalone app has **high uptime**
+  (users sleep the lid rather than quit), so a slow leak or allocator fragmentation
+  compounds over days/weeks. The countermeasures are aimed squarely at that.
+- **Sleep/resume is free.** A closed lid is a freeze/thaw, not a restart; mmap'd
+  model pages survive in RAM, so **resume is instant** *because* models stay
+  resident. "Resume quickly" is therefore an argument **for** the resident-models
+  design, not against it.
+- **Run-to-completion is what lets the arena be trivial.** Because no job stops
+  mid-flight, the per-job arena needs no sub-job checkpoints or partial rollback:
+  **allocate scratch from one arena, reset it wholesale when the job finishes.**
+  Reset reclaims everything at once with zero per-allocation `free` — which is also
+  exactly what prevents leak-creep and fragmentation across a week of uptime.
+
+### The toolset (and nothing more)
+
+- **`mmap` model weights** — keep the big bytes file-backed and OS-reclaimable, not
+  on our heap. (Default in ORT/ggml; just don't fight it.)
+- **`std::pmr::monotonic_buffer_resource` per job, reset at job end** — one reusable
+  arena sized to the largest expected job; all working buffers allocate from it; the
+  orchestrator resets it after writing outputs. No accumulation across jobs.
+- **mimalloc or jemalloc** (link-time swap) — for everything outside the arena, to
+  resist the RSS-creep glibc `malloc` shows over long uptime.
+- **AddressSanitizer + LeakSanitizer in CI** (Phase 0 onward) — over high uptime,
+  even a tiny per-job leak is eventually fatal, so it must be impossible to merge
+  one. (TSan later for the server's concurrency.)
+- **RAII for everything in-process** — `unique_ptr` by default; custom-deleter
+  `unique_ptr` wrapping every C handle (`OrtValue*`, `sherpa_*`, `sqlite3*`,
+  ffmpeg `AVFrame*`); `std::span`/`string_view` for the zero-copy spans.
+
+### FFI ownership rule (the one place that needs discipline)
+
+Across the pybind/JNI/Swift seam, **memory is always freed by the same side (same
+allocator) that created it.** Concretely: prefer **caller-allocates / callee-fills**
+for big buffers; within pybind, return owning C++ objects with the correct
+`return_value_policy` and expose large buffers zero-copy via the **buffer protocol**
++ `py::keep_alive` (so the C++ owner outlives the Python view). **Never `malloc`
+on one side and `free` on the other.** Raw paired `create_X`/`free_X` only appears
+at the C-ABI layer (mobile), which is out of scope here.
+
+### Per-phase implications
+
+- **Phase 0** — turn on **ASan/LSan** in the CTest/CI job from the start; pick
+  mimalloc-or-jemalloc here so every later phase builds on it.
+- **Phase 2** — the **decode-once buffer** is the largest working allocation; it is
+  the arena's headline tenant and the thing to size the arena around.
+- **Phase 3** — preallocate the **Viterbi trellis** to a max size and reuse it;
+  batched-alignment emission buffers come from the arena; use **ORT IO binding** so
+  emissions land in our buffer (zero-copy), not an ORT-internal copy we then copy
+  again.
+- **Phase 5** — the orchestrator **resets the arena at job end**, after writers
+  flush. Progress callbacks crossing pybind follow the FFI ownership rule.
+- **Phase 6** — benchmarks should also watch **RSS over many sequential jobs** (a
+  leak/fragmentation guard), not just per-stage latency.
+
+### Explicitly out of scope (deliberate simplifications)
+
+- **Mid-job cancellation / streaming stop** — not supported; jobs run to completion.
+  Cancellation, if ever needed, is **coarse** (between jobs in the queue, or at most
+  at stage boundaries), never mid-stage. This is what keeps the arena reset-only.
+- **Peak-memory budgeting / model load-unload** — unnecessary at desktop/server
+  scale; not implemented.
+- **Mobile memory policy** — a phone's per-app ceiling *would* force load/unload and
+  a different per-platform model-residency policy. Out of scope until/unless mobile
+  becomes a first-class decode target; it does not change the desktop/server design
+  above.
+
 ## Phase dependency map
 
 ```
