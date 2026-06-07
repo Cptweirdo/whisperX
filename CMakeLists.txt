@@ -12,7 +12,8 @@
 # The heavy runtime deps (ONNX Runtime, sherpa-onnx, SQLiteCpp, Eigen, Google
 # Benchmark) are declared in vcpkg.json and wired in as their stages land.
 cmake_minimum_required(VERSION 3.24)
-project(whisperx_core LANGUAGES CXX VERSION 0.0.0)
+# C is enabled for SQLiteCpp's bundled SQLite amalgamation (sqlite3.c).
+project(whisperx_core LANGUAGES CXX C VERSION 0.0.0)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,12 +34,30 @@ FetchContent_Declare(
   FIND_PACKAGE_ARGS NAMES nlohmann_json)
 FetchContent_MakeAvailable(nlohmann_json)
 
+# SQLiteCpp — RAII wrapper over the genuine SQLite C API (Phase 1 DB layer).
+# Bundles the SQLite amalgamation (SQLITECPP_INTERNAL_SQLITE, default ON) so the
+# on-disk file format + WAL + Online Backup API are guaranteed identical to what
+# Python's sqlite3 produced, with no system-SQLite dependency.
+set(SQLITECPP_INTERNAL_SQLITE ON CACHE BOOL "" FORCE)
+set(SQLITECPP_RUN_CPPLINT OFF CACHE BOOL "" FORCE)
+set(SQLITECPP_RUN_CPPCHECK OFF CACHE BOOL "" FORCE)
+set(SQLITECPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SQLITECPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  SQLiteCpp
+  GIT_REPOSITORY https://github.com/SRombauts/SQLiteCpp
+  GIT_TAG 3.3.2
+  FIND_PACKAGE_ARGS NAMES SQLiteCpp)
+FetchContent_MakeAvailable(SQLiteCpp)
+
 # --- pure core library -------------------------------------------------------
 add_library(whisperx_core_lib STATIC
   core/text/edit_distance.cpp
+  core/db/session_store.cpp
   core/build_info.cpp)
 target_include_directories(whisperx_core_lib PUBLIC core)
-target_link_libraries(whisperx_core_lib PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(whisperx_core_lib PUBLIC
+  nlohmann_json::nlohmann_json SQLiteCpp)
 target_compile_options(whisperx_core_lib PRIVATE -Wall -Wextra)
 set_target_properties(whisperx_core_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -64,7 +83,9 @@ if(WHISPERX_CORE_TESTS)
   FetchContent_MakeAvailable(Catch2)
 
   enable_testing()
-  add_executable(whisperx_core_tests core/tests/test_edit_distance.cpp)
+  add_executable(whisperx_core_tests
+    core/tests/test_edit_distance.cpp
+    core/tests/test_session_store.cpp)
   target_link_libraries(whisperx_core_tests
     PRIVATE whisperx_core_lib Catch2::Catch2WithMain)
 

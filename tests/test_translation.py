@@ -186,8 +186,13 @@ def _old_db(path):
 def test_migration_adds_translations_column(tmp_path):
     _old_db(str(tmp_path))
     store = SessionStore(str(tmp_path))
-    cols = {r[1] for r in store._db.execute("PRAGMA table_info(sessions)")}
-    assert "translations" in cols
+    # Opening the legacy DB migrated it; the translations column now works
+    # end-to-end (write + read), which is only possible if it was added. Asserted
+    # through the public API so it holds for either DB backend (Python or C++).
+    store.create("m1", "a.wav", "audio.wav", {})
+    store.set_translation_status("m1", "es", "done", service="deepl")
+    assert store.get_translations("m1")["es"]["status"] == "done"
+    assert store.get("m1")["translations"]["es"]["service"] == "deepl"
 
 
 def _store_with_session(tmp_path):

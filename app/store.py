@@ -4,6 +4,15 @@ A *session* is one uploaded audio file plus its transcription result (segments
 and words with timestamps + speakers). Metadata lives in SQLite for fast
 listing; the audio, the full result JSON, and the srt/vtt/txt artifacts live
 under sessions/<id>/ so they survive restarts.
+
+**C++ core migration (Phase 1).** ``SessionStore`` is a thin facade. Its SQLite
+layer — CRUD/lifecycle, settings, speaker-name overrides, the ``translations``
+column, and the backup snapshot/swap primitives — is delegated to a *backend*:
+the pure-Python :class:`_PyDbStore` by default, or the C++ ``whisperx_core``
+store when ``WHISPERX_CORE_STAGES`` contains ``db`` (the strangler-fig seam — see
+docs/cpp-core-migration-briefs.md Phase 1). The path helpers and the file-backed
+subsystems (the edits/undo overlay and the per-language translation files) stay
+in Python on the facade for this phase; only the DB methods cross to C++.
 """
 
 from __future__ import annotations
@@ -68,7 +77,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-class SessionStore:
+def _core_db_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` store backs the DB layer this run."""
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    return "db" in {s.strip() for s in raw.split(",") if s.strip()}
+
+
+class _PyDbStore:
+    """The pure-Python SQLite backend (the default, and the parity oracle).
+
+    Owns only the DB surface the C++ ``whisperx_core.SessionStore`` mirrors:
+    CRUD/lifecycle, settings, speaker_names, the ``translations`` column, and the
+    snapshot/swap backup primitives. Path helpers and the file-backed sidecars
+    live on :class:`SessionStore`, not here.
+    """
+
     def __init__(self, data_dir: str):
         self.data_dir = os.path.abspath(data_dir)
         self.sessions_root = os.path.join(self.data_dir, "sessions")
@@ -133,6 +156,305 @@ class SessionStore:
                 self._db.execute("PRAGMA journal_mode=WAL")
                 self._db.executescript(_SCHEMA)
                 self._migrate()
+
+    # --- writes ---------------------------------------------------------
+    def create(self, session_id: str, filename: str, audio_filename: str,
+               options: dict, model: Optional[str] = None) -> None:
+        ts = _now()
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO sessions (id, filename, audio_filename, status, options, "
+                "model, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+                (session_id, filename, audio_filename, "queued",
+                 json.dumps(options), model, ts, ts),
+            )
+
+    def mark_running(self, session_id: str) -> None:
+        self._update(session_id, status="running")
+
+    def mark_stage(self, session_id: str, stage: Optional[str]) -> None:
+        """Record the pipeline stage in flight (decoding/transcribing/aligning/…)."""
+        self._update(session_id, stage=stage)
+
+    def mark_duration(self, session_id: str, duration: float) -> None:
+        """Persist the clip length once known (after decode) so ETAs survive reconnects."""
+        self._update(session_id, duration=duration)
+
+    def mark_done(self, session_id: str, *, language: Optional[str], diarized: bool,
+                  model: str, num_segments: int, duration: float) -> None:
+        self._update(
+            session_id, status="done", stage=None, error=None, language=language,
+            diarized=1 if diarized else 0, model=model,
+            num_segments=num_segments, duration=duration,
+        )
+
+    def mark_error(self, session_id: str, message: str) -> None:
+        self._update(session_id, status="error", stage=None, error=message)
+
+    def rename(self, session_id: str, name: str) -> None:
+        """Change a recording's display title (metadata only; audio untouched)."""
+        self._update(session_id, filename=name)
+
+    def _update(self, session_id: str, **fields) -> None:
+        fields["updated_at"] = _now()
+        cols = ", ".join(f"{k}=?" for k in fields)
+        with self._lock, self._db:
+            self._db.execute(
+                f"UPDATE sessions SET {cols} WHERE id=?",
+                (*fields.values(), session_id),
+            )
+
+    def delete(self, session_id: str) -> bool:
+        with self._lock, self._db:
+            cur = self._db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            existed = cur.rowcount > 0
+            self._db.execute(
+                "DELETE FROM speaker_names WHERE session_id=?", (session_id,)
+            )
+        shutil.rmtree(os.path.join(self.sessions_root, session_id), ignore_errors=True)
+        return existed
+
+    # --- speaker name overrides (non-destructive; applied at render time) ----
+    def get_speaker_names(self, session_id: str) -> dict[str, str]:
+        """Map of raw speaker key (e.g. SPEAKER_00) -> user-assigned name."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT speaker_key, name FROM speaker_names WHERE session_id=?",
+                (session_id,),
+            ).fetchall()
+        return {r["speaker_key"]: r["name"] for r in rows}
+
+    def set_speaker_name(self, session_id: str, speaker_key: str, name: str) -> None:
+        """Upsert a speaker name; a blank name clears the override (revert to default)."""
+        name = (name or "").strip()
+        with self._lock, self._db:
+            if not name:
+                self._db.execute(
+                    "DELETE FROM speaker_names WHERE session_id=? AND speaker_key=?",
+                    (session_id, speaker_key),
+                )
+                return
+            self._db.execute(
+                "INSERT INTO speaker_names (session_id, speaker_key, name) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(session_id, speaker_key) DO UPDATE SET name=excluded.name",
+                (session_id, speaker_key, name),
+            )
+
+    # --- settings (durable key/value, e.g. the global active model) -----
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT value FROM settings WHERE key=?", (key,)
+            ).fetchone()
+        return row["value"] if row is not None else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO settings (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+
+    # --- translations (the JSON column; sidecar files live on the facade) ---
+    def get_translations(self, session_id: str) -> dict:
+        """Map of target-lang -> {status, service, error?} for this session."""
+        row = self.get(session_id)
+        return (row or {}).get("translations") or {}
+
+    def set_translation_status(
+        self,
+        session_id: str,
+        lang: str,
+        status: str,
+        *,
+        service: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> dict:
+        """Upsert one language's translation status in the ``translations`` JSON
+        column (read-modify-write under the lock). Returns the full map."""
+        with self._lock, self._db:
+            row = self._db.execute(
+                "SELECT translations FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+            current = {}
+            if row is not None and row["translations"]:
+                try:
+                    current = json.loads(row["translations"])
+                except (ValueError, TypeError):
+                    current = {}
+            entry = current.get(lang, {})
+            entry["status"] = status
+            if service is not None:
+                entry["service"] = service
+            if error is not None:
+                entry["error"] = error
+            elif status != "error":
+                entry.pop("error", None)
+            current[lang] = entry
+            self._db.execute(
+                "UPDATE sessions SET translations=?, updated_at=? WHERE id=?",
+                (json.dumps(current), _now(), session_id),
+            )
+        return current
+
+    # --- reads ----------------------------------------------------------
+    def get(self, session_id: str) -> Optional[dict]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM sessions WHERE id=?", (session_id,)
+            ).fetchone()
+        return _row_to_dict(row)
+
+    def list(self) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM sessions ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    def has_active_jobs(self) -> bool:
+        """Whether any session is queued or running (used to gate device switches)."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM sessions WHERE status IN ('queued','running') LIMIT 1"
+            ).fetchone()
+        return row is not None
+
+    # --- lifecycle ------------------------------------------------------
+    def reconcile_startup(self) -> list[str]:
+        """Reset sessions left mid-flight by a crash/restart; return IDs to requeue."""
+        with self._lock, self._db:
+            rows = self._db.execute(
+                "SELECT id FROM sessions WHERE status IN ('queued','running')"
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            if ids:
+                self._db.execute(
+                    "UPDATE sessions SET status='queued', stage=NULL, error=NULL, "
+                    "updated_at=? WHERE status IN ('queued','running')",
+                    (_now(),),
+                )
+            return ids
+
+    def close(self) -> None:
+        """Close the SQLite connection so WAL changes checkpoint on shutdown."""
+        with self._lock:
+            self._db.close()
+
+
+def _make_db_backend(data_dir: str):
+    """Pick the DB backend: the C++ ``whisperx_core`` store when the ``db`` stage
+    is enabled, else the pure-Python :class:`_PyDbStore`."""
+    if _core_db_enabled():
+        try:
+            import whisperx_core
+        except ImportError as e:  # pragma: no cover - opt-in build path
+            raise RuntimeError(
+                "WHISPERX_CORE_STAGES includes 'db' but the whisperx_core module "
+                "is not importable. Build it (cmake --build build) and put it on "
+                "PYTHONPATH."
+            ) from e
+        return whisperx_core.SessionStore(os.path.abspath(data_dir))
+    return _PyDbStore(data_dir)
+
+
+class SessionStore:
+    """Session persistence facade: a swappable DB backend + Python file sidecars.
+
+    The DB methods (CRUD/lifecycle, settings, speaker_names, the ``translations``
+    column, snapshot/swap) forward to ``self._impl`` — Python or C++. The path
+    helpers and the file-backed subsystems (edits/undo overlay, per-language
+    translation files) are implemented here in Python regardless of backend.
+    """
+
+    def __init__(self, data_dir: str):
+        self.data_dir = os.path.abspath(data_dir)
+        self.sessions_root = os.path.join(self.data_dir, "sessions")
+        os.makedirs(self.sessions_root, exist_ok=True)
+        # Guards the file-backed sidecar writes (independent of the backend's own
+        # internal locking around SQLite).
+        self._lock = threading.Lock()
+        self._impl = _make_db_backend(self.data_dir)
+
+    # --- DB layer (delegated to the backend) ----------------------------
+    @property
+    def db_path(self) -> str:
+        return self._impl.db_path
+
+    def snapshot_db(self, dest_path: str) -> None:
+        return self._impl.snapshot_db(dest_path)
+
+    def swap_db(self, new_db_path: str) -> None:
+        return self._impl.swap_db(new_db_path)
+
+    def create(self, session_id: str, filename: str, audio_filename: str,
+               options: dict, model: Optional[str] = None) -> None:
+        return self._impl.create(session_id, filename, audio_filename, options, model)
+
+    def mark_running(self, session_id: str) -> None:
+        return self._impl.mark_running(session_id)
+
+    def mark_stage(self, session_id: str, stage: Optional[str]) -> None:
+        return self._impl.mark_stage(session_id, stage)
+
+    def mark_duration(self, session_id: str, duration: float) -> None:
+        return self._impl.mark_duration(session_id, duration)
+
+    def mark_done(self, session_id: str, *, language: Optional[str], diarized: bool,
+                  model: str, num_segments: int, duration: float) -> None:
+        return self._impl.mark_done(
+            session_id, language=language, diarized=diarized, model=model,
+            num_segments=num_segments, duration=duration,
+        )
+
+    def mark_error(self, session_id: str, message: str) -> None:
+        return self._impl.mark_error(session_id, message)
+
+    def rename(self, session_id: str, name: str) -> None:
+        return self._impl.rename(session_id, name)
+
+    def delete(self, session_id: str) -> bool:
+        return self._impl.delete(session_id)
+
+    def get_speaker_names(self, session_id: str) -> dict[str, str]:
+        return self._impl.get_speaker_names(session_id)
+
+    def set_speaker_name(self, session_id: str, speaker_key: str, name: str) -> None:
+        return self._impl.set_speaker_name(session_id, speaker_key, name)
+
+    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        return self._impl.get_setting(key, default)
+
+    def set_setting(self, key: str, value: str) -> None:
+        return self._impl.set_setting(key, value)
+
+    def get_translations(self, session_id: str) -> dict:
+        return self._impl.get_translations(session_id)
+
+    def set_translation_status(
+        self, session_id: str, lang: str, status: str, *,
+        service: Optional[str] = None, error: Optional[str] = None,
+    ) -> dict:
+        return self._impl.set_translation_status(
+            session_id, lang, status, service=service, error=error
+        )
+
+    def get(self, session_id: str) -> Optional[dict]:
+        return self._impl.get(session_id)
+
+    def list(self) -> list[dict]:
+        return self._impl.list()
+
+    def has_active_jobs(self) -> bool:
+        return self._impl.has_active_jobs()
+
+    def reconcile_startup(self) -> list[str]:
+        return self._impl.reconcile_startup()
+
+    def close(self) -> None:
+        return self._impl.close()
 
     # --- path helpers ---------------------------------------------------
     def session_dir(self, session_id: str) -> str:
@@ -281,191 +603,6 @@ class SessionStore:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
         os.replace(tmp, path)
-
-    def get_translations(self, session_id: str) -> dict:
-        """Map of target-lang -> {status, service, error?} for this session."""
-        row = self.get(session_id)
-        return (row or {}).get("translations") or {}
-
-    def set_translation_status(
-        self,
-        session_id: str,
-        lang: str,
-        status: str,
-        *,
-        service: Optional[str] = None,
-        error: Optional[str] = None,
-    ) -> dict:
-        """Upsert one language's translation status in the ``translations`` JSON
-        column (read-modify-write under the lock). Returns the full map."""
-        with self._lock, self._db:
-            row = self._db.execute(
-                "SELECT translations FROM sessions WHERE id=?", (session_id,)
-            ).fetchone()
-            current = {}
-            if row is not None and row["translations"]:
-                try:
-                    current = json.loads(row["translations"])
-                except (ValueError, TypeError):
-                    current = {}
-            entry = current.get(lang, {})
-            entry["status"] = status
-            if service is not None:
-                entry["service"] = service
-            if error is not None:
-                entry["error"] = error
-            elif status != "error":
-                entry.pop("error", None)
-            current[lang] = entry
-            self._db.execute(
-                "UPDATE sessions SET translations=?, updated_at=? WHERE id=?",
-                (json.dumps(current), _now(), session_id),
-            )
-        return current
-
-    # --- writes ---------------------------------------------------------
-    def create(self, session_id: str, filename: str, audio_filename: str,
-               options: dict, model: Optional[str] = None) -> None:
-        ts = _now()
-        with self._lock, self._db:
-            self._db.execute(
-                "INSERT INTO sessions (id, filename, audio_filename, status, options, "
-                "model, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-                (session_id, filename, audio_filename, "queued",
-                 json.dumps(options), model, ts, ts),
-            )
-
-    def mark_running(self, session_id: str) -> None:
-        self._update(session_id, status="running")
-
-    def mark_stage(self, session_id: str, stage: Optional[str]) -> None:
-        """Record the pipeline stage in flight (decoding/transcribing/aligning/…)."""
-        self._update(session_id, stage=stage)
-
-    def mark_duration(self, session_id: str, duration: float) -> None:
-        """Persist the clip length once known (after decode) so ETAs survive reconnects."""
-        self._update(session_id, duration=duration)
-
-    def mark_done(self, session_id: str, *, language: Optional[str], diarized: bool,
-                  model: str, num_segments: int, duration: float) -> None:
-        self._update(
-            session_id, status="done", stage=None, error=None, language=language,
-            diarized=1 if diarized else 0, model=model,
-            num_segments=num_segments, duration=duration,
-        )
-
-    def mark_error(self, session_id: str, message: str) -> None:
-        self._update(session_id, status="error", stage=None, error=message)
-
-    def rename(self, session_id: str, name: str) -> None:
-        """Change a recording's display title (metadata only; audio untouched)."""
-        self._update(session_id, filename=name)
-
-    def _update(self, session_id: str, **fields) -> None:
-        fields["updated_at"] = _now()
-        cols = ", ".join(f"{k}=?" for k in fields)
-        with self._lock, self._db:
-            self._db.execute(
-                f"UPDATE sessions SET {cols} WHERE id=?",
-                (*fields.values(), session_id),
-            )
-
-    def delete(self, session_id: str) -> bool:
-        with self._lock, self._db:
-            cur = self._db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
-            existed = cur.rowcount > 0
-            self._db.execute(
-                "DELETE FROM speaker_names WHERE session_id=?", (session_id,)
-            )
-        shutil.rmtree(self.session_dir(session_id), ignore_errors=True)
-        return existed
-
-    # --- speaker name overrides (non-destructive; applied at render time) ----
-    def get_speaker_names(self, session_id: str) -> dict[str, str]:
-        """Map of raw speaker key (e.g. SPEAKER_00) -> user-assigned name."""
-        with self._lock:
-            rows = self._db.execute(
-                "SELECT speaker_key, name FROM speaker_names WHERE session_id=?",
-                (session_id,),
-            ).fetchall()
-        return {r["speaker_key"]: r["name"] for r in rows}
-
-    def set_speaker_name(self, session_id: str, speaker_key: str, name: str) -> None:
-        """Upsert a speaker name; a blank name clears the override (revert to default)."""
-        name = (name or "").strip()
-        with self._lock, self._db:
-            if not name:
-                self._db.execute(
-                    "DELETE FROM speaker_names WHERE session_id=? AND speaker_key=?",
-                    (session_id, speaker_key),
-                )
-                return
-            self._db.execute(
-                "INSERT INTO speaker_names (session_id, speaker_key, name) "
-                "VALUES (?, ?, ?) "
-                "ON CONFLICT(session_id, speaker_key) DO UPDATE SET name=excluded.name",
-                (session_id, speaker_key, name),
-            )
-
-    # --- settings (durable key/value, e.g. the global active model) -----
-    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT value FROM settings WHERE key=?", (key,)
-            ).fetchone()
-        return row["value"] if row is not None else default
-
-    def set_setting(self, key: str, value: str) -> None:
-        with self._lock, self._db:
-            self._db.execute(
-                "INSERT INTO settings (key, value) VALUES (?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, value),
-            )
-
-    # --- reads ----------------------------------------------------------
-    def get(self, session_id: str) -> Optional[dict]:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM sessions WHERE id=?", (session_id,)
-            ).fetchone()
-        return _row_to_dict(row)
-
-    def list(self) -> list[dict]:
-        with self._lock:
-            rows = self._db.execute(
-                "SELECT * FROM sessions ORDER BY created_at DESC, id DESC"
-            ).fetchall()
-        return [_row_to_dict(r) for r in rows]
-
-    def has_active_jobs(self) -> bool:
-        """Whether any session is queued or running (used to gate device switches)."""
-        with self._lock:
-            row = self._db.execute(
-                "SELECT 1 FROM sessions WHERE status IN ('queued','running') LIMIT 1"
-            ).fetchone()
-        return row is not None
-
-    # --- lifecycle ------------------------------------------------------
-    def reconcile_startup(self) -> list[str]:
-        """Reset sessions left mid-flight by a crash/restart; return IDs to requeue."""
-        with self._lock, self._db:
-            rows = self._db.execute(
-                "SELECT id FROM sessions WHERE status IN ('queued','running')"
-            ).fetchall()
-            ids = [r["id"] for r in rows]
-            if ids:
-                self._db.execute(
-                    "UPDATE sessions SET status='queued', stage=NULL, error=NULL, "
-                    "updated_at=? WHERE status IN ('queued','running')",
-                    (_now(),),
-                )
-            return ids
-
-    def close(self) -> None:
-        """Close the SQLite connection so WAL changes checkpoint on shutdown."""
-        with self._lock:
-            self._db.close()
 
 
 def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:

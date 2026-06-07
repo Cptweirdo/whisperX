@@ -1,8 +1,9 @@
 name: C++ Core
 
-# Phase 0 of the C++ engine-core migration (docs/cpp-core-handoff.md): build the
-# whisperx_core pybind module + Catch2 tests, run CTest under ASan/UBSan, and
-# prove the Python parity oracle (C++ result == Python reference).
+# C++ engine-core migration (docs/cpp-core-handoff.md): build the whisperx_core
+# pybind module + Catch2 tests, run CTest under ASan/UBSan, and prove the Python
+# parity oracle (C++ result == Python reference). Covers Phase 0 (edit_distance)
+# + Phase 1 (the SQLite SessionStore parity / on-disk-compat tests).
 
 on:
   push:
@@ -48,8 +49,9 @@ jobs:
           version: "0.11.6"
           python-version: "3.12"
 
-      # The parity test imports only the built module + pytest, never `whisperx`,
-      # so we skip the heavy project sync (torch/pyannote) and use an ephemeral env.
+      # The parity tests import only the built module + pytest (+ pure-stdlib
+      # `app.store`), never `whisperx`, so we skip the heavy project sync
+      # (torch/pyannote) and use an ephemeral env.
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
@@ -62,4 +64,4 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
       - name: Python parity oracle
-        run: PYTHONPATH=build uv run --no-project --with pytest pytest bindings/test/test_core_parity.py -v
+        run: PYTHONPATH=build uv run --no-project --with pytest pytest bindings/test/ -v

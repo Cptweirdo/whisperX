@@ -195,7 +195,7 @@ def test_e2e_initial_push_then_partial_update(tmp_path):
     transcript_b_v2 = {"segments": [{"start": 0, "end": 2, "text": "edited"}]}
     with open(store.result_path("b"), "w", encoding="utf-8") as f:
         json.dump(transcript_b_v2, f)
-    store._update("b", num_segments=1)            # touch the DB row too
+    store.mark_duration("b", 2.0)                 # touch the DB row too
     audio_c = b"CCCC-audio"
     transcript_c = {"segments": [{"start": 0, "end": 3, "text": "new"}]}
     _create_session(store, "c", audio=audio_c, transcript=transcript_c)
