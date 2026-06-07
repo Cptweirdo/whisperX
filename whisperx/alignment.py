@@ -2,6 +2,7 @@
 Forced Alignment with Whisper
 C. Max Bain
 """
+import os
 from dataclasses import dataclass
 from typing import Iterable, Optional, Union, List
 
@@ -28,6 +29,27 @@ from whisperx.log_utils import get_logger
 logger = get_logger(__name__)
 
 LANGUAGES_WITHOUT_SPACES = ["ja", "zh"]
+
+
+def _core_align_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` aligner backs this run (Phase 3A).
+
+    ``WHISPERX_CORE_STAGES`` carries comma-separated stage tokens; ``align`` routes
+    the per-segment trellis + char→word→sentence assembly (the body below `trellis
+    = get_trellis(...)`) to the native ``align_assemble`` — which also replaces nltk
+    punkt with the C++ sentence splitter. The Python path stays the live oracle. The
+    model forward + char-cleaning + wildcard extension always stay in Python; only
+    the fixed extended emission + tokens cross the seam. ``hasattr``-guarded so a
+    module built without the aligner degrades cleanly.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "align" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "align_assemble")
 
 DEFAULT_ALIGN_MODELS_TORCH = {
     "en": "WAV2VEC2_ASR_BASE_960H",
@@ -281,6 +303,27 @@ def align(
             tokens = [model_dictionary.get(c, wildcard_id) for c in text_clean]
         else:
             tokens = [model_dictionary[c] for c in text_clean]
+
+        # Native aligner (`align` token): hand the fixed extended emission + tokens
+        # to the C++ trellis + char→word→sentence assembly (which uses the native
+        # sentence splitter in place of punkt). Replaces the Python body below.
+        if _core_align_enabled():
+            import whisperx_core
+            emi = np.ascontiguousarray(emission.numpy(), dtype=np.float32)
+            res = whisperx_core.align_assemble(
+                emi, list(tokens), int(blank_id), text_clean, text,
+                list(segment_data[sdx]["clean_cdx"]), float(t1), float(t2),
+                model_lang, interpolate_method, return_char_alignments,
+                None if avg_logprob is None else float(avg_logprob),
+            )
+            if not res["ok"]:
+                logger.warning(f'Failed to align segment ("{segment["text"]}"): backtrack failed, resorting to original')
+                aligned_segments.append(aligned_seg)
+                continue
+            aligned_segments += res["subsegments"]
+            if progress_callback is not None:
+                progress_callback(((sdx + 1) / total_segments) * 100)
+            continue
 
         trellis = get_trellis(emission, tokens, blank_id)
         path = backtrack(trellis, emission, tokens, blank_id)

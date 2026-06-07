@@ -5,7 +5,9 @@ name: C++ Core
 # parity oracle (C++ result == Python reference). Covers Phase 0 (edit_distance)
 # + Phase 1 (the SQLite SessionStore + the file-backed edits/undo sidecars &
 # app/edits.py algorithms: parity / on-disk-compat tests, and a stage-token
-# matrix proving `db` and `edits` compose).
+# matrix proving `db` and `edits` compose) + Phase 2A (merge_chunks) + Phase 3A
+# (the forced-alignment Viterbi core + char→word→sentence assembly + the native
+# sentence splitter; golden-replay of the committed emissions, torch-free).
 
 on:
   push:
@@ -65,8 +67,10 @@ jobs:
       - name: CTest (ASan/UBSan)
         run: ctest --test-dir build --output-on-failure
 
+      # numpy is needed by the Phase 3A align golden-replay (test_align_parity);
+      # test_align_facade is torch-gated and skips here (the dep-free lane).
       - name: Python parity oracle
-        run: PYTHONPATH=build uv run --no-project --with pytest pytest bindings/test/ -v
+        run: PYTHONPATH=build uv run --no-project --with pytest --with numpy pytest bindings/test/ -v
 
       # The edits/store oracle suite (pure-stdlib app.store/edits/render) must pass
       # identically with the C++ store off, the `edits` token alone, and both

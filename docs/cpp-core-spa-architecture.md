@@ -112,7 +112,7 @@ This still **deletes heavy transitive deps**:
 | Drop | Replace with |
 |---|---|
 | `pandas` (alignment `:325,395`, diarize `:170`) | plain structs + loops |
-| `nltk` punkt (`alignment.py:189`) | ICU / small punctuation-rule splitter |
+| `nltk` punkt (`alignment.py:189`) | native rule-based splitter + Moses prefixes (landed, 3A) |
 | `torch`, `torchaudio`, `transformers`, `faster-whisper`, `ctranslate2`, `pyannote-audio` | ORT + sherpa-onnx (+ whisper.cpp/GGML for the Metal ASR backend) |
 
 Dependency graph shrinks from dozens of packages to ≈ **ORT + sherpa-onnx +

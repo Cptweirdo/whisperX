@@ -691,6 +691,52 @@ Source: `alignment.py:80` (`load_align_model`), `:117` (`align`), `:425`
 (wildcard/OOV), `:32-77` (`DEFAULT_ALIGN_MODELS_TORCH/HF` — 5 + 38 languages).
 **Do this early; it's where the migration most likely fails.**
 
+### Status — slice 3A landed (Viterbi + assembly + native splitter, `align` token)
+Phase 3 is **split into two composable slices** (the Phase 1/2 pattern). **3A** —
+the pure, dep-free algorithm IP — is **landed**; **3B** (the heavy ONNX wav2vec2
+forward) is the remaining slice. The settled facts:
+
+- **The Viterbi + assembly are native (`align` token).** `core/align/trellis.{hpp,cpp}`
+  ports `get_trellis`/`backtrack`/`merge_repeats`/`merge_words` verbatim over a row-major
+  fp32 emission; `core/align/align.{hpp,cpp}` ports the char→word→sentence assembly
+  (`alignment.py:298-411`) as struct loops (no pandas), with `core/align/interpolate.hpp`
+  porting `interpolate_nans` (nearest/ignore) and the `groupby(["start","end"])` sentence
+  merge. All in the always-built `whisperx_core_lib` — **no new deps**. Compiled
+  `-ffp-contract=off`; `round3` uses `nearbyint` (banker's, matching Python `round()`).
+- **The seam keeps the model forward in Python (3A scope).** `whisperx/alignment.py::align`
+  is a facade: the torch forward + log_softmax + char-cleaning + **wildcard extension** +
+  tokenization stay Python (unchanged), then the **fixed extended emission + tokens** cross
+  to `whisperx_core.align_assemble` under `align` (the Python body is the live oracle).
+  `align()`'s signature is unchanged → `tests/test_pipeline_contract.py` needs no edit.
+- **nltk punkt → native splitter (the resolved unknown).** `core/text/sentence_split.{hpp,cpp}`
+  is rule-based + vendored Moses `nonbreaking_prefixes` (`core/text/data/`, embedded at build
+  time via a CMake-generated header; `core/text/utf8.hpp` codepoint cursor). **Evaluation
+  recorded:** FreeLing rejected (GPLv3 + 100s-MB data), ICU rejected (heavy dep, UAX#29 not
+  abbrev-aware → as divergent from punkt as a rule), a punkt port rejected (no C++ one;
+  linking forces a Go/Rust toolchain; its only edge — byte-fidelity — is moot once divergence
+  is accepted, and its case/adaptive machinery degrades on short ASR segments). The splitter
+  **reproduces punkt exactly on every golden transcript**, so `words.json` needed **no
+  re-baseline**; on an adversarial en+ru corpus it agrees 77% (divergences documented +
+  pinned).
+- **Downstream blast-radius of any splitter divergence (analysed):** only segment/paragraph/
+  cue structure + interpolated edges of *untimed* words on multi-sentence segments — never
+  aligned-word timing, never speaker labels, never transcript text. The abbreviation
+  over-split (the one case with teeth) is neutralised by the Moses lists.
+- **Gates met.** Viterbi **path + char_segments exact** vs the committed emissions on all 8
+  clips (torch-free golden replay); `align_assemble` words match `words.json` within ±1
+  frame / ±0.01; the splitter is pinned against a committed **punkt baseline**
+  (`bindings/test/sentence_split_baseline.json` ← `golden/sentence_split_corpus.py`) with
+  contract invariants asserted on every input; **56/56 CTest** under ASan/UBSan
+  (`test_trellis.cpp`, `test_sentence_split.cpp`); `tests/test_word_timestamp_interpolation.py`
+  green under `align`; full `uv run pytest tests/` green (226) across `WHISPERX_CORE_STAGES`
+  ∈ {unset, `align`, `vad,align`, `db,edits,vad,align`}; dep-free build unaffected. The align
+  goldens gained per-segment `dictionary` + `clean_cdx` (`dump_goldens.py --align-io`) for the
+  torch-free replay.
+
+**3B remaining** — the ONNX wav2vec2 forward (Goals + Unknowns below). It inherits the 2B
+build facts (link ORT **shared**; sherpa-`nlohmann_json` guard; decode-once `AudioBuffer::slice`
+is the `audio[:, f1:f2]` per-segment read) — see "Build/runtime inheritance from Phase 2B".
+
 ### Goals
 - **Export wav2vec2-CTC to ONNX** (start `WAV2VEC2_ASR_BASE_960H`, English), pin
   opset, run on ORT.
@@ -769,9 +815,12 @@ run to completion." It is the recommended Phase 3 approach: **batch inference
   emissions enough to shift word edges?
 - **Batching correctness** — do padded batch elements stay numerically identical to
   single-segment runs (mask handling)?
-- **nltk → ICU parity** — sentence spans drive `interpolate_nans` *grouping*, so a
-  different split shifts interpolated timings. How close must the splitter be, and
-  do we accept small divergence?
+- ~~**nltk → ICU parity**~~ **(resolved — slice 3A).** Replaced punkt with a rule-based
+  native splitter + vendored Moses `nonbreaking_prefixes` (not ICU/FreeLing/a punkt port —
+  see the 3A status block for the evaluation). It reproduces punkt exactly on the golden
+  transcripts (no `words.json` re-baseline) and the accepted adversarial-corpus divergences
+  are pinned against a committed punkt baseline. The divergence only touches multi-sentence
+  segment grouping (blast-radius analysed) — small and accepted.
 - **torchaudio vs HF dicts** — `DEFAULT_ALIGN_MODELS_TORCH` (torchaudio bundles)
   vs `_HF` (Wav2Vec2ForCTC) use different tokenizers/dictionaries; the port must
   reproduce each. `torchaudio.functional.forced_align` is a reference but is the

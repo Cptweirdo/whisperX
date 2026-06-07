@@ -270,6 +270,64 @@ def _dump_vad_only(clips, outdir, *, wx, pipe):
     print(f"\naugmented {changed}/{len(clips)} vad.json -> {outdir}/manifest.json")
 
 
+def _clean_cdx(text, dictionary, lang):
+    """Replicate alignment.py:156-185 char-cleaning → the clean codepoint indices.
+
+    Splitter-independent; used to dump `clean_cdx` so the C++ align_assemble parity
+    test (which consumes char_segments via these indices) runs torch-free in CI.
+    """
+    LANGUAGES_WITHOUT_SPACES = ["ja", "zh"]
+    num_leading = len(text) - len(text.lstrip())
+    num_trailing = len(text) - len(text.rstrip())
+    cdxs = []
+    for cdx, char in enumerate(text):
+        char_ = char.lower()
+        if lang not in LANGUAGES_WITHOUT_SPACES:
+            char_ = char_.replace(" ", "|")
+        if cdx < num_leading:
+            pass
+        elif cdx > len(text) - num_trailing - 1:
+            pass
+        elif char_ in dictionary.keys():
+            cdxs.append(cdx)
+        elif char_ not in (" ", "|"):
+            cdxs.append(cdx)
+    return cdxs
+
+
+def _dump_align_io(clips, outdir, *, wx):
+    """Augment each *.align.json with the model `dictionary` + per-segment
+    `clean_cdx`, so the C++ align_assemble parity test is self-contained (no torch
+    in CI): it replays the committed extended emission + tokens + these indices
+    against the committed words.json. Loads only the align models (no whisper)."""
+    align_cache: dict = {}
+    man_path = outdir / "manifest.json"
+    man = json.loads(man_path.read_text())
+    for name, meta in sorted(clips.items()):
+        if not (outdir / f"{name}.transcript.json").exists():
+            continue  # decode-only clips (e.g. the m4a) have no align intermediates
+        lang = _lang_of(name)
+        if lang not in align_cache:
+            align_cache[lang] = wx.load_align_model(language_code=lang, device="cpu")
+        _, ameta = align_cache[lang]
+        dictionary = ameta["dictionary"]
+        tr = json.loads((outdir / f"{name}.transcript.json").read_text())
+        align = json.loads((outdir / f"{name}.align.json").read_text())
+        segs = tr["segments"]
+        # align.json segments correspond 1:1 to forwarded transcript segments, in
+        # order (every golden segment is forwarded). Zip and attach.
+        align["dictionary"] = {k: int(v) for k, v in dictionary.items()}
+        for aseg, tseg in zip(align["segments"], segs):
+            aseg["clean_cdx"] = _clean_cdx(tseg["text"], dictionary, lang)
+        p = outdir / f"{name}.align.json"
+        p.write_text(json.dumps(align, indent=2, ensure_ascii=False) + "\n")
+        man["clips"][name]["artifacts"]["align"]["sha256"] = _sha256(p)
+        print(f"  {name:16} dict={len(dictionary):4d}  "
+              f"clean_cdx for {len(align['segments'])} seg(s)")
+    man_path.write_text(json.dumps(man, indent=2, ensure_ascii=False) + "\n")
+    print(f"\naugmented align.json IO -> {man_path}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -281,6 +339,9 @@ def main():
     ap.add_argument("--vad-only", action="store_true",
                     help="only (re)write raw VAD segments into *.vad.json (cheap; "
                          "no whisper/align/diarize; preserves tensor goldens)")
+    ap.add_argument("--align-io", action="store_true",
+                    help="only augment *.align.json with dictionary + clean_cdx "
+                         "(loads align models only; no whisper/diarize)")
     ap.add_argument("--outdir", default=str(OUTDIR))
     args = ap.parse_args()
 
@@ -294,6 +355,11 @@ def main():
         raise SystemExit(f"no matching clips (have: {sorted(man['clips'])})")
 
     import whisperx as wx
+
+    if args.align_io:
+        _dump_align_io(clips, outdir, wx=wx)
+        return
+
     pipe = wx.load_model(args.model, device=args.device,
                          compute_type=args.compute, vad_method="silero")
 

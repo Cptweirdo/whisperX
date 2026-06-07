@@ -47,7 +47,7 @@
         },
         "align": {
           "file": "de_dialog.align.json",
-          "sha256": "8fd96aee3b7730c11cbf929dfded60881476809af664c2916fe8a0afec33b92f"
+          "sha256": "1fb63426eda7300387787b026d3fe505f21255b5fb5c8bb4a81cfc9849a1cebc"
         },
         "words": {
           "file": "de_dialog.words.json",
@@ -82,7 +82,7 @@
         },
         "align": {
           "file": "en_dialog.align.json",
-          "sha256": "5ae7cd02e778930ad1e78a695bf72363af287d897e8e0aaf75405fdf67556573"
+          "sha256": "f15408347bf5ae271b7080fd6018a83d7dca5b2b419876b6f0ae925893cc9a4d"
         },
         "words": {
           "file": "en_dialog.words.json",
@@ -116,7 +116,7 @@
         },
         "align": {
           "file": "en_libri.align.json",
-          "sha256": "9f5b70b8eab9e971a54d04b55158be29eaff5c1b77f0855a382e4ddd759f6fc7"
+          "sha256": "057e0d6021e4707b44bded7755ed031620c084f3886dd95512356331e9e4957b"
         },
         "words": {
           "file": "en_libri.words.json",
@@ -149,7 +149,7 @@
         },
         "align": {
           "file": "ru_cv_71085.align.json",
-          "sha256": "a5e5ac94bf57b989148415ec5bfb008e16aefa929b4dc0a771a3d143b3de5159"
+          "sha256": "5105568952667f276ef4867d12c6b30138456f11db69bf985fac9ab150f1a1c9"
         },
         "words": {
           "file": "ru_cv_71085.words.json",
@@ -182,7 +182,7 @@
         },
         "align": {
           "file": "ru_cv_71379.align.json",
-          "sha256": "89d4f83f84ade46c07911133e36e047ceffbb0257e5655e367e11f1f1781d61c"
+          "sha256": "df274a4960d7dbcfbe5edf45ce3ecd8d6d309fc593d46ad403597136f1352d86"
         },
         "words": {
           "file": "ru_cv_71379.words.json",
@@ -215,7 +215,7 @@
         },
         "align": {
           "file": "ru_cv_71606.align.json",
-          "sha256": "3e5bde7a53b8514fed8483276e3be02dd1027c58339488f85baba19fbe7014f0"
+          "sha256": "6b7914cf1b6d1b89a11d528b76618835b23cb0babe4ac8c8831c455f4211d458"
         },
         "words": {
           "file": "ru_cv_71606.words.json",
@@ -248,7 +248,7 @@
         },
         "align": {
           "file": "ru_cv_79125.align.json",
-          "sha256": "cb1d5ce56ed1fe48b7fbf0686157ad9b5e0d5a0e371142a556704e1c16c56861"
+          "sha256": "312b12e4a7dfbb2955dbed838e9c7c83f4ac6d52af7cdad55c0e6396b27cec2f"
         },
         "words": {
           "file": "ru_cv_79125.words.json",
@@ -281,7 +281,7 @@
         },
         "align": {
           "file": "ru_dialog.align.json",
-          "sha256": "b9f7bf2b984c38ae4457d9f7ce8078bad15e51858d630cd603fc6254d7bba5d8"
+          "sha256": "1776e058cd2073385e43824885c9b59fd739a39547817c1b2533159c8d606eb5"
         },
         "words": {
           "file": "ru_dialog.words.json",

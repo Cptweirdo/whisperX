@@ -5,6 +5,7 @@
 // Phase 0: the pure text metric + build provenance.
 // Phase 1: the SQLite `SessionStore` (DB-only surface) — `app.store.SessionStore`
 //          forwards its DB methods here when `WHISPERX_CORE_STAGES` contains `db`.
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -16,17 +17,18 @@
 
 #include <nlohmann/json.hpp>
 
+#include "align/align.hpp"
+#include "align/trellis.hpp"
 #include "audio/audio_constants.hpp"
 #include "build_info.hpp"
 #include "db/session_store.hpp"
 #include "edits/edits.hpp"
 #include "text/edit_distance.hpp"
+#include "text/sentence_split.hpp"
 #include "text/sequence_matcher.hpp"
 #include "vad/merge_chunks.hpp"
 
 #ifdef WHISPERX_CORE_AUDIO
-#include <pybind11/numpy.h>
-
 #include "audio/decode.hpp"
 #include "audio/vad_silero.hpp"
 #endif
@@ -354,6 +356,106 @@ void bind_vad(py::module_& m) {
         "of {start, end, segments:[[s,e],…]} chunks.");
 }
 
+// whisperx/alignment.py forced-alignment core (`align` token, Phase 3A): the
+// Viterbi trellis + the char→word→sentence assembly + the native sentence
+// splitter. The model forward + char-cleaning + wildcard extension stay Python
+// (the facade); these take the fixed extended emission + precomputed tokens.
+namespace {
+
+// Wrap a (T, V) float32 numpy array as an Emission view (no copy; the array must
+// outlive the call, which it does within these lambdas).
+whisperx::align::Emission emission_view(
+    const py::array_t<float, py::array::c_style | py::array::forcecast>& a) {
+    if (a.ndim() != 2)
+        throw std::invalid_argument("emission must be a 2-D (T, V) array");
+    return {a.data(), static_cast<std::size_t>(a.shape(0)),
+            static_cast<std::size_t>(a.shape(1))};
+}
+
+}  // namespace
+
+void bind_align(py::module_& m) {
+    namespace al = whisperx::align;
+
+    // Viterbi backtrack path — get_trellis + backtrack. Returns list of
+    // (token_index, time_index, score) or None on failure. (Viterbi-exact golden.)
+    m.def(
+        "align_trellis_path",
+        [](const py::array_t<float, py::array::c_style | py::array::forcecast>&
+               emission,
+           const std::vector<int>& tokens, int blank_id) -> py::object {
+            auto emi = emission_view(emission);
+            auto trellis = al::get_trellis(emi, tokens, blank_id);
+            auto path = al::backtrack(trellis, emi, tokens, blank_id);
+            if (!path) return py::none();
+            py::list out;
+            for (const auto& p : *path)
+                out.append(py::make_tuple(p.token_index, p.time_index, p.score));
+            return std::move(out);
+        },
+        py::arg("emission"), py::arg("tokens"), py::arg("blank_id") = 0);
+
+    // merge_repeats char-segments — get_trellis + backtrack + merge_repeats.
+    // Returns list of (label, start, end, score) or None.
+    m.def(
+        "align_char_segments",
+        [](const py::array_t<float, py::array::c_style | py::array::forcecast>&
+               emission,
+           const std::vector<int>& tokens, int blank_id,
+           const std::string& transcript) -> py::object {
+            auto emi = emission_view(emission);
+            auto trellis = al::get_trellis(emi, tokens, blank_id);
+            auto path = al::backtrack(trellis, emi, tokens, blank_id);
+            if (!path) return py::none();
+            auto segs = al::merge_repeats(*path, transcript);
+            py::list out;
+            for (const auto& s : segs)
+                out.append(py::make_tuple(s.label, s.start, s.end, s.score));
+            return std::move(out);
+        },
+        py::arg("emission"), py::arg("tokens"), py::arg("blank_id"),
+        py::arg("transcript"));
+
+    // Native sentence splitter — replaces nltk punkt. (start, end) codepoint spans.
+    m.def(
+        "sentence_spans",
+        [](const std::string& text, const std::string& lang) {
+            py::list out;
+            for (const auto& [s, e] : whisperx::text::sentence_spans(text, lang))
+                out.append(py::make_tuple(s, e));
+            return out;
+        },
+        py::arg("text"), py::arg("lang") = "en");
+
+    // The per-segment assembly (the `align` facade entry). Returns
+    // {"ok": bool, "subsegments": [...]}.
+    m.def(
+        "align_assemble",
+        [](const py::array_t<float, py::array::c_style | py::array::forcecast>&
+               emission,
+           const std::vector<int>& tokens, int blank_id,
+           const std::string& text_clean, const std::string& text,
+           const std::vector<int>& clean_cdx, double t1, double t2,
+           const std::string& language, const std::string& interpolate_method,
+           bool return_char_alignments, std::optional<double> avg_logprob) {
+            auto emi = emission_view(emission);
+            auto res = al::align_assemble(emi, tokens, blank_id, text_clean, text,
+                                          clean_cdx, t1, t2, language,
+                                          interpolate_method,
+                                          return_char_alignments, avg_logprob);
+            py::dict d;
+            d["ok"] = res.ok;
+            d["subsegments"] = json_to_py(res.subsegments);
+            return d;
+        },
+        py::arg("emission"), py::arg("tokens"), py::arg("blank_id"),
+        py::arg("text_clean"), py::arg("text"), py::arg("clean_cdx"),
+        py::arg("t1"), py::arg("t2"), py::arg("language"),
+        py::arg("interpolate_method") = "nearest",
+        py::arg("return_char_alignments") = false,
+        py::arg("avg_logprob") = py::none());
+}
+
 #ifdef WHISPERX_CORE_AUDIO
 // In-process libav* decode (replaces the ffmpeg subprocess; `decode` token).
 // Built only with WHISPERX_CORE_AUDIO; the Python facade hasattr-guards so a
@@ -429,6 +531,7 @@ PYBIND11_MODULE(whisperx_core, m) {
     bind_session_store(m);
     bind_edits(m);
     bind_vad(m);
+    bind_align(m);
 #ifdef WHISPERX_CORE_AUDIO
     bind_audio(m);
 #endif
