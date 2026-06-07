@@ -102,8 +102,12 @@ def test_mirror_emissions_match_golden(clip):
         f1, f2 = int(seg["start"] * SAMPLE_RATE), int(seg["end"] * SAMPLE_RATE)
         wf = audio[f1:f2][None, :].astype(np.float32)  # (1, N)
 
-        logits = sess.run(["emissions"], {"waveform": wf})[0]
-        emi = _log_softmax(logits)[0].astype(np.float32)
+        # contract v2: masked graph — feed an all-ones attention_mask (batch 1, no
+        # padding) and trim by frame_lengths (a no-op here, exercises the output).
+        mask = np.ones_like(wf, dtype=np.int64)
+        logits, flen = sess.run(["emissions", "frame_lengths"],
+                                {"waveform": wf, "attention_mask": mask})
+        emi = _log_softmax(logits[:, :int(flen[0])])[0].astype(np.float32)
 
         g = golden[f"seg{i}_emission"]
         # committed golden is wildcard-extended iff the segment had an OOV char
@@ -121,7 +125,11 @@ def test_mirror_meta_contract():
     dictionary that line up with the committed align goldens (no torch needed)."""
     for lang, clip in (("en", "en_libri"), ("de", "de_dialog"), ("ru", "ru_cv_71085")):
         _, meta = _model(lang)
-        assert meta["opset"] == 17
+        assert meta["opset"] == 18
+        assert meta["contract_version"] == 2
+        assert meta["inputs"] == ["waveform", "attention_mask"]
+        assert meta["outputs"] == ["emissions", "frame_lengths"]
+        assert isinstance(meta["batchable"], bool)
         assert meta["emits"] == "raw_logits"
         assert meta["input"] == "waveform_16k_mono_f32"
         assert isinstance(meta["dictionary"], dict)

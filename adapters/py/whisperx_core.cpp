@@ -10,7 +10,9 @@
 #include <pybind11/stl.h>
 
 #include <cstring>
+#include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -18,6 +20,7 @@
 #include <nlohmann/json.hpp>
 
 #include "align/align.hpp"
+#include "align/emission_post.hpp"
 #include "align/trellis.hpp"
 #include "audio/audio_constants.hpp"
 #include "build_info.hpp"
@@ -29,6 +32,7 @@
 #include "vad/merge_chunks.hpp"
 
 #ifdef WHISPERX_CORE_AUDIO
+#include "align/wav2vec2_onnx.hpp"
 #include "audio/decode.hpp"
 #include "audio/vad_silero.hpp"
 #endif
@@ -454,6 +458,33 @@ void bind_align(py::module_& m) {
         py::arg("interpolate_method") = "nearest",
         py::arg("return_char_alignments") = false,
         py::arg("avg_logprob") = py::none());
+
+    // Phase-3B "path 2": raw logits (T, V) -> log_softmax + OOV wildcard column +
+    // tokens, the post-forward steps that used to be torch in the Python facade
+    // (alignment.py:285,294-305). Pure (no ORT) so it's always built. Returns
+    // (emission (T, V') float32, tokens). The caller then feeds align_assemble.
+    m.def(
+        "align_emission_post",
+        [](const py::array_t<float, py::array::c_style | py::array::forcecast>&
+               logits,
+           int blank_id, const std::string& text_clean,
+           const std::map<std::string, int>& dictionary) {
+            if (logits.ndim() != 2)
+                throw std::invalid_argument("logits must be a 2-D (T, V) array");
+            auto r = al::emission_post(
+                logits.data(), static_cast<std::size_t>(logits.shape(0)),
+                static_cast<std::size_t>(logits.shape(1)), blank_id, text_clean,
+                dictionary);
+            py::array_t<float> emi({static_cast<py::ssize_t>(r.T),
+                                    static_cast<py::ssize_t>(r.V)});
+            std::memcpy(emi.mutable_data(), r.emission.data(),
+                        r.emission.size() * sizeof(float));
+            return py::make_tuple(std::move(emi), std::move(r.tokens));
+        },
+        py::arg("logits"), py::arg("blank_id"), py::arg("text_clean"),
+        py::arg("dictionary"),
+        "Raw CTC logits (T,V) -> (log_softmax'd, wildcard-extended emission (T,V'), "
+        "token ids) — the torch-free post-forward step for the align_onnx path.");
 }
 
 #ifdef WHISPERX_CORE_AUDIO
@@ -499,6 +530,45 @@ void bind_audio(py::module_& m) {
         py::arg("chunk_size") = 30.0,
         "Silero VAD (sherpa-onnx / ORT) over a float32 waveform -> list of "
         "(start, end, 'UNKNOWN') speech segments in seconds (pre-merge_chunks).");
+
+    // Native wav2vec2 forward under ORT (Phase 3B). Replaces the torch model
+    // forward; the consumer feeds the raw logits through align_emission_post.
+    using WaveArray =
+        py::array_t<float, py::array::c_style | py::array::forcecast>;
+    py::class_<whisperx::align::Wav2Vec2Onnx>(m, "Wav2Vec2Onnx")
+        .def(py::init<const std::string&, int>(), py::arg("onnx_path"),
+             py::arg("num_threads") = 1)
+        .def(
+            "forward",
+            [](whisperx::align::Wav2Vec2Onnx& self,
+               const std::vector<WaveArray>& waveforms, bool batched) {
+                std::vector<std::span<const float>> spans;
+                spans.reserve(waveforms.size());
+                for (const auto& w : waveforms) {
+                    if (w.ndim() != 1)
+                        throw std::invalid_argument(
+                            "each waveform must be a 1-D float32 array");
+                    spans.emplace_back(w.data(),
+                                       static_cast<std::size_t>(w.size()));
+                }
+                std::vector<std::pair<std::size_t, std::size_t>> shapes;
+                auto out = self.forward(spans, shapes, batched);
+                py::list result;
+                for (std::size_t i = 0; i < out.size(); ++i) {
+                    const auto [t, v] = shapes[i];
+                    py::array_t<float> arr({static_cast<py::ssize_t>(t),
+                                            static_cast<py::ssize_t>(v)});
+                    if (!out[i].empty())
+                        std::memcpy(arr.mutable_data(), out[i].data(),
+                                    out[i].size() * sizeof(float));
+                    result.append(std::move(arr));
+                }
+                return result;
+            },
+            py::arg("waveforms"), py::arg("batched") = true,
+            "Run the wav2vec2 forward over a list of 1-D float32 waveforms -> list "
+            "of (T_i, V) raw-logit arrays. batched=True packs padded+masked batches "
+            "(layer_norm models only); False runs each segment alone.");
 }
 #endif
 

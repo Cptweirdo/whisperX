@@ -24,19 +24,27 @@ emissions *before* upload.
 
 ```
 <model_name>/            # '/' in HF ids sanitized to '--'
-  model.onnx             # raw logits (B,N waveform) -> (B,T,V); opset 17, dynamic axes
-  meta.json              # dictionary, blank_id, opset, provenance, sha256
+  model.onnx             # masked graph (contract v2), opset 18, dynamic {batch,time}
+  meta.json              # dictionary, blank_id, contract, provenance, sha256
 ```
 
-## Artifact contract
+## Artifact contract (v2 — masked, batchable)
 
-- **`model.onnx`** emits **raw logits** — the consumer applies `log_softmax` and the
-  OOV **wildcard column** (max non-blank per frame), matching `whisperx/alignment.py`.
-  Input is the **raw 16 kHz mono float32 waveform** `(batch, samples)` (no feature
-  normalization — the HF path feeds raw audio too).
+- **`model.onnx`** takes **two inputs** — `waveform (B,N) float32` (raw 16 kHz mono, no
+  feature normalization) + `attention_mask (B,N) int64` (1 = real sample, 0 = padding)
+  — and emits **two outputs**: `emissions (B,T,V)` **raw logits** and
+  `frame_lengths (B,)` (valid output frames per row, to trim padded batches). The
+  consumer applies `log_softmax` and the OOV **wildcard column** (max non-blank per
+  frame), matching `whisperx/alignment.py`. Exported via the PyTorch **dynamo** path.
+- **Batched inference** (pad to a common length + mask) is parity-safe **only for
+  `layer_norm` feature extractors** — `meta["batchable"]`. A `group_norm` extractor
+  (the torchaudio base bundles) normalizes each channel **over time**, so right-padding
+  shifts every valid frame's statistics and no mask recovers it; those models must be
+  run **per-segment** (batch 1, all-ones mask). The HF xls-r models are batchable.
 - **`meta.json`**: `{model_name, language, pipeline_type (torchaudio|huggingface),
-  opset, blank_id, n_labels, dictionary (char→id), source_revision, onnx_sha256,
-  versions}` — everything needed to tokenize without a torch model.
+  opset, contract_version, blank_id, n_labels, dictionary (char→id), batchable,
+  inputs, outputs, source_revision, onnx_sha256, versions}` — everything needed to run
+  + tokenize without a torch model.
 
 ## Published models
 
@@ -59,6 +67,13 @@ from huggingface_hub import hf_hub_download
 folder = "WAV2VEC2_ASR_BASE_960H"
 meta = json.load(open(hf_hub_download("KonstantK/wav2vec2-align-onnx", f"{folder}/meta.json")))
 sess = ort.InferenceSession(hf_hub_download("KonstantK/wav2vec2-align-onnx", f"{folder}/model.onnx"))
-logits = sess.run(["emissions"], {"waveform": waveform_16k_mono[None].astype("float32")})[0]
-# then: log_softmax over the last axis, optional wildcard extension, Viterbi forced-align
+
+wav = waveform_16k_mono[None].astype("float32")           # (1, N)
+mask = np.ones_like(wav, dtype=np.int64)                   # all real (no padding)
+logits, frame_lengths = sess.run(["emissions", "frame_lengths"],
+                                 {"waveform": wav, "attention_mask": mask})
+logits = logits[0, :int(frame_lengths[0])]                 # trim to valid frames
+# then: log_softmax over the last axis, optional wildcard extension, Viterbi forced-align.
+# To batch: pad rows to a common length, set mask=0 on padding — but only when
+# meta["batchable"] (layer_norm); run group_norm models one segment at a time.
 ```

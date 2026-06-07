@@ -737,9 +737,37 @@ forward) is the remaining slice. The settled facts:
   goldens gained per-segment `dictionary` + `clean_cdx` (`dump_goldens.py --align-io`) for the
   torch-free replay.
 
-**3B remaining** — the ONNX wav2vec2 forward (Goals + Unknowns below). It inherits the 2B
-build facts (link ORT **shared**; sherpa-`nlohmann_json` guard; decode-once `AudioBuffer::slice`
-is the `audio[:, f1:f2]` per-segment read) — see "Build/runtime inheritance from Phase 2B".
+**3B — landed (native ONNX wav2vec2 forward, `align_onnx` token).** The torch forward
+(`alignment.py:278-285`) runs in C++ under a raw `Ort::Session`:
+`core/align/wav2vec2_onnx.{hpp,cpp}` (pImpl; bucket-by-length + padded **attention_mask**
+batched forward; trimmed by the graph's `frame_lengths` output) + pure
+`core/align/emission_post.{hpp,cpp}` (log_softmax + OOV wildcard + tokenize — "path 2",
+so the mirror-lang path is torch-free forward→post→assemble). `alignment.py` facades under
+`align_onnx`: `load_align_model` pulls the mirror `.onnx`+`meta.json` → `Wav2Vec2Onnx`;
+`align()` runs one batched forward over all segments, then per-segment `align_emission_post`
+→ `align_assemble` (3A). Inherits the 2B build facts (ORT **shared**; sherpa-`nlohmann_json`
+guard; decode-once `AudioBuffer::slice` = the per-segment read).
+
+**The masking finding (the load-bearing 3B result).** Batched padded inference is parity-
+safe **only for `layer_norm` feature extractors** (HF xls-r). The torchaudio base bundles
+(en/de) use **`group_norm`, which normalizes each channel over time** → right-padding shifts
+every valid frame's stats (measured eager drift ≈ **6**, ≫ `emission_atol`); *no* attention
+mask recovers it (the norm already mixed padding in, and torchaudio's own `lengths` masking
+makes it *worse*). So batching is **data-gated on `meta["batchable"]`**: layer_norm models
+batch (mask + `frame_lengths`-trim); group_norm models run **per-segment** (batch 1, no
+padding → exact). The expensive models (xls-r large) are the batchable ones, so the perf win
+still lands. The mirror was **re-exported to contract v2** for this: dynamo exporter (the
+legacy TorchScript tracer can't trace the mask/lengths op), opset **18**, inputs
+`waveform`+`attention_mask`, outputs `emissions`+`frame_lengths`, `meta.batchable`.
+
+**Gates met.** C++ forward+post reproduces every golden `seg{i}_emission` within
+`emission_atol = 0.006` **per-segment and batched** + exact tokens, all 8 clips / both
+loaders (`bindings/test/test_align_onnx_forward_parity.py`, `RUN_MIRROR=1`); `align()` under
+`align_onnx` matches `words.json` **exactly** (en per-segment + ru 112-word batched dialog);
+Catch2 `test_emission_post` (7 cases, incl. degenerate-input safety) under ASan/UBSan; 66/66
+CTest; full `uv run pytest tests/` green (226) token-off; `import whisperx` + dep-free build
+unaffected. *Known gap:* `<400-sample` segments are padded to the conv min + masked (correct
+for batchable models now); none in the goldens.
 
 **Model-asset mirror (landed, pre-3B).** Resolves the "per-language model proliferation /
 which to bundle vs download" unknown for the *asset* side. **Run vs. produce are separate:**
@@ -833,24 +861,29 @@ run to completion." It is the recommended Phase 3 approach: **batch inference
   the per-stage golden above.
 
 ### Unknowns / open questions
-- **ONNX export fidelity** — wav2vec2's conv feature extractor, layer norm, GELU,
-  attention: do they export cleanly at a chosen opset, and what's the torch→ORT
-  fp32 drift on emissions? (The load-bearing risk.)
-- **Dynamic shapes vs buckets** — variable audio length: dynamic axes vs fixed
-  length buckets with padding. Does padding + attention mask change boundary-frame
-  emissions enough to shift word edges?
-- **Batching correctness** — do padded batch elements stay numerically identical to
-  single-segment runs (mask handling)?
+- ~~**ONNX export fidelity**~~ **(resolved — 3B).** Exports cleanly via the **dynamo**
+  exporter (legacy TorchScript can't trace the lengths/mask op; dynamo tracks the conv
+  frame dim symbolically), opset **18**, single file (`external_data=False`). torch→ORT
+  fp32 drift is well within `emission_atol = 0.006` on every golden (en 1.8e-3, de ≤9.8e-4,
+  ru 8.3e-4).
+- ~~**Dynamic shapes vs buckets**~~ **(resolved — 3B).** Dynamic `{batch, samples, time}`
+  axes; bucket-by-length only to bound pad waste. Boundary frames are exact for batchable
+  models (mask + `frame_lengths`-trim) — word edges match `words.json` exactly.
+- ~~**Batching correctness**~~ **(resolved — 3B, with a twist).** Padded batch elements are
+  numerically identical to single runs **only for `layer_norm` extractors**; `group_norm`
+  (torchaudio base) normalizes over time so padding corrupts valid frames (drift ≈ 6) and
+  no mask fixes it → those run **per-segment** (`meta["batchable"]` gates it). See the 3B
+  status block's masking finding.
 - ~~**nltk → ICU parity**~~ **(resolved — slice 3A).** Replaced punkt with a rule-based
   native splitter + vendored Moses `nonbreaking_prefixes` (not ICU/FreeLing/a punkt port —
   see the 3A status block for the evaluation). It reproduces punkt exactly on the golden
   transcripts (no `words.json` re-baseline) and the accepted adversarial-corpus divergences
   are pinned against a committed punkt baseline. The divergence only touches multi-sentence
   segment grouping (blast-radius analysed) — small and accepted.
-- **torchaudio vs HF dicts** — `DEFAULT_ALIGN_MODELS_TORCH` (torchaudio bundles)
-  vs `_HF` (Wav2Vec2ForCTC) use different tokenizers/dictionaries; the port must
-  reproduce each. `torchaudio.functional.forced_align` is a reference but is the
-  same algorithm — do we lean on it for cross-checking?
+- ~~**torchaudio vs HF dicts**~~ **(resolved — 3B).** Both families' dictionaries ship in
+  `meta.json` (char→id, lower-cased) so tokenization (`align_emission_post`) needs no torch
+  model; both are parity-tested (en/de torchaudio + ru HF) — exact tokens + emissions within
+  atol on every golden.
 - **Per-language model proliferation** — 5 + 38 models. Export pipeline for all?
   Which to bundle vs download? (Ties to the model-asset / download strategy.)
 

@@ -206,10 +206,29 @@ token; **3B** (the heavy ONNX wav2vec2 forward) is the remaining slice.
   `WHISPERX_CORE_STAGES` ∈ {unset, `align`, `vad,align`, `db,edits,vad,align`}; dep-free
   build (`WHISPERX_CORE_AUDIO=OFF`) unaffected. Goldens gained per-segment `dictionary` +
   `clean_cdx` (`golden/dump_goldens.py --align-io`) so the replay is torch-free.
-- **3B remaining:** the C++ ONNX wav2vec2 forward (raw `Ort::Session` on 2B's vendored
-  sherpa ORT, batched + length-masked), emissions vs golden within `emission_atol = 0.006`.
-  Inherits the 2B build facts: link ORT **shared**, the sherpa-`nlohmann_json` guard,
-  decode-once `AudioBuffer::slice`.
+- **Phase 3 slice 3B — landed (native ONNX wav2vec2 forward, `align_onnx` token).** The
+  torch model forward (`alignment.py:278-285`) now runs in C++ under a raw `Ort::Session`
+  (2B's vendored sherpa ORT, linked **shared**): `core/align/wav2vec2_onnx.{hpp,cpp}`
+  (pImpl, bucket-by-length + padded **attention_mask** batched forward, trimmed by the
+  graph's `frame_lengths` output) + the pure `core/align/emission_post.{hpp,cpp}`
+  (log_softmax + OOV wildcard column + tokenization — "path 2", so the mirror-lang align
+  path is **torch-free** forward→post→assemble). `whisperx/alignment.py` facades under
+  **`align_onnx`**: `load_align_model` pulls the parity-pinned `.onnx`+`meta.json` from the
+  mirror and builds a `Wav2Vec2Onnx`; `align()` does one batched forward over all segments,
+  then per-segment `align_emission_post` → `align_assemble` (3A). **Batching is masked +
+  data-gated:** only `layer_norm` extractors are batched (`meta["batchable"]`); the
+  torchaudio **`group_norm`** bundles normalize over time, so padded batches corrupt valid
+  frames (eager drift ~6 ≫ atol) → they run **per-segment**. Mirror re-exported to
+  **contract v2** (dynamo, opset 18, inputs `waveform`+`attention_mask`, outputs
+  `emissions`+`frame_lengths`). **Gates met:** C++ forward+post reproduces every golden
+  `seg{i}_emission` within `emission_atol = 0.006` **per-segment and batched** + exact
+  tokens across all 8 clips / both loaders (`bindings/test/test_align_onnx_forward_parity.py`,
+  `RUN_MIRROR=1`); `align()` under `align_onnx` matches `words.json` **exactly** (en + ru
+  112-word dialog); Catch2 `test_emission_post` (6 cases) under ASan/UBSan; 66/66 CTest;
+  `import whisperx` + dep-free build unaffected. Inherits the 2B facts (ORT **shared**,
+  sherpa-`nlohmann_json` guard, decode-once `AudioBuffer::slice`).
+  - *Known gap:* `<400-sample` segments are padded to the conv minimum + masked (now
+    correct for batchable models); none in the goldens, so untested.
 - **3B model assets — the ONNX mirror (landed, pre-3B).** The aligner consumes a *path
   to a parity-valid `.onnx`*, produced **offline** (PyTorch is build/CI tooling, never the
   runtime) and hosted on **`KonstantK/wav2vec2-align-onnx`** (HF public repo — free, CDN,

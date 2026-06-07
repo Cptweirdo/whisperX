@@ -21,18 +21,24 @@ of those 43 with zero new logic; the only per-architecture knowledge is the tiny
 ``loader-type -> wrapper`` registry below (torchaudio vs huggingface). A brand-new
 architecture = one wrapper entry.
 
-The exported ``model.onnx`` emits **raw logits** (NOT log_softmax, NOT the wildcard
-column — those are whisperX post-processing the consumer applies, matching
-``alignment.py:285,295-302``); input is the **raw 16 kHz mono waveform** ``(B, N)``
-(the HF path feeds raw waveform too — ``alignment.py:282`` — so one input contract).
-``meta.json`` ships the char->id ``dictionary`` + ``blank_id`` so the eventual
-torch-free runtime can tokenize without loading a torch model.
+The exported ``model.onnx`` (contract v2) takes ``(waveform (B,N) f32,
+attention_mask (B,N) int64)`` and emits ``(emissions (B,T,V) raw logits,
+frame_lengths (B,) int64)`` — NOT log_softmax, NOT the wildcard column (those are
+whisperX post-processing the consumer applies, matching ``alignment.py:285,295-302``);
+``frame_lengths`` lets the consumer trim each batched row to its valid frames. The
+attention_mask enables padded **batched** inference, but only for ``layer_norm``
+feature extractors (``meta["batchable"]``): a ``group_norm`` extractor (the torchaudio
+base bundles) normalizes over time, so padded batches corrupt valid frames and those
+models must be run per-segment (mask all-ones, batch 1). ``meta.json`` ships the
+char->id ``dictionary`` + ``blank_id`` so the torch-free runtime tokenizes without a
+torch model. Exported via the **dynamo** path (legacy TorchScript can't trace the
+mask/lengths op).
 
 Run (heavy deps ephemeral — not added to the project, same as
 ``measure_ort_tolerance.py``)::
 
     uv run --no-project --with torch --with torchaudio --with transformers \
-        --with onnx --with onnxruntime --with huggingface_hub \
+        --with onnx --with onnxruntime --with onnxscript --with huggingface_hub \
         python golden/export_align_onnx.py --all-golden
 
     # any supported language, no code change:
@@ -55,8 +61,13 @@ INTER = ROOT / "golden" / "intermediates"
 CLIPS = ROOT / "golden" / "clips"
 
 REPO_DEFAULT = "KonstantK/wav2vec2-align-onnx"
-OPSET = 17
+# opset 18: the dynamo exporter's symbolic-shape ops (aten.sym_size) need ≥18.
+OPSET = 18
+# Bumped whenever the onnx IO contract changes. v2 = masked batched graph:
+# inputs (waveform, attention_mask), outputs (emissions, frame_lengths).
+CONTRACT_VERSION = 2
 SAMPLE_RATE = 16000
+WAV2VEC2_MIN_SAMPLES = 400  # conv feature extractor minimum input length
 GOLDEN_LANGS = ["en", "de", "ru"]
 EMISSION_ATOL = 0.006  # golden/intermediates/manifest.json
 
@@ -92,29 +103,42 @@ def all_langs() -> list[str]:
 
 
 def _wrap_emission(model, pipeline_type: str):
-    """Wrap a loaded align model so ``forward(waveform) -> raw logits (B, T, V)``.
+    """Wrap a loaded align model so
+    ``forward(waveform, attention_mask) -> (raw logits (B, T, V), frame_lengths (B,))``.
 
+    The unified ``attention_mask`` (B, N) of 1s/0s is the one input contract for both
+    loaders — the wrapper converts it to whatever the underlying model wants and also
+    emits ``frame_lengths`` (the per-row count of valid output frames) so the C++
+    consumer can trim each batched row without re-deriving the conv-stride formula.
     The whole per-architecture surface lives here: a new loader type adds one entry.
     """
     import torch
 
     class TorchaudioEmission(torch.nn.Module):
-        # torchaudio bundle forward returns ``(emissions, lengths)`` — take [0].
+        # torchaudio Wav2Vec2Model(waveforms, lengths) -> (emissions, out_lengths);
+        # passing lengths makes it mask padded frames internally.
         def __init__(self, m):
             super().__init__()
             self.m = m
 
-        def forward(self, x):
-            return self.m(x)[0]
+        def forward(self, x, attention_mask):
+            lengths = attention_mask.sum(-1).long()
+            emissions, out_lengths = self.m(x, lengths=lengths)
+            return emissions, out_lengths.long()
 
     class HFEmission(torch.nn.Module):
-        # Wav2Vec2ForCTC forward returns a ModelOutput with ``.logits``.
+        # Wav2Vec2ForCTC(x, attention_mask).logits; frame lengths from the conv
+        # output-length helper applied to the per-row sample counts.
         def __init__(self, m):
             super().__init__()
             self.m = m
 
-        def forward(self, x):
-            return self.m(x).logits
+        def forward(self, x, attention_mask):
+            logits = self.m(x, attention_mask=attention_mask).logits
+            frame_lengths = self.m._get_feat_extract_output_lengths(
+                attention_mask.sum(-1)
+            ).long()
+            return logits, frame_lengths
 
     registry = {"torchaudio": TorchaudioEmission, "huggingface": HFEmission}
     if pipeline_type not in registry:
@@ -123,6 +147,21 @@ def _wrap_emission(model, pipeline_type: str):
             f"(known: {sorted(registry)})"
         )
     return registry[pipeline_type](model).eval()
+
+
+def _is_batchable(model, pipeline_type: str) -> bool:
+    """Whether padded batched inference reproduces per-segment emissions.
+
+    True iff the feature extractor uses ``layer_norm`` (normalizes per-frame over
+    channels → padding-invariant for valid frames). A ``group_norm`` extractor (the
+    torchaudio base bundles) normalizes each channel **over time**, so right-padding
+    shifts every valid frame's statistics by O(1) — no attention mask recovers it, so
+    those models are run one segment at a time. HF reports the mode on its config;
+    torchaudio bundles in our align set are all base/group_norm."""
+    if pipeline_type == "huggingface":
+        return getattr(getattr(model, "config", None), "feat_extract_norm", "group") \
+            == "layer"
+    return False
 
 
 def _blank_id(dictionary: dict) -> int:
@@ -184,9 +223,37 @@ def _versions() -> dict:
     return out
 
 
-def _self_check(onnx_path: Path, lang: str, blank_id: int) -> bool:
-    """Run the fresh ONNX over a golden clip's segments; compare to committed
-    emissions within ``emission_atol``. Skips cleanly if the clip/golden is absent."""
+def _forward_batch(sess, waveforms):
+    """Run the masked graph over a list of (N_i,) float32 waveforms; return per-row
+    **raw** logits (T_i, V) trimmed to ``frame_lengths``. Pads each row to the batch
+    max (≥ the conv minimum), feeds the 1/0 ``attention_mask`` — mirrors the C++
+    ``Wav2Vec2Onnx::forward`` so the offline self-check exercises the same path."""
+    import numpy as np
+
+    b = len(waveforms)
+    maxn = max(WAV2VEC2_MIN_SAMPLES, max(int(w.shape[0]) for w in waveforms))
+    wav = np.zeros((b, maxn), dtype=np.float32)
+    mask = np.zeros((b, maxn), dtype=np.int64)
+    for i, w in enumerate(waveforms):
+        n = int(w.shape[0])
+        wav[i, :n] = w
+        mask[i, :n] = 1
+    logits, flen = sess.run(
+        ["emissions", "frame_lengths"], {"waveform": wav, "attention_mask": mask}
+    )
+    return [logits[i, : int(flen[i])].astype(np.float32) for i in range(b)]
+
+
+def _self_check(onnx_path: Path, lang: str, blank_id: int, batchable: bool) -> bool:
+    """Gates over a golden clip's segments (skips cleanly if absent):
+      1. **golden parity** (always) — per-segment (batch 1, all-ones mask = identity)
+         emission, log_softmax'd + wildcard-extended, matches the committed golden.
+      2. **mask parity** (only when ``batchable``) — the same segments run as **one
+         padded batch** reproduce the per-segment raw logits within atol. Only
+         ``layer_norm`` feature extractors are batchable: a ``group_norm`` extractor
+         (the torchaudio base bundles) normalizes each channel **over time**, so
+         right-padding shifts every valid frame's stats and no mask can recover it —
+         those models are run per-segment, so we don't assert (or expect) batch parity."""
     import numpy as np
     import onnxruntime as ort
 
@@ -205,19 +272,41 @@ def _self_check(onnx_path: Path, lang: str, blank_id: int) -> bool:
     golden = np.load(npz)
     sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
 
+    waveforms = [
+        audio[int(s["start"] * SAMPLE_RATE) : int(s["end"] * SAMPLE_RATE)].astype(
+            np.float32
+        )
+        for s in segs
+    ]
+
     ok = True
-    for i, seg in enumerate(segs):
-        f1, f2 = int(seg["start"] * SAMPLE_RATE), int(seg["end"] * SAMPLE_RATE)
-        wf = audio[f1:f2][None, :].astype(np.float32)  # (1, N)
-        logits = sess.run(["emissions"], {"waveform": wf})[0]
-        emi = _log_softmax(logits)[0].astype(np.float32)
+    # gate 1: per-segment (batch of 1) vs committed golden emission
+    persegment = []
+    for i, wf in enumerate(waveforms):
+        raw = _forward_batch(sess, [wf])[0]
+        persegment.append(raw)
+        emi = _log_softmax(raw).astype(np.float32)
         g = golden[f"seg{i}_emission"]
         if g.shape[1] == emi.shape[1] + 1:
             emi = _extend_wildcard(emi, blank_id)
         d = float(np.abs(emi - g).max()) if emi.shape == g.shape else float("inf")
         status = "ok" if d < EMISSION_ATOL else "FAIL"
         ok = ok and d < EMISSION_ATOL
-        print(f"  self-check {clip} seg{i}: max|Δ|={d:.2e}  ({status})")
+        print(f"  self-check {clip} seg{i} golden: max|Δ|={d:.2e}  ({status})")
+
+    # gate 2: batched (all segs, padded + masked) vs per-segment raw logits.
+    # Only meaningful for layer_norm (batchable) models — see the docstring.
+    if not batchable:
+        print(f"  self-check {clip}: group_norm extractor -> per-segment only "
+              f"(batch-parity gate skipped by design)")
+        return ok
+    batched = _forward_batch(sess, waveforms)
+    for i in range(len(segs)):
+        a, b = batched[i], persegment[i]
+        d = float(np.abs(a - b).max()) if a.shape == b.shape else float("inf")
+        status = "ok" if d < EMISSION_ATOL else "FAIL"
+        ok = ok and d < EMISSION_ATOL
+        print(f"  self-check {clip} seg{i} mask : max|Δ|={d:.2e}  ({status})")
     return ok
 
 
@@ -243,43 +332,62 @@ def export_one(lang: str, model_name: str | None, *, repo: str, do_upload: bool,
     pipeline_type = meta["type"]
     dictionary = meta["dictionary"]
     blank_id = _blank_id(dictionary)
+    batchable = _is_batchable(model, pipeline_type)
     wrapped = _wrap_emission(model, pipeline_type)
 
     with tempfile.TemporaryDirectory() as td:
         folder = Path(td)
         onnx_path = folder / "model.onnx"
-        example = torch.zeros(1, SAMPLE_RATE, dtype=torch.float32)  # 1 s dummy
-        with torch.inference_mode():
+        # Dynamo exporter (legacy TorchScript can't trace the lengths/mask path —
+        # it bakes the internal padding-mask shape). dynamo tracks the conv-derived
+        # frame dim symbolically; export batch>1 with a ragged row so the mask path
+        # is exercised, AUTO dynamic dims so batch + samples stay free, external_data
+        # off for a single self-contained file (~379 MB).
+        ex_wav = torch.zeros(2, 2 * SAMPLE_RATE, dtype=torch.float32)
+        ex_mask = torch.ones(2, 2 * SAMPLE_RATE, dtype=torch.long)
+        ex_mask[1, SAMPLE_RATE:] = 0
+        AUTO = torch.export.Dim.AUTO
+        with torch.no_grad():
             torch.onnx.export(
-                wrapped, example, str(onnx_path),
-                input_names=["waveform"], output_names=["emissions"],
-                dynamic_axes={"waveform": {0: "batch", 1: "samples"},
-                              "emissions": {0: "batch", 1: "time"}},
+                wrapped, (ex_wav, ex_mask), str(onnx_path),
+                dynamo=True, external_data=False, optimize=True,
                 opset_version=OPSET,
+                input_names=["waveform", "attention_mask"],
+                output_names=["emissions", "frame_lengths"],
+                dynamic_shapes={"x": {0: AUTO, 1: AUTO},
+                                "attention_mask": {0: AUTO, 1: AUTO}},
             )
         sha = _sha256(onnx_path)
         size_mb = onnx_path.stat().st_size / 1e6
         print(f"  exported {size_mb:.0f} MB  sha256={sha[:12]}…  "
-              f"labels={len(dictionary)}  blank_id={blank_id}  type={pipeline_type}")
+              f"labels={len(dictionary)}  blank_id={blank_id}  type={pipeline_type}  "
+              f"batchable={batchable}")
 
         meta_json = {
             "model_name": resolved,
             "language": lang,
             "pipeline_type": pipeline_type,
             "opset": OPSET,
+            "contract_version": CONTRACT_VERSION,
             "blank_id": blank_id,
             "n_labels": len(dictionary),
             "dictionary": dictionary,
             "source_revision": source_revision,
             "emits": "raw_logits",  # consumer applies log_softmax + wildcard
             "input": "waveform_16k_mono_f32",
+            "inputs": ["waveform", "attention_mask"],   # (B,N) f32, (B,N) int64 1/0
+            "outputs": ["emissions", "frame_lengths"],  # (B,T,V) f32, (B,) int64
+            # True only for layer_norm feature extractors: group_norm normalizes over
+            # time, so padded batches corrupt valid frames -> the consumer must run
+            # those per-segment. The C++ runtime batches iff this is True.
+            "batchable": batchable,
             "onnx_sha256": sha,
             "versions": _versions(),
         }
         (folder / "meta.json").write_text(
             json.dumps(meta_json, ensure_ascii=False, indent=2) + "\n")
 
-        if do_check and not _self_check(onnx_path, lang, blank_id):
+        if do_check and not _self_check(onnx_path, lang, blank_id, batchable):
             raise SystemExit(
                 f"self-check FAILED for {resolved} — refusing to upload "
                 f"(emissions drift > {EMISSION_ATOL})")
@@ -317,6 +425,7 @@ def _already_published(repo: str, resolved: str, source_revision) -> bool:
     byte-reproducible), so it never needlessly re-uploads. ``--force`` overrides."""
     rmeta = _remote_meta(repo, sanitize(resolved))
     return bool(rmeta) and rmeta.get("opset") == OPSET and \
+        rmeta.get("contract_version") == CONTRACT_VERSION and \
         rmeta.get("source_revision") == source_revision
 
 

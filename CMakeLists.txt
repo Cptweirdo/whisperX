@@ -84,6 +84,7 @@ add_library(whisperx_core_lib STATIC
   core/vad/merge_chunks.cpp
   core/align/trellis.cpp
   core/align/align.cpp
+  core/align/emission_post.cpp
   core/build_info.cpp)
 target_include_directories(whisperx_core_lib PUBLIC core ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(whisperx_core_lib PUBLIC
@@ -101,6 +102,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   # matches Python's never-fused doubles (timings are ±1-frame gated, not bit-
   # exact, but keep contraction off for determinism, as with edits.cpp).
   set_source_files_properties(core/align/align.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  # emission_post.cpp's log_softmax is a new fp32 parity surface vs torch — keep
+  # FMA off so it tracks torch's never-fused reductions within emission_atol.
+  set_source_files_properties(core/align/emission_post.cpp
     PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
 
@@ -157,11 +162,17 @@ if(WHISPERX_CORE_AUDIO)
 
   add_library(whisperx_core_audio STATIC
     core/audio/decode.cpp
-    core/audio/vad_silero.cpp)
+    core/audio/vad_silero.cpp
+    core/align/wav2vec2_onnx.cpp)
   target_include_directories(whisperx_core_audio PUBLIC core)
+  # ORT C++ headers (onnxruntime_cxx_api.h) reach wav2vec2_onnx.cpp transitively via
+  # sherpa-onnx-c-api's interface includes; the shared libonnxruntime.so is linked by
+  # its full path (`location_onnxruntime`, sherpa's global find_library cache var) —
+  # sherpa's `onnxruntime` IMPORTED target is scoped to its own subdir, not visible
+  # here. Shared (not the static archive) per the 2B heap-corruption finding.
   target_link_libraries(whisperx_core_audio PUBLIC
     whisperx_core_lib nlohmann_json::nlohmann_json PkgConfig::FFMPEG
-    sherpa-onnx-c-api)
+    sherpa-onnx-c-api ${location_onnxruntime})
   target_compile_definitions(whisperx_core_audio PUBLIC WHISPERX_CORE_AUDIO)
   target_compile_options(whisperx_core_audio PRIVATE -Wall -Wextra)
   set_target_properties(whisperx_core_audio PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -204,7 +215,8 @@ if(WHISPERX_CORE_TESTS)
     core/tests/test_edits.cpp
     core/tests/test_merge_chunks.cpp
     core/tests/test_trellis.cpp
-    core/tests/test_sentence_split.cpp)
+    core/tests/test_sentence_split.cpp
+    core/tests/test_emission_post.cpp)
   target_link_libraries(whisperx_core_tests
     PRIVATE whisperx_core_lib Catch2::Catch2WithMain)
 
