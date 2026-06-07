@@ -16,7 +16,9 @@
 
 #include "build_info.hpp"
 #include "db/session_store.hpp"
+#include "edits/edits.hpp"
 #include "text/edit_distance.hpp"
+#include "text/sequence_matcher.hpp"
 
 namespace py = pybind11;
 using nlohmann::json;
@@ -155,7 +157,158 @@ void bind_session_store(py::module_& m) {
         .def("has_active_jobs", &SessionStore::has_active_jobs)
         // lifecycle
         .def("reconcile_startup", &SessionStore::reconcile_startup)
-        .def("close", &SessionStore::close);
+        .def("close", &SessionStore::close)
+        // file-backed sidecars (edits/undo overlay + translation files)
+        .def(
+            "load_result",
+            [](SessionStore& s, const std::string& session_id) {
+                return json_to_py(s.load_result(session_id));
+            },
+            py::arg("session_id"))
+        .def(
+            "load_edits",
+            [](SessionStore& s, const std::string& session_id) {
+                return json_to_py(s.load_edits(session_id));
+            },
+            py::arg("session_id"))
+        .def(
+            "current_segments",
+            [](SessionStore& s, const std::string& session_id,
+               const py::handle& original_segments) {
+                return json_to_py(
+                    s.current_segments(session_id, py_to_json(original_segments)));
+            },
+            py::arg("session_id"), py::arg("original_segments"))
+        .def("edit_history_len", &SessionStore::edit_history_len,
+             py::arg("session_id"))
+        .def(
+            "save_turn_edit",
+            [](SessionStore& s, const std::string& session_id, long turn_index,
+               const std::string& new_text) {
+                return json_to_py(
+                    s.save_turn_edit(session_id, turn_index, new_text));
+            },
+            py::arg("session_id"), py::arg("turn_index"), py::arg("new_text"))
+        .def(
+            "save_turn_reassign",
+            [](SessionStore& s, const std::string& session_id, long turn_index,
+               const std::string& new_speaker) {
+                return json_to_py(
+                    s.save_turn_reassign(session_id, turn_index, new_speaker));
+            },
+            py::arg("session_id"), py::arg("turn_index"), py::arg("new_speaker"))
+        .def(
+            "undo_turn_edit",
+            [](SessionStore& s, const std::string& session_id) {
+                return json_to_py(s.undo_turn_edit(session_id));
+            },
+            py::arg("session_id"))
+        .def(
+            "load_translation",
+            [](SessionStore& s, const std::string& session_id,
+               const std::string& lang) {
+                return json_to_py(s.load_translation(session_id, lang));
+            },
+            py::arg("session_id"), py::arg("lang"))
+        .def(
+            "save_translation",
+            [](SessionStore& s, const std::string& session_id,
+               const std::string& lang, const py::handle& payload) {
+                s.save_translation(session_id, lang, py_to_json(payload));
+            },
+            py::arg("session_id"), py::arg("lang"), py::arg("payload"));
+}
+
+// The app/edits.py algorithms (turn grouping / collapse / realign / undo) and the
+// difflib matching-block primitive they rely on, exposed for the app.edits facade
+// and the parity oracle.
+void bind_edits(py::module_& m) {
+    namespace ed = whisperx::edits;
+
+    m.attr("HISTORY_LIMIT") = ed::HISTORY_LIMIT;
+    m.attr("MIN_WORD_WIDTH") = ed::MIN_WORD_WIDTH;
+    m.attr("SEGMENT_MIN_DURATION") = ed::SEGMENT_MIN_DURATION;
+
+    // app.edits.NoChange — apply_turn_reassign raises this on a no-op.
+    py::register_exception<ed::NoChange>(m, "NoChange");
+
+    m.def(
+        "group_turns",
+        [](const py::handle& segments) {
+            return json_to_py(ed::group_turns(py_to_json(segments)));
+        },
+        py::arg("segments"));
+    m.def(
+        "distinct_speakers",
+        [](const py::handle& segments) {
+            return json_to_py(ed::distinct_speakers(py_to_json(segments)));
+        },
+        py::arg("segments"));
+    m.def(
+        "next_speaker_key",
+        [](const py::handle& existing_keys) {
+            return ed::next_speaker_key(py_to_json(existing_keys));
+        },
+        py::arg("existing_keys"));
+    m.def(
+        "coalesce_segments",
+        [](const py::handle& segments, double threshold) {
+            return json_to_py(
+                ed::coalesce_segments(py_to_json(segments), threshold));
+        },
+        py::arg("segments"), py::arg("threshold") = ed::SEGMENT_MIN_DURATION);
+    m.def(
+        "realign_words",
+        [](const py::handle& old_words, const std::string& new_text,
+           const py::handle& start, const py::handle& end) {
+            return json_to_py(ed::realign_words(py_to_json(old_words), new_text,
+                                                py_to_json(start),
+                                                py_to_json(end)));
+        },
+        py::arg("old_words"), py::arg("new_text"), py::arg("start") = py::none(),
+        py::arg("end") = py::none());
+    m.def(
+        "apply_turn_edit",
+        [](const py::handle& segments, long turn_index,
+           const std::string& new_text) {
+            auto [segs, delta] =
+                ed::apply_turn_edit(py_to_json(segments), turn_index, new_text);
+            return py::make_tuple(json_to_py(segs), json_to_py(delta));
+        },
+        py::arg("segments"), py::arg("turn_index"), py::arg("new_text"));
+    m.def(
+        "apply_turn_reassign",
+        [](const py::handle& segments, long turn_index,
+           const std::string& new_speaker) {
+            auto [segs, delta] = ed::apply_turn_reassign(py_to_json(segments),
+                                                         turn_index, new_speaker);
+            return py::make_tuple(json_to_py(segs), json_to_py(delta));
+        },
+        py::arg("segments"), py::arg("turn_index"), py::arg("new_speaker"));
+    m.def(
+        "undo_last",
+        [](const py::handle& segments, const py::handle& history) {
+            auto [segs, hist] =
+                ed::undo_last(py_to_json(segments), py_to_json(history));
+            return py::make_tuple(json_to_py(segs), json_to_py(hist));
+        },
+        py::arg("segments"), py::arg("history"));
+
+    // The difflib primitive realign_words is built on, exposed so the parity
+    // oracle can diff it against difflib.SequenceMatcher(...).get_matching_blocks().
+    m.def(
+        "matching_blocks",
+        [](const std::vector<std::string>& a, const std::vector<std::string>& b) {
+            whisperx::text::SequenceMatcher sm(a, b);
+            py::list out;
+            for (const auto& blk : sm.get_matching_blocks()) {
+                out.append(py::make_tuple(blk.a, blk.b, blk.size));
+            }
+            return out;
+        },
+        py::arg("a"), py::arg("b"),
+        "difflib.SequenceMatcher(autojunk=False).get_matching_blocks() as "
+        "(a, b, size) tuples.");
 }
 
 }  // namespace
@@ -185,4 +338,5 @@ PYBIND11_MODULE(whisperx_core, m) {
         "Character-level Levenshtein distance (CER numerator).");
 
     bind_session_store(m);
+    bind_edits(m);
 }

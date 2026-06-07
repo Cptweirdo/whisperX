@@ -8,11 +8,13 @@
 // seconds timestamps, same migration) so a `sessions.db` written by either the
 // Python or the C++ store round-trips through the other.
 //
-// Out of scope here (kept in the Python facade during the strangler window): the
-// file-backed sidecar subsystems — transcript.json / transcript.edits.json
-// (edits + undo, app/edits.py) and the per-language translation overlay files —
-// plus the pure path helpers. The Python `app.store.SessionStore` facade forwards
-// the DB methods below to this class when `WHISPERX_CORE_STAGES` contains `db`.
+// Also owns the file-backed sidecar subsystems (Phase 1 completion slice): the
+// transcript.json / transcript.edits.json edits + undo overlay (delegating the
+// algorithms to whisperx::edits, the port of app/edits.py) and the per-language
+// translation overlay files. These are guarded by a separate `files_lock_` and
+// gated independently — the Python facade forwards the DB methods to this class
+// when `WHISPERX_CORE_STAGES` contains `db`, and the file methods when it
+// contains `edits`. The pure path helpers stay on the Python facade.
 #pragma once
 
 #include <memory>
@@ -92,14 +94,41 @@ public:
     std::vector<std::string> reconcile_startup();
     void close();
 
+    // --- file-backed sidecars (edits/undo overlay + translation files) ---
+    json load_result(const std::string& session_id);   // object or null
+    json load_edits(const std::string& session_id);     // object or null
+    json current_segments(const std::string& session_id,
+                          const json& original_segments);
+    long edit_history_len(const std::string& session_id);
+    json save_turn_edit(const std::string& session_id, long turn_index,
+                        const std::string& new_text);
+    json save_turn_reassign(const std::string& session_id, long turn_index,
+                            const std::string& new_speaker);
+    json undo_turn_edit(const std::string& session_id);
+    json load_translation(const std::string& session_id,
+                          const std::string& lang);  // object or null
+    void save_translation(const std::string& session_id, const std::string& lang,
+                          const json& payload);
+
 private:
     void open_();      // connect + WAL + schema + migrate
     void migrate_();   // idempotent ADD COLUMN for stage / translations
     std::string session_dir_(const std::string& session_id) const;
 
+    // sidecar path helpers + internals (mirror app.store private methods).
+    std::string result_path_(const std::string& session_id) const;
+    std::string edits_path_(const std::string& session_id) const;
+    std::string translation_path_(const std::string& session_id,
+                                  const std::string& lang) const;
+    json original_segments_(const std::string& session_id);
+    json baseline_segments_(const std::string& session_id);
+    void write_edits_(const std::string& session_id, const json& segments,
+                      const json& history);
+
     std::string data_dir_;
     std::string sessions_root_;
-    std::mutex lock_;
+    std::mutex lock_;        // serializes SQLite access
+    std::mutex files_lock_;  // serializes the file-backed sidecar writes
     std::unique_ptr<SQLite::Database> db_;
 };
 

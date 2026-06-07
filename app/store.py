@@ -5,14 +5,21 @@ and words with timestamps + speakers). Metadata lives in SQLite for fast
 listing; the audio, the full result JSON, and the srt/vtt/txt artifacts live
 under sessions/<id>/ so they survive restarts.
 
-**C++ core migration (Phase 1).** ``SessionStore`` is a thin facade. Its SQLite
-layer — CRUD/lifecycle, settings, speaker-name overrides, the ``translations``
-column, and the backup snapshot/swap primitives — is delegated to a *backend*:
-the pure-Python :class:`_PyDbStore` by default, or the C++ ``whisperx_core``
-store when ``WHISPERX_CORE_STAGES`` contains ``db`` (the strangler-fig seam — see
-docs/cpp-core-migration-briefs.md Phase 1). The path helpers and the file-backed
-subsystems (the edits/undo overlay and the per-language translation files) stay
-in Python on the facade for this phase; only the DB methods cross to C++.
+**C++ core migration (Phase 1).** ``SessionStore`` is a thin facade over a
+full-surface backend, :class:`_PyStore` (pure Python, the default + parity
+oracle) or the C++ ``whisperx_core.SessionStore``. Two composable
+``WHISPERX_CORE_STAGES`` tokens route independently:
+
+* ``db`` — the SQLite layer (CRUD/lifecycle, settings, speaker_names, the
+  ``translations`` column, snapshot/swap) goes to C++.
+* ``edits`` — the file-backed sidecars (the edits/undo overlay and the
+  per-language translation files, whose algorithms live in :mod:`app.edits`)
+  go to C++.
+
+The facade forwards the DB-method group to ``self._db`` and the file-method
+group to ``self._edits``; when both tokens are on it shares one C++ store
+instance. The pure path helpers stay on the facade regardless of backend. See
+docs/cpp-core-migration-briefs.md Phase 1.
 """
 
 from __future__ import annotations
@@ -77,19 +84,29 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _stages() -> set[str]:
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
 def _core_db_enabled() -> bool:
     """Whether the C++ ``whisperx_core`` store backs the DB layer this run."""
-    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
-    return "db" in {s.strip() for s in raw.split(",") if s.strip()}
+    return "db" in _stages()
 
 
-class _PyDbStore:
-    """The pure-Python SQLite backend (the default, and the parity oracle).
+def _core_edits_enabled() -> bool:
+    """Whether the C++ store backs the file-backed sidecars this run."""
+    return "edits" in _stages()
 
-    Owns only the DB surface the C++ ``whisperx_core.SessionStore`` mirrors:
-    CRUD/lifecycle, settings, speaker_names, the ``translations`` column, and the
-    snapshot/swap backup primitives. Path helpers and the file-backed sidecars
-    live on :class:`SessionStore`, not here.
+
+class _PyStore:
+    """The pure-Python backend (the default, and the parity oracle).
+
+    Full surface the C++ ``whisperx_core.SessionStore`` mirrors: the DB layer
+    (CRUD/lifecycle, settings, speaker_names, the ``translations`` column, the
+    snapshot/swap backup primitives) **and** the file-backed sidecars (the
+    edits/undo overlay + per-language translation files). The pure path helpers
+    live on the :class:`SessionStore` facade, not here.
     """
 
     def __init__(self, data_dir: str):
@@ -97,6 +114,8 @@ class _PyDbStore:
         self.sessions_root = os.path.join(self.data_dir, "sessions")
         os.makedirs(self.sessions_root, exist_ok=True)
         self._lock = threading.Lock()
+        # Guards the file-backed sidecar writes (independent of the SQLite lock).
+        self._files_lock = threading.Lock()
         self._db = sqlite3.connect(
             os.path.join(self.data_dir, "sessions.db"), check_same_thread=False
         )
@@ -343,120 +362,262 @@ class _PyDbStore:
         with self._lock:
             self._db.close()
 
+    # --- file-backed sidecars (internal path helpers + I/O) -------------
+    def _session_dir(self, session_id: str) -> str:
+        return os.path.join(self.sessions_root, session_id)
 
-def _make_db_backend(data_dir: str):
-    """Pick the DB backend: the C++ ``whisperx_core`` store when the ``db`` stage
-    is enabled, else the pure-Python :class:`_PyDbStore`."""
-    if _core_db_enabled():
-        try:
-            import whisperx_core
-        except ImportError as e:  # pragma: no cover - opt-in build path
-            raise RuntimeError(
-                "WHISPERX_CORE_STAGES includes 'db' but the whisperx_core module "
-                "is not importable. Build it (cmake --build build) and put it on "
-                "PYTHONPATH."
-            ) from e
-        return whisperx_core.SessionStore(os.path.abspath(data_dir))
-    return _PyDbStore(data_dir)
+    def _result_path(self, session_id: str) -> str:
+        return os.path.join(self._session_dir(session_id), RESULT_FILE)
+
+    def _edits_path(self, session_id: str) -> str:
+        return os.path.join(self._session_dir(session_id), EDITS_FILE)
+
+    def _translation_path(self, session_id: str, lang: str) -> str:
+        return os.path.join(
+            self._session_dir(session_id), f"{TRANSLATION_BASENAME}.{lang}.json"
+        )
+
+    def load_result(self, session_id: str) -> Optional[dict]:
+        path = self._result_path(session_id)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def load_edits(self, session_id: str) -> Optional[dict]:
+        path = self._edits_path(session_id)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def current_segments(self, session_id: str, original_segments: list) -> list:
+        """The edited segment list if an overlay exists, else the coalesced
+        original (the original file is never mutated)."""
+        edits = self.load_edits(session_id)
+        if edits and edits.get("segments") is not None:
+            return edits["segments"]
+        from app.edits import coalesce_segments
+        return coalesce_segments(original_segments)
+
+    def edit_history_len(self, session_id: str) -> int:
+        edits = self.load_edits(session_id)
+        return len(edits["history"]) if edits and edits.get("history") else 0
+
+    def _original_segments(self, session_id: str) -> list:
+        return (self.load_result(session_id) or {}).get("segments", [])
+
+    def _baseline_segments(self, session_id: str) -> list:
+        """Pristine current state with no overlay: the original, coalesced."""
+        from app.edits import coalesce_segments
+        return coalesce_segments(self._original_segments(session_id))
+
+    def _write_edits(self, session_id: str, segments: list, history: list) -> None:
+        """Atomically write the overlay (tmp + os.replace)."""
+        path = self._edits_path(session_id)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "segments": segments, "history": history},
+                      f, ensure_ascii=False)
+        os.replace(tmp, path)
+
+    def save_turn_edit(self, session_id: str, turn_index: int, new_text: str) -> list:
+        from app.edits import HISTORY_LIMIT, apply_turn_edit
+        with self._files_lock:
+            edits = self.load_edits(session_id)
+            segments = edits["segments"] if edits else self._baseline_segments(session_id)
+            history = list(edits["history"]) if edits else []
+            new_segments, delta = apply_turn_edit(segments, turn_index, new_text)
+            history.append(delta)
+            if len(history) > HISTORY_LIMIT:
+                history = history[-HISTORY_LIMIT:]
+            self._write_edits(session_id, new_segments, history)
+            return new_segments
+
+    def save_turn_reassign(self, session_id: str, turn_index: int,
+                           new_speaker: str) -> list:
+        from app.edits import HISTORY_LIMIT, NoChange, apply_turn_reassign
+        with self._files_lock:
+            edits = self.load_edits(session_id)
+            segments = edits["segments"] if edits else self._baseline_segments(session_id)
+            history = list(edits["history"]) if edits else []
+            try:
+                new_segments, delta = apply_turn_reassign(segments, turn_index, new_speaker)
+            except NoChange:
+                return segments
+            history.append(delta)
+            if len(history) > HISTORY_LIMIT:
+                history = history[-HISTORY_LIMIT:]
+            self._write_edits(session_id, new_segments, history)
+            return new_segments
+
+    def undo_turn_edit(self, session_id: str) -> list:
+        from app.edits import undo_last
+        with self._files_lock:
+            edits = self.load_edits(session_id)
+            baseline = self._baseline_segments(session_id)
+            if not edits or not edits.get("history"):
+                return edits["segments"] if edits else baseline
+            new_segments, new_history = undo_last(edits["segments"], edits["history"])
+            if not new_history and new_segments == baseline:
+                path = self._edits_path(session_id)
+                if os.path.exists(path):
+                    os.remove(path)
+                return baseline
+            self._write_edits(session_id, new_segments, new_history)
+            return new_segments
+
+    def load_translation(self, session_id: str, lang: str) -> Optional[dict]:
+        path = self._translation_path(session_id, lang)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def save_translation(self, session_id: str, lang: str, payload: dict) -> None:
+        """Atomically write a translation overlay (tmp + os.replace)."""
+        path = self._translation_path(session_id, lang)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
+
+
+# Back-compat alias: bindings/test/test_store_parity.py imports the DB oracle by
+# its old name. _PyStore is a superset (it also has the file methods).
+_PyDbStore = _PyStore
+
+
+def _make_core_store(data_dir: str):
+    """Construct the C++ ``whisperx_core.SessionStore`` (raising a clear error if
+    the opt-in module was not built)."""
+    try:
+        import whisperx_core
+    except ImportError as e:  # pragma: no cover - opt-in build path
+        raise RuntimeError(
+            "WHISPERX_CORE_STAGES includes 'db'/'edits' but the whisperx_core "
+            "module is not importable. Build it (cmake --build build) and put it "
+            "on PYTHONPATH."
+        ) from e
+    return whisperx_core.SessionStore(os.path.abspath(data_dir))
+
+
+def _make_backends(data_dir: str):
+    """Pick the (db_impl, edits_impl) pair from the composable stage tokens.
+
+    Both tokens agree (both on / both off) → one shared instance (one C++ store,
+    or one ``_PyStore``). Mixed → two objects (a known, acceptable inefficiency
+    of the opt-in side-by-side validation mode: two handles on the same DB file).
+    """
+    db_on, edits_on = _core_db_enabled(), _core_edits_enabled()
+    if db_on == edits_on:
+        impl = _make_core_store(data_dir) if db_on else _PyStore(data_dir)
+        return impl, impl
+    core = _make_core_store(data_dir)
+    py = _PyStore(data_dir)
+    return (core, py) if db_on else (py, core)
 
 
 class SessionStore:
-    """Session persistence facade: a swappable DB backend + Python file sidecars.
+    """Session persistence facade over swappable backends.
 
-    The DB methods (CRUD/lifecycle, settings, speaker_names, the ``translations``
-    column, snapshot/swap) forward to ``self._impl`` — Python or C++. The path
-    helpers and the file-backed subsystems (edits/undo overlay, per-language
-    translation files) are implemented here in Python regardless of backend.
+    The DB-method group (CRUD/lifecycle, settings, speaker_names, the
+    ``translations`` column, snapshot/swap) forwards to ``self._db``; the
+    file-method group (edits/undo overlay, per-language translation files)
+    forwards to ``self._edits``. Each is the pure-Python :class:`_PyStore` or the
+    C++ store, picked per the ``db`` / ``edits`` stage tokens. The pure path
+    helpers are computed here regardless of backend.
     """
 
     def __init__(self, data_dir: str):
         self.data_dir = os.path.abspath(data_dir)
         self.sessions_root = os.path.join(self.data_dir, "sessions")
         os.makedirs(self.sessions_root, exist_ok=True)
-        # Guards the file-backed sidecar writes (independent of the backend's own
-        # internal locking around SQLite).
-        self._lock = threading.Lock()
-        self._impl = _make_db_backend(self.data_dir)
+        self._db, self._edits = _make_backends(self.data_dir)
 
-    # --- DB layer (delegated to the backend) ----------------------------
+    # --- DB layer (delegated to the db backend) -------------------------
     @property
     def db_path(self) -> str:
-        return self._impl.db_path
+        return self._db.db_path
 
     def snapshot_db(self, dest_path: str) -> None:
-        return self._impl.snapshot_db(dest_path)
+        return self._db.snapshot_db(dest_path)
 
     def swap_db(self, new_db_path: str) -> None:
-        return self._impl.swap_db(new_db_path)
+        return self._db.swap_db(new_db_path)
 
     def create(self, session_id: str, filename: str, audio_filename: str,
                options: dict, model: Optional[str] = None) -> None:
-        return self._impl.create(session_id, filename, audio_filename, options, model)
+        return self._db.create(session_id, filename, audio_filename, options, model)
 
     def mark_running(self, session_id: str) -> None:
-        return self._impl.mark_running(session_id)
+        return self._db.mark_running(session_id)
 
     def mark_stage(self, session_id: str, stage: Optional[str]) -> None:
-        return self._impl.mark_stage(session_id, stage)
+        return self._db.mark_stage(session_id, stage)
 
     def mark_duration(self, session_id: str, duration: float) -> None:
-        return self._impl.mark_duration(session_id, duration)
+        return self._db.mark_duration(session_id, duration)
 
     def mark_done(self, session_id: str, *, language: Optional[str], diarized: bool,
                   model: str, num_segments: int, duration: float) -> None:
-        return self._impl.mark_done(
+        return self._db.mark_done(
             session_id, language=language, diarized=diarized, model=model,
             num_segments=num_segments, duration=duration,
         )
 
     def mark_error(self, session_id: str, message: str) -> None:
-        return self._impl.mark_error(session_id, message)
+        return self._db.mark_error(session_id, message)
 
     def rename(self, session_id: str, name: str) -> None:
-        return self._impl.rename(session_id, name)
+        return self._db.rename(session_id, name)
 
     def delete(self, session_id: str) -> bool:
-        return self._impl.delete(session_id)
+        return self._db.delete(session_id)
 
     def get_speaker_names(self, session_id: str) -> dict[str, str]:
-        return self._impl.get_speaker_names(session_id)
+        return self._db.get_speaker_names(session_id)
 
     def set_speaker_name(self, session_id: str, speaker_key: str, name: str) -> None:
-        return self._impl.set_speaker_name(session_id, speaker_key, name)
+        return self._db.set_speaker_name(session_id, speaker_key, name)
 
     def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        return self._impl.get_setting(key, default)
+        return self._db.get_setting(key, default)
 
     def set_setting(self, key: str, value: str) -> None:
-        return self._impl.set_setting(key, value)
+        return self._db.set_setting(key, value)
 
     def get_translations(self, session_id: str) -> dict:
-        return self._impl.get_translations(session_id)
+        return self._db.get_translations(session_id)
 
     def set_translation_status(
         self, session_id: str, lang: str, status: str, *,
         service: Optional[str] = None, error: Optional[str] = None,
     ) -> dict:
-        return self._impl.set_translation_status(
+        return self._db.set_translation_status(
             session_id, lang, status, service=service, error=error
         )
 
     def get(self, session_id: str) -> Optional[dict]:
-        return self._impl.get(session_id)
+        return self._db.get(session_id)
 
     def list(self) -> list[dict]:
-        return self._impl.list()
+        return self._db.list()
 
     def has_active_jobs(self) -> bool:
-        return self._impl.has_active_jobs()
+        return self._db.has_active_jobs()
 
     def reconcile_startup(self) -> list[str]:
-        return self._impl.reconcile_startup()
+        return self._db.reconcile_startup()
 
     def close(self) -> None:
-        return self._impl.close()
+        # In mixed-flag mode _db and _edits are distinct objects (two handles on
+        # the same DB file); close both, but only once when they're shared.
+        self._db.close()
+        if self._edits is not self._db:
+            self._edits.close()
 
-    # --- path helpers ---------------------------------------------------
+    # --- path helpers (pure; backend-independent) -----------------------
     def session_dir(self, session_id: str) -> str:
         return os.path.join(self.sessions_root, session_id)
 
@@ -472,137 +633,50 @@ class SessionStore:
     def result_path(self, session_id: str) -> str:
         return os.path.join(self.session_dir(session_id), RESULT_FILE)
 
-    def load_result(self, session_id: str) -> Optional[dict]:
-        path = self.result_path(session_id)
-        if not os.path.exists(path):
-            return None
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-
-    # --- transcript edits (non-destructive overlay; original never mutated) ---
     def edits_path(self, session_id: str) -> str:
         return os.path.join(self.session_dir(session_id), EDITS_FILE)
 
-    def load_edits(self, session_id: str) -> Optional[dict]:
-        path = self.edits_path(session_id)
-        if not os.path.exists(path):
-            return None
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-
-    def current_segments(self, session_id: str, original_segments: list) -> list:
-        """The edited segment list if an overlay exists, else the coalesced original.
-
-        With no overlay the original is run through the small-segment coalescer so the
-        baseline already satisfies the threshold; the original file is never mutated.
-        """
-        edits = self.load_edits(session_id)
-        if edits and edits.get("segments") is not None:
-            return edits["segments"]
-        from app.edits import coalesce_segments
-        return coalesce_segments(original_segments)
-
-    def edit_history_len(self, session_id: str) -> int:
-        edits = self.load_edits(session_id)
-        return len(edits["history"]) if edits and edits.get("history") else 0
-
-    def _original_segments(self, session_id: str) -> list:
-        return (self.load_result(session_id) or {}).get("segments", [])
-
-    def _baseline_segments(self, session_id: str) -> list:
-        """Pristine current state with no overlay: the original, coalesced. Edits build
-        on this, so the 'all segments >= threshold' invariant holds from the start and
-        is preserved by every collapse (an edited turn is one full-span segment)."""
-        from app.edits import coalesce_segments
-        return coalesce_segments(self._original_segments(session_id))
-
-    def _write_edits(self, session_id: str, segments: list, history: list) -> None:
-        """Atomically write the overlay (tmp + os.replace) so readers never see a
-        half-written file."""
-        path = self.edits_path(session_id)
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"version": 1, "segments": segments, "history": history},
-                      f, ensure_ascii=False)
-        os.replace(tmp, path)
-
-    def save_turn_edit(self, session_id: str, turn_index: int, new_text: str) -> list:
-        """Apply a turn edit, append the delta (history capped), persist. Returns the
-        new segment list. Raises IndexError for an unknown turn."""
-        from app.edits import HISTORY_LIMIT, apply_turn_edit
-        with self._lock:
-            edits = self.load_edits(session_id)
-            segments = edits["segments"] if edits else self._baseline_segments(session_id)
-            history = list(edits["history"]) if edits else []
-            new_segments, delta = apply_turn_edit(segments, turn_index, new_text)
-            history.append(delta)
-            if len(history) > HISTORY_LIMIT:
-                history = history[-HISTORY_LIMIT:]
-            self._write_edits(session_id, new_segments, history)
-            return new_segments
-
-    def save_turn_reassign(self, session_id: str, turn_index: int,
-                           new_speaker: str) -> list:
-        """Reassign a turn to ``new_speaker``, append the delta (history capped),
-        persist. Returns the new segment list — unchanged (and nothing written) when
-        the reassign is a no-op. Raises IndexError for an unknown turn."""
-        from app.edits import HISTORY_LIMIT, NoChange, apply_turn_reassign
-        with self._lock:
-            edits = self.load_edits(session_id)
-            segments = edits["segments"] if edits else self._baseline_segments(session_id)
-            history = list(edits["history"]) if edits else []
-            try:
-                new_segments, delta = apply_turn_reassign(segments, turn_index, new_speaker)
-            except NoChange:
-                return segments
-            history.append(delta)
-            if len(history) > HISTORY_LIMIT:
-                history = history[-HISTORY_LIMIT:]
-            self._write_edits(session_id, new_segments, history)
-            return new_segments
-
-    def undo_turn_edit(self, session_id: str) -> list:
-        """Reverse the most recent edit. Returns the resulting segment list. A no-op
-        (returns original) when there is nothing to undo; drops the overlay file once
-        fully reverted to the pristine original."""
-        from app.edits import undo_last
-        with self._lock:
-            edits = self.load_edits(session_id)
-            baseline = self._baseline_segments(session_id)
-            if not edits or not edits.get("history"):
-                # Nothing left to undo. Return the live state — which, once the
-                # oldest deltas have rolled off the 100-cap, may differ from the
-                # pristine baseline (those edits are no longer reversible).
-                return edits["segments"] if edits else baseline
-            new_segments, new_history = undo_last(edits["segments"], edits["history"])
-            if not new_history and new_segments == baseline:
-                path = self.edits_path(session_id)
-                if os.path.exists(path):
-                    os.remove(path)
-                return baseline
-            self._write_edits(session_id, new_segments, new_history)
-            return new_segments
-
-    # --- translations (per-language overlay; original never mutated) ----
     def translation_path(self, session_id: str, lang: str) -> str:
         return os.path.join(
             self.session_dir(session_id), f"{TRANSLATION_BASENAME}.{lang}.json"
         )
 
+    # --- file-backed sidecars (delegated to the edits backend) ----------
+    def load_result(self, session_id: str) -> Optional[dict]:
+        return self._edits.load_result(session_id)
+
+    def load_edits(self, session_id: str) -> Optional[dict]:
+        return self._edits.load_edits(session_id)
+
+    def current_segments(self, session_id: str, original_segments: list) -> list:
+        """The edited segment list if an overlay exists, else the coalesced
+        original (the original file is never mutated)."""
+        return self._edits.current_segments(session_id, original_segments)
+
+    def edit_history_len(self, session_id: str) -> int:
+        return self._edits.edit_history_len(session_id)
+
+    def save_turn_edit(self, session_id: str, turn_index: int, new_text: str) -> list:
+        """Apply a turn edit, append the delta (history capped), persist. Returns
+        the new segment list. Raises IndexError for an unknown turn."""
+        return self._edits.save_turn_edit(session_id, turn_index, new_text)
+
+    def save_turn_reassign(self, session_id: str, turn_index: int,
+                           new_speaker: str) -> list:
+        """Reassign a turn to ``new_speaker``, append the delta, persist. Returns
+        the new segment list — unchanged (nothing written) on a no-op. Raises
+        IndexError for an unknown turn."""
+        return self._edits.save_turn_reassign(session_id, turn_index, new_speaker)
+
+    def undo_turn_edit(self, session_id: str) -> list:
+        """Reverse the most recent edit; drops the overlay once fully reverted."""
+        return self._edits.undo_turn_edit(session_id)
+
     def load_translation(self, session_id: str, lang: str) -> Optional[dict]:
-        path = self.translation_path(session_id, lang)
-        if not os.path.exists(path):
-            return None
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
+        return self._edits.load_translation(session_id, lang)
 
     def save_translation(self, session_id: str, lang: str, payload: dict) -> None:
-        """Atomically write a translation overlay (tmp + os.replace)."""
-        path = self.translation_path(session_id, lang)
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        return self._edits.save_translation(session_id, lang, payload)
 
 
 def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:

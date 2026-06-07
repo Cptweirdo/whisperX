@@ -96,7 +96,10 @@ merely "the same schema on paper." Sourced from `app/store.py`, `app/paths.py`,
   (canonical result). Overlays written **atomically (tmp + rename)**:
   `transcript.edits.json`, `transcript.translation.<lang>.json`. Exports:
   `transcript.{srt,vtt,txt,json}`. **The writers must stay byte-identical** —
-  enforced by a golden test (§3).
+  enforced by a golden test (§3). *(Landed: the edits/undo overlay + translation
+  files, and the `app/edits.py` turn algorithms behind them, are ported to the C++
+  store under the `edits` token — see the Phase 1 brief; the rich translation v2
+  payload shape stays Python. Exports/writers remain Phase 5.)*
 
 **Backup / restore**
 - Must keep working: **SQLite Online Backup API** for `snapshot_db` (never copy
@@ -255,7 +258,7 @@ briefs** (context · goals · validation · unknowns) live in
 | Phase | Goal | Exit criteria |
 |---|---|---|
 | 0 | scaffold + golden generator + **decision gate** | `whisperx_core` importable; goldens dumped for the **EN/DE/RU** clip set (pinned lib + model revisions, transcript stored separately); ASan/LSan + CMake + Ninja + vcpkg + CTest + Catch2 green |
-| 1 | DB layer (SQLiteCpp) **replacing** `store.py` | full `store.py` API parity; round-trips a **real pre-existing** `sessions.db`; migrations idempotent; backup snapshot/swap pass |
+| 1 | full `store.py` in C++ (SQLiteCpp): the SQLite layer (`db`) **+** the file-backed edits/undo + translation sidecars & `app/edits.py` algorithms (`edits`) | full `store.py` API parity; round-trips a **real pre-existing** `sessions.db` + `transcript.edits.json`; migrations idempotent; backup snapshot/swap pass; the two stage tokens compose |
 | 2 | decode-once (ffmpeg libs) + VAD / `merge_chunks` | C++ chunks == golden; per-stage bench RTF recorded |
 | 3 | **alignment** — batched wav2vec2 (ORT) + Viterbi — *highest risk, early* | word-timing parity within tolerance; trellis path exact (fed Python ASR text) |
 | 4a | **ASR backends** (sherpa-onnx ORT first; whisper.cpp/GGML follow-on) | each backend gated by **WER/CER** (not byte-equality); `device` selection wired |

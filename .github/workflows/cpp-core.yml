@@ -3,7 +3,9 @@ name: C++ Core
 # C++ engine-core migration (docs/cpp-core-handoff.md): build the whisperx_core
 # pybind module + Catch2 tests, run CTest under ASan/UBSan, and prove the Python
 # parity oracle (C++ result == Python reference). Covers Phase 0 (edit_distance)
-# + Phase 1 (the SQLite SessionStore parity / on-disk-compat tests).
+# + Phase 1 (the SQLite SessionStore + the file-backed edits/undo sidecars &
+# app/edits.py algorithms: parity / on-disk-compat tests, and a stage-token
+# matrix proving `db` and `edits` compose).
 
 on:
   push:
@@ -65,3 +67,15 @@ jobs:
 
       - name: Python parity oracle
         run: PYTHONPATH=build uv run --no-project --with pytest pytest bindings/test/ -v
+
+      # The edits/store oracle suite (pure-stdlib app.store/edits/render) must pass
+      # identically with the C++ store off, the `edits` token alone, and both
+      # tokens — proving the strangler flags compose without behaviour drift.
+      - name: Stage-token matrix (edits/store oracle)
+        run: |
+          for stages in "" "edits" "db,edits"; do
+            echo "::group::WHISPERX_CORE_STAGES='$stages'"
+            WHISPERX_CORE_STAGES="$stages" PYTHONPATH=build \
+              uv run --no-project --with pytest pytest tests/test_turn_edits.py -q
+            echo "::endgroup::"
+          done

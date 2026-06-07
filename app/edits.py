@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -64,7 +65,7 @@ def _seg_key(seg: dict) -> Optional[str]:
     return seg.get("speaker") or None
 
 
-def group_turns(segments: list[dict]) -> list[Turn]:
+def _py_group_turns(segments: list[dict]) -> list[Turn]:
     """Group consecutive same-speaker segments into turns.
 
     Grouping spans *all* segments (including empty-text ones) so every turn covers a
@@ -89,7 +90,7 @@ def group_turns(segments: list[dict]) -> list[Turn]:
     return turns
 
 
-def distinct_speakers(segments: list[dict]) -> list[str]:
+def _py_distinct_speakers(segments: list[dict]) -> list[str]:
     """Ordered unique non-null speaker keys, in first-appearance order."""
     seen: list[str] = []
     for seg in segments:
@@ -99,7 +100,7 @@ def distinct_speakers(segments: list[dict]) -> list[str]:
     return seen
 
 
-def next_speaker_key(existing_keys) -> str:
+def _py_next_speaker_key(existing_keys) -> str:
     """Mint the next ``SPEAKER_<n>`` key (zero-padded to 2, matching pyannote).
 
     ``n`` is one past the highest ``SPEAKER_<n>`` index in ``existing_keys``;
@@ -168,8 +169,8 @@ def _interpolate_gaps(words: list[dict], start: Optional[float],
         i = j
 
 
-def realign_words(old_words: list[dict], new_text: str,
-                  start: Optional[float] = None, end: Optional[float] = None) -> list[dict]:
+def _py_realign_words(old_words: list[dict], new_text: str,
+                      start: Optional[float] = None, end: Optional[float] = None) -> list[dict]:
     """Map edited text back onto a turn's words, keeping timestamps for tokens that
     survive the edit and interpolating timing for the ones the user typed.
 
@@ -246,8 +247,8 @@ def _coalesce_run(run: list[dict], threshold: float) -> list[dict]:
     return out
 
 
-def coalesce_segments(segments: list[dict],
-                      threshold: float = SEGMENT_MIN_DURATION) -> list[dict]:
+def _py_coalesce_segments(segments: list[dict],
+                          threshold: float = SEGMENT_MIN_DURATION) -> list[dict]:
     """Merge consecutive same-speaker segments shorter than ``threshold`` until each
     clears it (a lone short segment bordered by other speakers is left as-is).
 
@@ -268,7 +269,7 @@ def coalesce_segments(segments: list[dict],
     return out
 
 
-def apply_turn_edit(segments: list[dict], turn_index: int, new_text: str):
+def _py_apply_turn_edit(segments: list[dict], turn_index: int, new_text: str):
     """Replace turn ``turn_index``'s text, collapsing its segment range.
 
     Returns ``(new_segments, delta)``. An empty/whitespace ``new_text`` deletes the
@@ -277,7 +278,7 @@ def apply_turn_edit(segments: list[dict], turn_index: int, new_text: str):
     # Reject negatives explicitly — a stray -1 would silently edit the last turn.
     if turn_index < 0:
         raise IndexError(f"turn_index out of range: {turn_index}")
-    turn = group_turns(segments)[turn_index]
+    turn = _py_group_turns(segments)[turn_index]
     i, j = turn.seg_indices[0], turn.seg_indices[-1]
     old_segments = copy.deepcopy(segments[i:j + 1])
 
@@ -287,7 +288,7 @@ def apply_turn_edit(segments: list[dict], turn_index: int, new_text: str):
         for k in turn.seg_indices:
             old_words.extend(segments[k].get("words") or [])
         # Keep timing for unchanged words; interpolate it for typed ones.
-        words = realign_words(old_words, text, start=turn.start, end=turn.end)
+        words = _py_realign_words(old_words, text, start=turn.start, end=turn.end)
         new_seg: dict = {"start": turn.start, "end": turn.end, "text": text, "words": words}
         if turn.speaker is not None:
             new_seg["speaker"] = turn.speaker
@@ -308,7 +309,7 @@ def apply_turn_edit(segments: list[dict], turn_index: int, new_text: str):
     return new_segments, delta
 
 
-def apply_turn_reassign(segments: list[dict], turn_index: int, new_speaker: str):
+def _py_apply_turn_reassign(segments: list[dict], turn_index: int, new_speaker: str):
     """Reassign turn ``turn_index`` to ``new_speaker``, rewriting the ``speaker`` key
     on its segment range (and on those segments' words, for export/JSON parity).
 
@@ -322,7 +323,7 @@ def apply_turn_reassign(segments: list[dict], turn_index: int, new_speaker: str)
     # Reject negatives explicitly — a stray -1 would silently reassign the last turn.
     if turn_index < 0:
         raise IndexError(f"turn_index out of range: {turn_index}")
-    turn = group_turns(segments)[turn_index]
+    turn = _py_group_turns(segments)[turn_index]
     if turn.speaker == new_speaker:
         raise NoChange
     i, j = turn.seg_indices[0], turn.seg_indices[-1]
@@ -347,7 +348,7 @@ def apply_turn_reassign(segments: list[dict], turn_index: int, new_speaker: str)
     return new_segments, delta
 
 
-def undo_last(segments: list[dict], history: list[dict]):
+def _py_undo_last(segments: list[dict], history: list[dict]):
     """Reverse the most recent edit (strict LIFO).
 
     Returns ``(new_segments, new_history)``. Empty history is a no-op. The delta's
@@ -367,3 +368,78 @@ def undo_last(segments: list[dict], history: list[dict]):
     restored = copy.deepcopy(delta["old_segments"])
     new_segments = list(segments[:i]) + restored + list(segments[i + repl_len:])
     return new_segments, history
+
+
+# --- C++ core seam (the `edits` stage) --------------------------------------
+# When ``WHISPERX_CORE_STAGES`` contains ``edits`` the algorithms above are
+# served by the ``whisperx_core`` module (the verbatim C++ port), with the
+# pure-Python ``_py_*`` functions kept as the live parity oracle. server.py and
+# render.py import the public names below directly, so routing them here keeps
+# the store and the server on one turn-grouping implementation (no index drift).
+
+
+def _core_edits_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` edits algorithms back this run."""
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    return "edits" in {s.strip() for s in raw.split(",") if s.strip()}
+
+
+def _core():
+    """Import the built C++ module (lazily; opt-in build path)."""
+    import whisperx_core
+    return whisperx_core
+
+
+def group_turns(segments: list[dict]) -> list[Turn]:
+    if _core_edits_enabled():
+        # C++ returns plain dicts; re-wrap as Turn so ``.index``/``.speaker``/…
+        # attribute access (server.py, render.py) is unchanged.
+        return [Turn(**d) for d in _core().group_turns(segments)]
+    return _py_group_turns(segments)
+
+
+def distinct_speakers(segments: list[dict]) -> list[str]:
+    if _core_edits_enabled():
+        return _core().distinct_speakers(segments)
+    return _py_distinct_speakers(segments)
+
+
+def next_speaker_key(existing_keys) -> str:
+    if _core_edits_enabled():
+        return _core().next_speaker_key(list(existing_keys) if existing_keys else [])
+    return _py_next_speaker_key(existing_keys)
+
+
+def coalesce_segments(segments: list[dict],
+                      threshold: float = SEGMENT_MIN_DURATION) -> list[dict]:
+    if _core_edits_enabled():
+        return _core().coalesce_segments(segments, threshold)
+    return _py_coalesce_segments(segments, threshold)
+
+
+def realign_words(old_words: list[dict], new_text: str,
+                  start: Optional[float] = None, end: Optional[float] = None) -> list[dict]:
+    if _core_edits_enabled():
+        return _core().realign_words(old_words, new_text, start, end)
+    return _py_realign_words(old_words, new_text, start, end)
+
+
+def apply_turn_edit(segments: list[dict], turn_index: int, new_text: str):
+    if _core_edits_enabled():
+        return _core().apply_turn_edit(segments, turn_index, new_text)
+    return _py_apply_turn_edit(segments, turn_index, new_text)
+
+
+def apply_turn_reassign(segments: list[dict], turn_index: int, new_speaker: str):
+    if _core_edits_enabled():
+        try:
+            return _core().apply_turn_reassign(segments, turn_index, new_speaker)
+        except _core().NoChange:
+            raise NoChange from None
+    return _py_apply_turn_reassign(segments, turn_index, new_speaker)
+
+
+def undo_last(segments: list[dict], history: list[dict]):
+    if _core_edits_enabled():
+        return _core().undo_last(segments, history)
+    return _py_undo_last(segments, history)

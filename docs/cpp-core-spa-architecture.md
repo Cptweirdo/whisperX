@@ -226,8 +226,9 @@ functions directly from the existing pytest oracle.
 > [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md) §6, with detailed
 > per-phase execution briefs in
 > [`cpp-core-migration-briefs.md`](./cpp-core-migration-briefs.md). In short:
-> **0** scaffold + golden generator + decision gate · **1** DB layer (SQLiteCpp,
-> replaces `store.py`) · **2** decode-once + VAD/`merge_chunks` · **3** alignment
+> **0** scaffold + golden generator + decision gate · **1** session store
+> (SQLiteCpp, replaces all of `store.py` — DB layer + edits/translation sidecars +
+> `app/edits.py`) · **2** decode-once + VAD/`merge_chunks` · **3** alignment
 > (batched wav2vec2 + Viterbi — *highest risk, early*) · **4a** ASR backends /
 > **4b** diarize + assign · **5** writers + end-to-end · **6** timing gates.
 > The **SPA itself is already built** (Svelte, `app/web/`); only the C++ HTTP/SSE

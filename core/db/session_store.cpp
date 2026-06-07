@@ -4,16 +4,43 @@
 #include <SQLiteCpp/Backup.h>
 
 #include <array>
-#include <chrono>
-#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <set>
+
+#include "edits/edits.hpp"
+#include "time_iso.hpp"
 
 namespace fs = std::filesystem;
 
 namespace whisperx::db {
 
 namespace {
+
+// Sidecar artifact basenames — mirror app.store module constants.
+constexpr const char* kResultFile = "transcript.json";
+constexpr const char* kEditsFile = "transcript.edits.json";
+constexpr const char* kTranslationBasename = "transcript.translation";
+
+// Read a JSON file into a value, or json null when the file is absent.
+json read_json_file(const std::string& path) {
+    if (!fs::exists(path)) return json(nullptr);
+    std::ifstream f(path, std::ios::binary);
+    json j;
+    f >> j;
+    return j;
+}
+
+// Atomic write: dump to <path>.tmp then rename over the target.
+void write_json_atomic(const std::string& path, const json& value) {
+    fs::create_directories(fs::path(path).parent_path());
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary);
+        f << value.dump();  // raw UTF-8, == json.dump(ensure_ascii=False)
+    }
+    fs::rename(tmp, path);
+}
 
 // app.store._SCHEMA, verbatim. `CREATE TABLE IF NOT EXISTS` so re-opening an
 // existing DB is a no-op; the 15 `sessions` columns are in the exact §2 order.
@@ -53,21 +80,6 @@ constexpr std::array<const char*, 15> kColumns = {
     "stage",        "error",         "options",        "language",
     "diarized",     "model",         "num_segments",   "duration",
     "translations", "created_at",    "updated_at"};
-
-// datetime.now(timezone.utc).isoformat(timespec="seconds") == "...T..+00:00".
-std::string now_iso() {
-    const auto t = std::chrono::system_clock::to_time_t(
-        std::chrono::system_clock::now());
-    std::tm tm{};
-#if defined(_WIN32)
-    gmtime_s(&tm, &t);
-#else
-    gmtime_r(&t, &tm);
-#endif
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+00:00", &tm);
-    return buf;
-}
 
 void bind_opt(SQLite::Statement& q, int i, const std::optional<std::string>& v) {
     if (v.has_value()) {
@@ -462,6 +474,159 @@ std::vector<std::string> SessionStore::reconcile_startup() {
 void SessionStore::close() {
     std::lock_guard<std::mutex> g(lock_);
     db_.reset();
+}
+
+// --- file-backed sidecars ------------------------------------------------
+std::string SessionStore::result_path_(const std::string& sid) const {
+    return (fs::path(session_dir_(sid)) / kResultFile).string();
+}
+
+std::string SessionStore::edits_path_(const std::string& sid) const {
+    return (fs::path(session_dir_(sid)) / kEditsFile).string();
+}
+
+std::string SessionStore::translation_path_(const std::string& sid,
+                                            const std::string& lang) const {
+    return (fs::path(session_dir_(sid)) /
+            (std::string(kTranslationBasename) + "." + lang + ".json"))
+        .string();
+}
+
+json SessionStore::load_result(const std::string& sid) {
+    return read_json_file(result_path_(sid));
+}
+
+json SessionStore::load_edits(const std::string& sid) {
+    return read_json_file(edits_path_(sid));
+}
+
+json SessionStore::original_segments_(const std::string& sid) {
+    // (self.load_result(sid) or {}).get("segments", [])
+    const json result = load_result(sid);
+    if (result.is_object()) {
+        auto it = result.find("segments");
+        if (it != result.end()) return *it;
+    }
+    return json::array();
+}
+
+json SessionStore::baseline_segments_(const std::string& sid) {
+    return whisperx::edits::coalesce_segments(original_segments_(sid));
+}
+
+json SessionStore::current_segments(const std::string& sid,
+                                    const json& original_segments) {
+    const json edits = load_edits(sid);
+    if (edits.is_object()) {
+        auto it = edits.find("segments");
+        if (it != edits.end() && !it->is_null()) return *it;
+    }
+    return whisperx::edits::coalesce_segments(original_segments);
+}
+
+long SessionStore::edit_history_len(const std::string& sid) {
+    const json edits = load_edits(sid);
+    if (edits.is_object()) {
+        auto it = edits.find("history");
+        if (it != edits.end() && it->is_array()) {
+            return static_cast<long>(it->size());
+        }
+    }
+    return 0;
+}
+
+void SessionStore::write_edits_(const std::string& sid, const json& segments,
+                                const json& history) {
+    json overlay = json::object();
+    overlay["version"] = 1;
+    overlay["segments"] = segments;
+    overlay["history"] = history;
+    write_json_atomic(edits_path_(sid), overlay);
+}
+
+namespace {
+// history.append(delta); cap to the last HISTORY_LIMIT entries.
+void append_capped(json& history, const json& delta) {
+    history.push_back(delta);
+    const int limit = whisperx::edits::HISTORY_LIMIT;
+    if (static_cast<int>(history.size()) > limit) {
+        json trimmed = json::array();
+        for (int k = static_cast<int>(history.size()) - limit;
+             k < static_cast<int>(history.size()); ++k) {
+            trimmed.push_back(history[k]);
+        }
+        history = std::move(trimmed);
+    }
+}
+}  // namespace
+
+json SessionStore::save_turn_edit(const std::string& sid, long turn_index,
+                                  const std::string& new_text) {
+    std::lock_guard<std::mutex> g(files_lock_);
+    const json edits = load_edits(sid);
+    const bool has = edits.is_object();
+    json segments = has ? edits["segments"] : baseline_segments_(sid);
+    json history = has ? json(edits["history"]) : json::array();
+    auto [new_segments, delta] =
+        whisperx::edits::apply_turn_edit(segments, turn_index, new_text);
+    append_capped(history, delta);
+    write_edits_(sid, new_segments, history);
+    return new_segments;
+}
+
+json SessionStore::save_turn_reassign(const std::string& sid, long turn_index,
+                                      const std::string& new_speaker) {
+    std::lock_guard<std::mutex> g(files_lock_);
+    const json edits = load_edits(sid);
+    const bool has = edits.is_object();
+    json segments = has ? edits["segments"] : baseline_segments_(sid);
+    json history = has ? json(edits["history"]) : json::array();
+    json new_segments;
+    json delta;
+    try {
+        auto pr = whisperx::edits::apply_turn_reassign(segments, turn_index,
+                                                       new_speaker);
+        new_segments = std::move(pr.first);
+        delta = std::move(pr.second);
+    } catch (const whisperx::edits::NoChange&) {
+        return segments;  // no-op: nothing written
+    }
+    append_capped(history, delta);
+    write_edits_(sid, new_segments, history);
+    return new_segments;
+}
+
+json SessionStore::undo_turn_edit(const std::string& sid) {
+    std::lock_guard<std::mutex> g(files_lock_);
+    const json edits = load_edits(sid);
+    const json baseline = baseline_segments_(sid);
+    const bool has = edits.is_object();
+    const bool has_history =
+        has && edits.contains("history") && !edits["history"].empty();
+    if (!has_history) {
+        return has ? edits["segments"] : baseline;
+    }
+    auto [new_segments, new_history] =
+        whisperx::edits::undo_last(edits["segments"], edits["history"]);
+    if (new_history.empty() && new_segments == baseline) {
+        std::error_code ec;
+        fs::remove(edits_path_(sid), ec);  // fully reverted -> drop the overlay
+        return baseline;
+    }
+    write_edits_(sid, new_segments, new_history);
+    return new_segments;
+}
+
+json SessionStore::load_translation(const std::string& sid,
+                                    const std::string& lang) {
+    return read_json_file(translation_path_(sid, lang));
+}
+
+void SessionStore::save_translation(const std::string& sid,
+                                    const std::string& lang,
+                                    const json& payload) {
+    std::lock_guard<std::mutex> g(files_lock_);
+    write_json_atomic(translation_path_(sid, lang), payload);
 }
 
 }  // namespace whisperx::db

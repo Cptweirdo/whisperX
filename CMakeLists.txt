@@ -53,6 +53,8 @@ FetchContent_MakeAvailable(SQLiteCpp)
 # --- pure core library -------------------------------------------------------
 add_library(whisperx_core_lib STATIC
   core/text/edit_distance.cpp
+  core/text/sequence_matcher.cpp
+  core/edits/edits.cpp
   core/db/session_store.cpp
   core/build_info.cpp)
 target_include_directories(whisperx_core_lib PUBLIC core)
@@ -60,6 +62,14 @@ target_link_libraries(whisperx_core_lib PUBLIC
   nlohmann_json::nlohmann_json SQLiteCpp)
 target_compile_options(whisperx_core_lib PRIVATE -Wall -Wextra)
 set_target_properties(whisperx_core_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# edits.cpp's gap-interpolation borrow arithmetic must match CPython's
+# never-fused IEEE-754 doubles bit-for-bit (the parity tests assert exact ==).
+# Disable FP contraction (FMA) on this TU only; guard to GCC/Clang.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(core/edits/edits.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 
 # --- pybind11 oracle module --------------------------------------------------
 if(WHISPERX_CORE_PYMODULE)
@@ -85,7 +95,9 @@ if(WHISPERX_CORE_TESTS)
   enable_testing()
   add_executable(whisperx_core_tests
     core/tests/test_edit_distance.cpp
-    core/tests/test_session_store.cpp)
+    core/tests/test_session_store.cpp
+    core/tests/test_sequence_matcher.cpp
+    core/tests/test_edits.cpp)
   target_link_libraries(whisperx_core_tests
     PRIVATE whisperx_core_lib Catch2::Catch2WithMain)
 

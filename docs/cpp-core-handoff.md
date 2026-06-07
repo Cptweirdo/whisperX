@@ -29,7 +29,7 @@ engine — not a rewrite of the app.
 - **Migration:** strangler-fig — Python stays the host until Phase 5; each C++ stage swaps in behind the **pybind11 `whisperx_core`** module, gated by `WHISPERX_CORE_STAGES`.
 - **Validation (decoupled goldens):** Whisper text isn't byte-stable across engines → test align/diarize/writers against a **fixed transcript input**; judge ASR by **WER/CER**. "Byte-identical" only ever means *given identical input*.
 - **Audio:** **ffmpeg libraries linked in-process** (Option B), no subprocess, all formats.
-- **DB:** **replace** `app/store.py` with a C++ `SessionStore` (SQLiteCpp) — full API parity, honoring the §2 compatibility contract byte-for-byte.
+- **Store:** **replace** `app/store.py` with a C++ `SessionStore` (SQLiteCpp) — full API parity, honoring the §2 compatibility contract byte-for-byte. Scope is the **whole** store: the SQLite layer (token `db`) **and** the file-backed sidecars + the `app/edits.py` turn algorithms (token `edits`); both **landed** in Phase 1 (composable `WHISPERX_CORE_STAGES` tokens).
 - **Memory:** jobs **run to completion** (no mid-job cancel); mmap model weights + a per-job `std::pmr` arena reset at job end + mimalloc/jemalloc + **ASan/LSan in CI**.
 - **Build:** **CMake + Ninja + vcpkg**, CTest, Catch2 (tests) + Google Benchmark (bench).
 - **Dataset:** English + German + Russian, from **Common Voice Spontaneous Speech** (CC0) + LibriSpeech (EN). Two committed scripts in `golden/`: `fetch_datasets.py` pulls single-speaker ASR/align clips (`en_libri`; `ru_cv_*` for HF align loader + Cyrillic) + one m4a for ffmpeg decode; `synthesize_dialog.py` concats distinct speakers into **4-speaker synthetic dialogs** (`en/de/ru_dialog`, seed-pinned, byte-identical) with ground-truth RTTM for diarization. Pin lib + model revisions; diarization parity goldens from the **vendored** `app/models/speaker-diarization-community-1.3533c8cf/` checkpoint (no HF token). *Gap:* no real-overlap diarization (synthetic dialogs are sequential, no overlap) — add AMI later if needed.
@@ -76,55 +76,51 @@ for later phases — treat them like the "Already decided" list.
 vcpkg deps (ORT/sherpa-onnx) as the stages that need them land; port the existing
 `tests/test_pipeline_contract.py` writer byte-goldens + constants to Catch2.
 
-## Phase 1 — DB layer landed; sidecars + edits planned
+## Phase 1 — landed (full session-persistence layer)
 
-The SQLite layer of `app/store.py` is ported to C++ and gated behind the first use
-of the `WHISPERX_CORE_STAGES` flag; the file-backed sidecars + `app/edits.py` are
-designed as the completion slice (last bullet). Full detail in the Phase 1 brief; the
-settled facts for later phases:
+The whole of `app/store.py` is ported to C++ — the SQLite layer **and** the
+file-backed sidecars (edits/undo overlay + per-language translation files, with the
+`app/edits.py` algorithms) — gated behind two composable `WHISPERX_CORE_STAGES`
+tokens. Full detail in the Phase 1 brief; the settled facts for later phases:
 
-- **The DB layer is DB-only (landed).** The C++ `core/db/session_store.{hpp,cpp}`
-  (on **SQLiteCpp**, bundled-SQLite via FetchContent) owns SQLite — CRUD/lifecycle,
-  settings, speaker_names, the `translations` column, snapshot/swap. The **file-backed
-  sidecars** (the edits/undo overlay — real logic in `app/edits.py` — and the
-  per-language translation files) and the **path helpers** stay in Python *for now* —
-  porting them is the planned **completion slice** (below).
-- **Strangler seam = Python facade by flag.** `app.store.SessionStore` is now a
-  facade that forwards its DB methods to `_PyDbStore` (default, the oracle) or
-  `whisperx_core.SessionStore` (C++) when **`WHISPERX_CORE_STAGES` contains `db`**.
-  Both backends stay runnable for side-by-side diffing. This is the pattern every
-  later stage's swap follows.
-- **DB compat is proven both directions.** `bindings/test/test_store_parity.py`
-  asserts behavioural parity (field-for-field, semantic JSON, timestamps by format)
-  **and** that a `sessions.db` written by either implementation reads back
-  identically through the other (the in-place-upgrade contract). The existing
-  `tests/test_backup*.py` + store suite pass unchanged with the flag **on** (123)
-  and **off** (123). C++ side: 10 Catch2 cases under ASan/UBSan.
-- **JSON parity is semantic** (parse-on-read), not byte-identical to `json.dumps`.
-- **Threading:** the C++ store serializes with its own `std::mutex`; pybind calls
-  keep the GIL (behaviour == today's Python store). GIL-release is a later tuning.
-
-**Completion slice — file-backed sidecars + `app/edits.py` (planned, designed, not
-yet built).** Finishes Phase 1 by porting the deferred subsystems to C++ so the whole
-session-persistence layer can run natively. Settled design (full detail in the Phase 1
-brief):
-- **A second, composable `edits` token** in `WHISPERX_CORE_STAGES` (independent of
-  `db`) gates the file-backed sidecars (edits/undo overlay + translation-file I/O) +
-  the `app/edits.py` algorithms.
-- **`app/edits.py` becomes a facade too** — `group_turns`/`distinct_speakers`/
-  `next_speaker_key` are imported **directly** by `app/server.py` + `app/render.py`,
-  so routing them through C++ (re-wrapping `group_turns` dicts back into `Turn`) keeps
-  the store and the server on one turn-grouping implementation (no turn-index desync).
-- **The difflib dependency is the load-bearing risk.** `realign_words` needs
+- **The C++ store is full-surface.** `core/db/session_store.{hpp,cpp}` (on
+  **SQLiteCpp**, bundled-SQLite via FetchContent) owns SQLite — CRUD/lifecycle,
+  settings, speaker_names, the `translations` column, snapshot/swap — **plus** the
+  file-backed sidecars: `load_result`/`load_edits`/`current_segments`/
+  `save_turn_edit`/`save_turn_reassign`/`undo_turn_edit` + translation-file I/O,
+  delegating the turn algorithms to `core/edits/edits.{hpp,cpp}` (the port of
+  `app/edits.py`). Only the **pure path helpers** stay on the Python facade.
+- **Strangler seam = Python facade, two composable flags.** `app.store.SessionStore`
+  forwards its DB-method group to `self._db` and its file-method group to
+  `self._edits`; each is the pure-Python `_PyStore` (default, the oracle) or
+  `whisperx_core.SessionStore` (C++), picked by **`db`** / **`edits`** in
+  `WHISPERX_CORE_STAGES` (either alone, or `db,edits` — one shared C++ store when
+  both are on). `app/edits.py` is **also** a facade: `group_turns`/
+  `distinct_speakers`/`next_speaker_key` (imported directly by `app/server.py` +
+  `app/render.py`) route through C++ when `edits` is on (re-wrapping the dicts back
+  into `Turn`), so the store and the server share one turn-grouping implementation
+  (no turn-index desync). This is the pattern every later stage's swap follows.
+- **Parity is proven both directions.** `bindings/test/test_store_parity.py` (DB) +
+  `test_edits_parity.py` (per-function, **exact ==** on interpolated floats, plus a
+  difflib-adversarial section) + `test_store_edits_parity.py` (edit sequences +
+  on-disk overlay round-trips) assert behavioural parity **and** that
+  `sessions.db` / `transcript.edits.json` written by either implementation read back
+  identically through the other. The pure-stdlib `tests/test_turn_edits.py` oracle
+  passes identically with the flags unset, `edits`, and `db,edits` (a CI matrix);
+  the full pytest suite is green flag-off. C++ side: 34 Catch2 cases under ASan/UBSan.
+- **The difflib port is the load-bearing piece.** `realign_words` needs
   `difflib.SequenceMatcher(autojunk=False)`'s **greedy matching blocks** (not a generic
   LCS) → a verbatim CPython `find_longest_match`/`get_matching_blocks` port in
-  `core/text/sequence_matcher.*` (autojunk branch omitted).
-- **Float parity:** `core/edits/edits.cpp` compiled with **`-ffp-contract=off`** so the
-  gap-interpolation arithmetic matches Python's never-fused IEEE754 doubles; words model
-  timed-vs-untimed by **key presence** (`.contains()`), never null.
-- **Oracle:** the existing `tests/test_turn_edits.py` +
-  `tests/test_word_timestamp_interpolation.py` (run with the flag on/off) plus new
-  difflib-adversarial + store-edits parity tests.
+  `core/text/sequence_matcher.*` (autojunk popularity-pruning branch omitted; confirmed
+  via a >200-element adversarial parity case).
+- **Float parity:** `core/edits/edits.cpp` is compiled with **`-ffp-contract=off`**
+  (per-TU) so the gap-interpolation borrow arithmetic matches Python's never-fused
+  IEEE-754 doubles bit-for-bit; words model timed-vs-untimed by **key presence**
+  (`.contains()`, emitting neither start nor end), never null.
+- **JSON parity is semantic** (parse-on-read), not byte-identical to `json.dumps`.
+- **Threading:** the C++ store serializes the DB with its own `std::mutex` and the
+  sidecar writes with a separate `files_lock_`; pybind calls keep the GIL (behaviour
+  == today's Python store). GIL-release is a later tuning.
 
 ## Where to start
 
@@ -134,7 +130,7 @@ over the EN/DE/RU clip set (transcript dumped as a *separate* artifact), pinned
 manifest, CTest+Catch2 green, and a CI job. Then follow the critical path:
 
 ```
-0 scaffold+goldens+decisions ─┬─► 1 DB (replace store.py)        [parallelizable]
+0 scaffold+goldens+decisions ─┬─► 1 store.py (DB + edits sidecars) [parallelizable]
                               └─► 2 decode+VAD ─► 3 alignment ─► 4a ASR / 4b diarize ─► 5 writers+e2e
                                                    (Python ASR feeds 3 until 4a lands)
 6 timing gates accrue from Phase 2 on.
