@@ -227,6 +227,7 @@ def _machine_info() -> dict:
         "gpu": None,
         "torch": None,
         "whisperx": None,
+        "ffmpeg": None,
     }
     try:
         info["platform"] = platform.platform()
@@ -249,9 +250,35 @@ def _machine_info() -> dict:
         info["whisperx"] = version("whisperx")
     except Exception:  # noqa: BLE001 - package metadata unavailable
         logger.debug("machine info: whisperx version lookup failed", exc_info=True)
+    # ffmpeg is an external CLI (whisperx.load_audio shells out to it to decode
+    # audio), so its build is part of what the "decoding" timing reflects.
+    info["ffmpeg"] = _ffmpeg_version()
 
     _MACHINE_INFO = info
     return info
+
+
+def _ffmpeg_version() -> Optional[str]:
+    """Version string of the ffmpeg CLI on PATH, or None if unavailable.
+
+    ``whisperx.load_audio`` decodes every clip by shelling out to ``ffmpeg``;
+    recording its version makes the decode-stage timing comparable across hosts.
+    """
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        # First line looks like: "ffmpeg version 6.1.1-3ubuntu5 Copyright ..."
+        first = out.splitlines()[0] if out else ""
+        if first.startswith("ffmpeg version "):
+            return first[len("ffmpeg version "):].split()[0]
+        return first or None
+    except Exception:  # noqa: BLE001 - ffmpeg missing / not executable / timeout
+        logger.debug("machine info: ffmpeg version lookup failed", exc_info=True)
+        return None
 
 
 @dataclass
