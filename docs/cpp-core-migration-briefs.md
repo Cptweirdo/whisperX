@@ -210,8 +210,17 @@ Ninja + vcpkg**.
 The session DB is the **in-place-upgrade compatibility contract** (plan §2). It's
 low-ML-risk and high-value to port early: it exercises the pybind boundary on
 something deterministic and locks down the must-not-break surface before any model
-work. Source of truth: `app/store.py` (schema `:36-64`, `_migrate` `:86-92`, CRUD,
+work. Source of truth: `app/store.py` (schema `:37-72`, `_migrate` `:86-92`, CRUD,
 `snapshot_db`/`swap_db`), `app/paths.py` (`data_dir()`), `app/backup/`.
+**Scope reality (verified against the current code):** `SessionStore` is *not* just
+CRUD — it exposes **~40 public methods** spanning four areas, two of which are
+**file-backed** (JSON sidecars, not SQLite): (1) session CRUD/lifecycle, (2) the
+**edits/undo** subsystem (`load_result`/`load_edits`/`current_segments`/
+`save_turn_edit`/`save_turn_reassign`/`undo_turn_edit` over `edits.json`), (3) the
+**translations** subsystem (`save_translation`/`load_translation`/`get_translations`/
+`set_translation_status` over `translation/<lang>.json`, added after this brief was
+first written — commit `8d9f7ef`), and (4) **settings**/`speaker_names`. So "port the
+DB" really means "port the whole session-persistence layer, including its file I/O."
 
 ### Goals
 - A C++ `SessionStore` on **SQLiteCpp** reproducing the **exact** schema (3 tables,
@@ -225,10 +234,25 @@ work. Source of truth: `app/store.py` (schema `:36-64`, `_migrate` `:86-92`, CRU
 - Value-encoding parity: `options`/`translations` as JSON text (**nlohmann/json**),
   `diarized` INTEGER 0/1, timestamps **ISO-8601 UTC seconds precision**.
 - `snapshot_db` (SQLite **Online Backup API**) + atomic `swap_db` + reopen.
+- **Edits/undo subsystem parity** (file-backed): `load_result` / `load_edits` /
+  `current_segments` / `edit_history_len` / `save_turn_edit` / `save_turn_reassign` /
+  `undo_turn_edit`, reading/writing `result.json` + `edits.json` with the same
+  `edits.group_turns` semantics the SPA depends on (the turn-index contract — see
+  CLAUDE.md). This is real logic (an undo stack + turn regrouping), not a CRUD wrapper.
+- **Translations subsystem parity** (file-backed): `translation_path` /
+  `save_translation` / `load_translation` / `get_translations` / `set_translation_status`
+  over `translation/<lang>.json` + the `translations` JSON column.
+- **Path/util helpers**: `session_dir`, `audio_path`, `artifact_path`, `result_path`,
+  `edits_path`, `translation_path`, `rename`, `has_active_jobs`, `close`.
 - A pybind binding that **fully replaces** `app/store.py` (decided — not a shadow):
   it must reproduce the **entire** API surface `app/` calls (every method + exact
-  signatures), and all callers re-point to it. **Done-bar = full API parity**, not
-  just the CRUD subset above — enumerate every `store.py` public method first.
+  signatures), and all callers re-point to it. **Done-bar = full API parity** across
+  all four areas above (CRUD + edits/undo + translations + settings/speaker_names) —
+  **enumerate every `store.py` public method first** (it is ~40, not the ~10 CRUD
+  methods, and several do JSON-sidecar file I/O, not just SQLite).
+  - *Cleanup first:* `get_setting`/`set_setting` are currently **defined twice** in
+    `SessionStore` (`:411/:418` dead, `:442/:449` live — a merge artifact); dedupe in
+    Python before porting so the C++ surface isn't ambiguous.
 
 ### Validation
 - Open a **real pre-existing `sessions.db`** (created by the Python app), read all
@@ -254,9 +278,13 @@ work. Source of truth: `app/store.py` (schema `:36-64`, `_migrate` `:86-92`, CRU
   match).
 - **Secrets + settings** — `secret_store.py` (keyring) and the `settings` table
   (`active_model`, `device`) — port to C++ now or leave in Python for this phase?
-- **File-artifact ownership** — `transcript.json` and the atomic tmp+rename
-  overlays are written by `app/pipeline.py`, not the store. Who owns those writes
-  while the host is still Python?
+- **File-artifact ownership** — bigger than first posed: the store **already owns
+  substantial file I/O** (`result.json` via `load_result`, `edits.json` via the
+  edits/undo methods, `translation/<lang>.json` via the translation methods), while
+  `app/pipeline.py` writes `transcript.json` + the export overlays (atomic tmp+rename).
+  So porting `store.py` drags JSON-sidecar read/write into C++ too. Decide the split:
+  does the C++ `SessionStore` own all session-dir files (edits/result/translation), or
+  only SQLite while a Python shim keeps the sidecars during the strangler window?
 
 ---
 
@@ -431,6 +459,12 @@ Source: `asr.py:31` (`WhisperModel`), `:106` (`FasterWhisperPipeline`), `:325`
 (`load_model`), `:417-445` (`default_asr_options`); `diarize.py:14`
 (`IntervalTree`), `:91` (`DiarizationPipeline`, default gated `community-1`),
 `:185` (`assign_word_speakers`), `:170` (pandas DataFrame).
+**Verified-against-code drift:** `DiarizationPipeline.__call__` now takes
+`return_embeddings: bool = False` and its return type is
+`Union[tuple[DataFrame, embeddings_dict], DataFrame]` (`:113`) — it can emit
+**per-speaker embeddings** alongside the turns, not just the bare DataFrame the
+brief originally assumed. The C++ port must mirror this optional second return
+(and the `num/min/max_speakers` controls).
 
 ### Goals — 4a (ASR backends)
 - An **ASR backend interface** producing `TranscriptionResult` (`segments` text +
@@ -445,7 +479,9 @@ Source: `asr.py:31` (`WhisperModel`), `:106` (`FasterWhisperPipeline`), `:325`
 
 ### Goals — 4b (diarize & assign)
 - **sherpa-onnx diarization** → turns (`start`/`end`/`speaker`), replacing the
-  pyannote DataFrame with structs.
+  pyannote DataFrame with structs. **Preserve the optional `return_embeddings` path**
+  (`diarize.py:113`): when requested, return per-speaker embedding vectors alongside
+  the turns (the current Python API does), so callers relying on it don't break.
 - Port **`IntervalTree`** (sorted arrays + binary search, O(log n)) and
   **`assign_word_speakers`** (dominant speaker by overlap duration, `fill_nearest`).
 
