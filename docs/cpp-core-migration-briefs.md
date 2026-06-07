@@ -90,6 +90,19 @@ Ninja + vcpkg**.
   labels (`diarize.py:185`), and the four writer outputs. **Per decoupled-goldens
   (fact 3): the intermediate transcript is dumped as its own artifact** so
   downstream-stage tests read it as fixed input.
+  - **First cut landed: `tests/test_baseline_golden.py`** — an opt-in
+    (`RUN_BASELINE=1`) pytest that runs **transcribe → align → diarize** over the
+    golden clips and writes `golden/baseline.json` (per-clip hypothesis, WER/CER vs
+    reference, segment/word/speaker counts, and **per-stage wall-clock + RTF**).
+    Diarization uses the **vendored** community-1 checkpoint (token-free). This is
+    the timing + end-to-end baseline; it does **not yet** dump the per-stage tensor
+    intermediates (VAD chunks / CTC emissions / trellis) — those are the remaining
+    golden-generator work for the alignment/VAD phases. A first run on CPU
+    (`tiny`/`int8`, 8 clips, 9 min) confirmed: **en+de align via the torchaudio
+    loader, ru via the HF loader (Cyrillic path exercised)**; diarization dominates
+    CPU RTF (~2.6 of ~2.9); tiny-model speaker counts drift (5/5/3 vs true 4) on the
+    no-overlap synthetic dialogs — scored against the RTTM ground truth, not asserted
+    exact.
 - **CTest + Catch2** wired; **ASan + LeakSanitizer on** from the first build (per
   the memory decision); one trivial parity test green to prove the oracle loop.
 - A **CI job** skeleton beside `.github/workflows/python-compatibility.yml` that
@@ -144,7 +157,11 @@ Ninja + vcpkg**.
 - `cmake --build` + `ctest` (with ASan/LSan) green locally and in CI.
 - Goldens exist for the EN/DE/RU clip set, committed under `golden/` with a
   manifest (clip → pinned lib + model revisions → sha256), transcript stored as a
-  separate artifact.
+  separate artifact. **Done:** `golden/` holds the clips + `manifest.json`; the
+  generator scripts (`fetch_datasets.py`, `synthesize_dialog.py`) and the
+  end-to-end baseline (`tests/test_baseline_golden.py` → `golden/baseline.json`,
+  with per-stage timings) are committed. **Remaining:** dump the per-stage tensor
+  intermediates (VAD chunks / CTC emissions / trellis) for the align/VAD goldens.
 - The trivial parity test demonstrates a C++ function result matching Python.
 
 ### Unknowns / open questions (remaining)
