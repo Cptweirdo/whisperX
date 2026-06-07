@@ -199,8 +199,12 @@ Ninja + vcpkg**.
   live strangler-fig oracle loop later stages plug into.
 
 ### Unknowns / open questions (remaining)
-- **pybind in CI** — manylinux build, vcpkg binary caching, build-time budget. Does
-  the compat CI runner have the headroom, or do we need a separate workflow?
+- **pybind in CI** — *largely answered by 2B.* The heavy native deps build via **CMake
+  FetchContent + system ffmpeg with no vcpkg bootstrap**, in a **separate** `cpp-core.yml`
+  job (`audio-stage`) that caches the slow sherpa-onnx build; the fast lane stays dep-free.
+  Still open for prod packaging: the manylinux + vcpkg wheel build-time budget (Phase 5).
+  Build gotcha for any ORT-using stage: pybind picks the right Python headers only with
+  `-DPYBIND11_FINDPYTHON=ON -DPython_EXECUTABLE=<interpreter-with-dev-headers>`.
 
 ---
 
@@ -460,10 +464,10 @@ the VAD segments it and `merge_chunks` packs voiced spans into ≤30 s windows.
 Source: `audio.py:25` (`load_audio`, `SAMPLE_RATE=16000`), `vads/vad.py:19`
 (`Vad.merge_chunks`), `vads/silero.py`.
 
-### Status — slice 2A landed (`merge_chunks` + `vad` token); slice 2B pending (decode)
-Phase 2 is **split into two composable slices** (the Phase 1 pattern). **2A** — the
-pure, dep-free algorithm IP — is **landed**; **2B** — the heavy in-process ffmpeg
-decode + ORT silero VAD — is the remaining work.
+### Status — landed (2A `merge_chunks`/`vad`; 2B in-process decode + ORT silero VAD/`decode`)
+Phase 2 is **split into two composable slices** (the Phase 1 pattern), **both landed**.
+**2A** is the pure, dep-free algorithm IP; **2B** is the heavy in-process `libav*` decode +
+ORT silero VAD.
 
 **Slice 2A (landed).** `Vad.merge_chunks` is ported verbatim to
 `core/vad/merge_chunks.{hpp,cpp}` (`whisperx::vad`, everything `nlohmann::json`), with
@@ -496,10 +500,33 @@ per-function parity vs `_py_merge_chunks` on adversarial lists **plus** golden-r
 `WHISPERX_CORE_STAGES` unset, `vad`, and `db,edits,vad` (tokens compose); `import
 whisperx` clean.
 
-**Slice 2B (pending).** In-process `libav*` decode (`core/audio/decode.{hpp,cpp}` +
-the shared `AudioBuffer`) replacing the ffmpeg subprocess, the ORT silero VAD producing
-the raw segments, behind a **`decode`** token, with vcpkg wiring + a dedicated CI job.
-Gates: PCM sample-for-sample parity vs `whisperx.load_audio`; decode-once; bench RTF.
+**Slice 2B (landed — `decode` token).** In-process `libav*` decode
+(`core/audio/decode.{hpp,cpp}` + the shared `AudioBuffer`) replaces the ffmpeg subprocess;
+`whisperx/audio.py::load_audio` facades to `whisperx_core.load_audio` under **`decode`**
+(`_py_load_audio` is the oracle). The ORT **silero VAD** (`core/audio/vad_silero.cpp`,
+**sherpa-onnx**) emits the raw segments 2A's `merge_chunks` consumes; `whisperx/vads/silero.py`
+facades to it under `decode` (torch.hub stays default/oracle — decoupled, smoke-only). All
+behind a **`WHISPERX_CORE_AUDIO`** CMake option (default **OFF** so the dep-free Phase-0/1/2A
+build + fast CI are untouched): ffmpeg via `pkg-config` (system dev libs for the dev/CI build —
+exact-version match to the CLI → bit-exact PCM; vcpkg ffmpeg for prod), sherpa-onnx vendored via
+FetchContent (it brings its own ONNX Runtime). Pinned silero ONNX in `models/silero_vad.onnx`.
+
+**2B validation — met.** `bindings/test/test_decode_parity.py`: C++ `load_audio` vs the
+subprocess on **every** golden clip + a committed **m4a/AAC** — wavs **bit-exact**, m4a ≤2 LSB
+(`atol=2/32768`). `bindings/test/test_vad_smoke.py`: the ORT silero path runs end-to-end and its
+17 segments feed `merge_chunks` (decoupled — boundaries loose, not torch-parity).
+`tests/test_pipeline_contract.py` decode-once contract green with `decode` on. 40/40 CTest; full
+`uv run pytest tests/` green (226 passed, 15 skipped) across `WHISPERX_CORE_STAGES` ∈ {unset,
+`decode`, `vad,decode`, `db,edits,vad,decode`}; `import whisperx` clean (facade `hasattr`-guarded).
+`bench/bench_audio` RTF: decode ≈ 0.0015, VAD ≈ 0.003 (≪ 1) on the 60 s EN dialog.
+
+**Two non-obvious 2B build gotchas (settled):** (1) sherpa-onnx bundles its own `nlohmann_json`
+and unconditionally `add_subdirectory()`s it (target-name collision) → `CMakeLists.txt` guards
+that one line so sherpa reuses our `nlohmann_json`. (2) **Link ORT shared, not static** — the
+prebuilt static `libonnxruntime.a` (glibc2_17 toolchain) corrupts the heap (`free(): invalid
+pointer` inside ORT `DeviceDiscovery`'s `std::regex`) when linked into a system-libstdc++ 13
+binary; `BUILD_SHARED_LIBS ON` in sherpa's scope selects sherpa's shared/C-API ORT path
+(internals stay behind `libonnxruntime.so`'s C boundary).
 
 ### Goals
 - **In-memory decode** to float32/16 k/mono via the **ffmpeg libraries**
@@ -623,22 +650,31 @@ CMake/vcpkg plumbing + PCM-parity test — this is the deterministic, high-value
 de-risks the toolchain. (2) the vcpkg CI job. (3) the ORT silero VAD + bench (depends on
 sherpa-onnx vendoring, the looser half).
 
-**Risks / open decisions (carry forward).**
-- **Resampler/dither parity** — the ffmpeg CLI and the linked `swresample` must use the
-  **same engine + dither**: default `swr` (not soxr) and the *same* `dither_method`/
-  scale, or s16 output will differ by ±1 LSB. For the 16 kHz-mono goldens resampling is
-  a no-op (so parity is exact); the risk is real only for off-rate inputs — pin the swr
-  options explicitly and document the tolerance.
-- **Downmix coefficients** — stereo→mono uses ffmpeg's default matrix; match it (moot
-  for the mono goldens, relevant for real stereo input).
-- **silero model asset** — which silero ONNX (sherpa's bundled `silero_vad.onnx`) and
-  where it's fetched/vendored from; pin the revision.
-- **sherpa-onnx vs hand-rolled VAD** — if vendoring sherpa proves heavy, an alternative
-  is a thin ORT-only re-implementation of silero windowing; decided during build.
-- **ffmpeg version pin + license/size** — pin the ffmpeg version (decode determinism),
-  finalize the LGPL feature-trim + distribution sign-off (the Option-B residuals above).
-- **pybind in CI headroom** — the manylinux + vcpkg build-time budget (binary caching is
-  the mitigation).
+**Risks / open decisions — outcomes (2B landed).**
+- **Resampler/dither parity** — *resolved.* Linking the **same `libav*`/`swresample`** the
+  CLI wraps (default `swr`, no dither override) gives **bit-exact** PCM on the 16 kHz-mono
+  wav goldens and **≤2 LSB** on a 44.1 kHz-stereo m4a (AAC decode + downmix + resample) —
+  `bindings/test/test_decode_parity.py`. The dev/CI build uses the **system** ffmpeg-dev,
+  whose version matches the CLI, so the engines are identical by construction.
+- **Downmix coefficients** — *resolved* (covered by the m4a parity above: ffmpeg's default
+  stereo→mono matrix on both sides).
+- **silero model asset** — *resolved.* Pinned `models/silero_vad.onnx` (snakers4 silero v5,
+  sha in `models/README.md`); loaded by sherpa's VAD. Decoupled, so the revision only needs
+  to load (not byte-match torch silero).
+- **sherpa-onnx vs hand-rolled VAD** — *resolved:* **vendored sherpa-onnx** via FetchContent
+  (it brings its own ONNX Runtime). It builds heavy but cached; the hand-rolled fallback was
+  not needed.
+- **ffmpeg version pin + license/size** — partially open: the **system** ffmpeg pins the dev
+  build; the **vcpkg ffmpeg** entry (LGPL feature-trim) + a distribution license sign-off are
+  still the prod-packaging task (carry to Phase 5/packaging).
+- **Heavy-deps build path** — *resolved & proven without vcpkg:* `WHISPERX_CORE_AUDIO=ON`
+  builds ffmpeg (pkg-config) + sherpa/ORT (FetchContent) with **no vcpkg bootstrap**; CI caches
+  the sherpa build. **Settled cross-cutting fact for Phases 3–4 (which also use ORT):** link
+  ORT **shared, not the static archive** — the prebuilt static `libonnxruntime.a` (glibc2_17
+  libstdc++) corrupts the heap (`free(): invalid pointer` in ORT `DeviceDiscovery`'s
+  `std::regex`) inside a system-libstdc++ binary; `BUILD_SHARED_LIBS ON` (sherpa scope) selects
+  the shared/C-API path. Also: sherpa bundles its own `nlohmann_json` — guard its
+  `add_subdirectory` to reuse ours.
 
 ---
 
@@ -743,6 +779,20 @@ run to completion." It is the recommended Phase 3 approach: **batch inference
 - **Per-language model proliferation** — 5 + 38 models. Export pipeline for all?
   Which to bundle vs download? (Ties to the model-asset / download strategy.)
 
+### Build/runtime inheritance from Phase 2B (don't rediscover)
+The aligner's ONNX Runtime + audio access are already wired by 2B's
+`WHISPERX_CORE_AUDIO` path — reuse it rather than standing ORT up again:
+- **ORT comes through the vendored sherpa-onnx** (FetchContent, its own ORT) and **must be
+  linked shared** — the prebuilt static `libonnxruntime.a` (glibc2_17 libstdc++) corrupts the
+  heap (`free(): invalid pointer` in ORT `DeviceDiscovery`'s `std::regex`) inside a
+  system-libstdc++ binary. `BUILD_SHARED_LIBS ON` in sherpa's scope selects the shared/C-API
+  ORT. (sherpa exposes ORT C++ headers too if the aligner wants a raw `Ort::Session`.)
+- **Decode-once is available:** `core/audio/audio_buffer.hpp`'s `AudioBuffer` + zero-copy
+  `slice(f0,f1)` is exactly the `audio[:, f1:f2]` per-segment read (`alignment.py:246`) — the
+  batched forward passes slice the one decoded buffer, no re-decode.
+- **emission tolerance is measured, not guessed** — `emission_atol = 0.006` (Phase 0); ORT is
+  fp32-`atol`-compared, never byte-equal.
+
 ---
 
 ## Phase 4 — ASR backends (4a) + diarize & assign (4b)
@@ -765,6 +815,14 @@ Source: `asr.py:31` (`WhisperModel`), `:106` (`FasterWhisperPipeline`), `:325`
 **per-speaker embeddings** alongside the turns, not just the bare DataFrame the
 brief originally assumed. The C++ port must mirror this optional second return
 (and the `num/min/max_speakers` controls).
+
+**Build inheritance from Phase 2B:** **sherpa-onnx is already vendored and building**
+(FetchContent under `WHISPERX_CORE_AUDIO`, bringing its own ONNX Runtime) — 4a (sherpa
+Whisper) and 4b (sherpa pyannote-seg + CAM++) reuse that integration, not a fresh ORT
+setup. Heed the 2B settled facts: link **ORT shared, not static** (the glibc2_17
+`libonnxruntime.a` → `std::regex`/heap crash), and the sherpa-`nlohmann_json` collision
+guard. The diarization parity goldens still come from the **vendored**
+`app/models/speaker-diarization-community-1.3533c8cf/` checkpoint (no HF token).
 
 ### Goals — 4a (ASR backends)
 - An **ASR backend interface** producing `TranscriptionResult` (`segments` text +

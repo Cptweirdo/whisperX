@@ -25,6 +25,10 @@ endif()
 option(WHISPERX_CORE_SANITIZE "Build native tests with ASan + LeakSanitizer" ON)
 option(WHISPERX_CORE_PYMODULE "Build the pybind11 Python module" ON)
 option(WHISPERX_CORE_TESTS "Build the Catch2 test suite" ON)
+# Phase 2B: in-process libav* decode + ORT silero VAD. OFF by default so the
+# dep-free Phase-0/1/2A build (and the fast CI lane) need no ffmpeg/ORT/sherpa.
+# ON pulls system ffmpeg (pkg-config) + a vendored sherpa-onnx (FetchContent).
+option(WHISPERX_CORE_AUDIO "Build the audio decode + VAD stage (ffmpeg + sherpa-onnx)" OFF)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -72,6 +76,73 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
 
+# --- audio decode + VAD stage (Phase 2B, opt-in heavy deps) -------------------
+# Kept in its own static lib (not whisperx_core_lib) so the dep-free lib + its
+# ASan/UBSan tests never pull ffmpeg/sherpa. Linked by the pybind module + bench.
+if(WHISPERX_CORE_AUDIO)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+    libavformat libavcodec libswresample libavutil)
+
+  # sherpa-onnx (ORT silero VAD) — vendored from source, trimmed to the VAD
+  # path: no python/tests/portaudio/websocket/binaries/TTS (TTS pulls espeak-ng).
+  # sherpa downloads its own ONNX Runtime, so no separate ORT wiring is needed.
+  set(SHERPA_ONNX_ENABLE_PYTHON OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_CHECK OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_PORTAUDIO OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_GPU OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_BINARY OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_JNI OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_C_API ON CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_TTS OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_BUILD_C_API_EXAMPLES OFF CACHE BOOL "" FORCE)
+  # Build sherpa + ONNX Runtime as SHARED so ORT's C++ internals (it uses
+  # std::regex for device discovery) stay behind libonnxruntime.so's C API.
+  # The static ORT archive is compiled against an older (glibc2_17) libstdc++;
+  # linking it into our system-libstdc++ binary corrupts std::regex/heap
+  # (free(): invalid pointer in DeviceDiscovery). Shared = one clean C boundary.
+  # NB: a directory-scoped (non-cache) set so only sherpa — declared below —
+  # turns shared; our explicit-STATIC libs and the earlier SQLiteCpp/json (above)
+  # are unaffected, and nothing leaks into the cache for audio-off reconfigures.
+  set(BUILD_SHARED_LIBS ON)
+  FetchContent_Declare(
+    sherpa_onnx
+    GIT_REPOSITORY https://github.com/k2-fsa/sherpa-onnx
+    GIT_TAG v1.13.2)
+  # sherpa bundles its own nlohmann_json (v3.12) and unconditionally
+  # add_subdirectory()s it — which collides with our nlohmann_json target.
+  # Populate manually and guard that one line so sherpa reuses ours.
+  FetchContent_GetProperties(sherpa_onnx)
+  if(NOT sherpa_onnx_POPULATED)
+    FetchContent_Populate(sherpa_onnx)
+    file(READ ${sherpa_onnx_SOURCE_DIR}/cmake/json.cmake _sherpa_json_cmake)
+    string(REPLACE
+      "add_subdirectory(\${json_SOURCE_DIR} \${json_BINARY_DIR} EXCLUDE_FROM_ALL)"
+      "if(NOT TARGET nlohmann_json)\n    add_subdirectory(\${json_SOURCE_DIR} \${json_BINARY_DIR} EXCLUDE_FROM_ALL)\n  endif()"
+      _sherpa_json_cmake "${_sherpa_json_cmake}")
+    file(WRITE ${sherpa_onnx_SOURCE_DIR}/cmake/json.cmake "${_sherpa_json_cmake}")
+    add_subdirectory(${sherpa_onnx_SOURCE_DIR} ${sherpa_onnx_BINARY_DIR}
+      EXCLUDE_FROM_ALL)
+  endif()
+
+  add_library(whisperx_core_audio STATIC
+    core/audio/decode.cpp
+    core/audio/vad_silero.cpp)
+  target_include_directories(whisperx_core_audio PUBLIC core)
+  target_link_libraries(whisperx_core_audio PUBLIC
+    whisperx_core_lib nlohmann_json::nlohmann_json PkgConfig::FFMPEG
+    sherpa-onnx-c-api)
+  target_compile_definitions(whisperx_core_audio PUBLIC WHISPERX_CORE_AUDIO)
+  target_compile_options(whisperx_core_audio PRIVATE -Wall -Wextra)
+  set_target_properties(whisperx_core_audio PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+  # decode + VAD RTF bench (chrono-based, no Google Benchmark dep).
+  add_executable(bench_audio bench/bench_audio.cpp)
+  target_link_libraries(bench_audio PRIVATE whisperx_core_audio)
+endif()
+
 # --- pybind11 oracle module --------------------------------------------------
 if(WHISPERX_CORE_PYMODULE)
   FetchContent_Declare(
@@ -82,6 +153,10 @@ if(WHISPERX_CORE_PYMODULE)
   FetchContent_MakeAvailable(pybind11)
   pybind11_add_module(whisperx_core adapters/py/whisperx_core.cpp)
   target_link_libraries(whisperx_core PRIVATE whisperx_core_lib)
+  if(WHISPERX_CORE_AUDIO)
+    target_link_libraries(whisperx_core PRIVATE whisperx_core_audio)
+    target_compile_definitions(whisperx_core PRIVATE WHISPERX_CORE_AUDIO)
+  endif()
 endif()
 
 # --- Catch2 tests (CTest) ----------------------------------------------------

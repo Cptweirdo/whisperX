@@ -79,3 +79,57 @@ jobs:
               uv run --no-project --with pytest pytest tests/test_turn_edits.py -q
             echo "::endgroup::"
           done
+
+  # Phase 2B: the heavy lane — in-process libav* decode + ORT silero VAD
+  # (WHISPERX_CORE_AUDIO=ON). System ffmpeg dev libs + a vendored sherpa-onnx
+  # (FetchContent, which brings its own ONNX Runtime). The parity/smoke tests
+  # import only the built module (+ numpy), so no heavy `whisperx` sync. The
+  # sherpa build is the slow step, so build/_deps is cached on the sherpa tag.
+  audio-stage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install build tools + ffmpeg dev libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build \
+            libavformat-dev libavcodec-dev libswresample-dev libavutil-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.11.6"
+          python-version: "3.12"
+
+      # Cache the FetchContent deps (sherpa-onnx source + build + downloaded ORT)
+      # keyed on this file's sherpa tag, so only the first run pays the build.
+      - name: Cache sherpa-onnx build
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: build/_deps
+          key: sherpa-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure (WHISPERX_CORE_AUDIO=ON)
+        run: |
+          cmake -S . -B build -G Ninja -DWHISPERX_CORE_AUDIO=ON \
+            -DPython_EXECUTABLE="$(uv run --no-project python -c 'import sys;print(sys.executable)')"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: CTest (ASan/UBSan — dep-free lib unaffected)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Decode parity + VAD smoke
+        run: |
+          PYTHONPATH=build uv run --no-project --with pytest --with numpy \
+            pytest bindings/test/test_decode_parity.py \
+                   bindings/test/test_vad_smoke.py -v
+
+      - name: Bench (decode + VAD RTF)
+        run: ./build/bench_audio golden/clips/en_dialog.wav models/silero_vad.onnx

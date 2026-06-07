@@ -8,6 +8,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <cstring>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -22,6 +23,13 @@
 #include "text/edit_distance.hpp"
 #include "text/sequence_matcher.hpp"
 #include "vad/merge_chunks.hpp"
+
+#ifdef WHISPERX_CORE_AUDIO
+#include <pybind11/numpy.h>
+
+#include "audio/decode.hpp"
+#include "audio/vad_silero.hpp"
+#endif
 
 namespace py = pybind11;
 using nlohmann::json;
@@ -346,6 +354,52 @@ void bind_vad(py::module_& m) {
         "of {start, end, segments:[[s,e],…]} chunks.");
 }
 
+#ifdef WHISPERX_CORE_AUDIO
+// In-process libav* decode (replaces the ffmpeg subprocess; `decode` token).
+// Built only with WHISPERX_CORE_AUDIO; the Python facade hasattr-guards so a
+// dep-free module degrades to the subprocess oracle.
+void bind_audio(py::module_& m) {
+    namespace audio = whisperx::audio;
+    m.def(
+        "load_audio",
+        [](const std::string& path, int sr) {
+            audio::AudioBuffer buf = audio::load_audio(path, sr);
+            // Copy out to a 1-D float32 numpy array (today's load_audio contract).
+            py::array_t<float> arr(static_cast<py::ssize_t>(buf.samples.size()));
+            std::memcpy(arr.mutable_data(), buf.samples.data(),
+                        buf.samples.size() * sizeof(float));
+            return arr;
+        },
+        py::arg("path"), py::arg("sr") = audio::kSampleRate,
+        "Decode an audio file in-process (libav*) to mono float32 PCM at sr Hz "
+        "in [-1, 1) — sample-for-sample equivalent to whisperx.load_audio.");
+
+    using SegOut = std::tuple<double, double, std::string>;
+    m.def(
+        "silero_segments",
+        [](py::array_t<float, py::array::c_style | py::array::forcecast> waveform,
+           const std::string& model_path, int sr, double onset,
+           double chunk_size) {
+            audio::AudioBuffer buf;
+            buf.sample_rate = sr;
+            buf.samples.assign(waveform.data(), waveform.data() + waveform.size());
+            auto segs =
+                audio::silero_segments(buf, model_path, onset, chunk_size);
+            std::vector<SegOut> out;
+            out.reserve(segs.size());
+            for (const auto& s : segs)
+                out.emplace_back(s.start, s.end,
+                                 s.speaker.value_or("UNKNOWN"));
+            return out;
+        },
+        py::arg("waveform"), py::arg("model_path"),
+        py::arg("sr") = audio::kSampleRate, py::arg("onset") = 0.5,
+        py::arg("chunk_size") = 30.0,
+        "Silero VAD (sherpa-onnx / ORT) over a float32 waveform -> list of "
+        "(start, end, 'UNKNOWN') speech segments in seconds (pre-merge_chunks).");
+}
+#endif
+
 }  // namespace
 
 PYBIND11_MODULE(whisperx_core, m) {
@@ -375,4 +429,7 @@ PYBIND11_MODULE(whisperx_core, m) {
     bind_session_store(m);
     bind_edits(m);
     bind_vad(m);
+#ifdef WHISPERX_CORE_AUDIO
+    bind_audio(m);
+#endif
 }

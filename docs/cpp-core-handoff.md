@@ -122,10 +122,10 @@ tokens. Full detail in the Phase 1 brief; the settled facts for later phases:
   sidecar writes with a separate `files_lock_`; pybind calls keep the GIL (behaviour
   == today's Python store). GIL-release is a later tuning.
 
-## Phase 2 — slice 2A landed (`merge_chunks` + `vad` token); 2B pending (decode)
+## Phase 2 — landed (2A `merge_chunks`/`vad` + 2B in-process decode/silero VAD/`decode`)
 
-Phase 2 is **split into two composable slices** (the Phase 1 pattern). The pure,
-dep-free algorithm IP landed first; the heavy in-process decode + ORT VAD is next.
+Phase 2 is **split into two composable slices** (the Phase 1 pattern), **both landed**.
+2A is the pure, dep-free algorithm IP; 2B is the heavy in-process decode + ORT VAD.
 
 - **`merge_chunks` is native (`vad` token).** `core/vad/merge_chunks.{hpp,cpp}` is a
   verbatim port of `whisperx/vads/vad.py::Vad.merge_chunks` (`whisperx::vad`, all
@@ -145,10 +145,29 @@ dep-free algorithm IP landed first; the heavy in-process decode + ORT VAD is nex
   `bindings/test/test_vad_parity.py` (per-function + golden-replay, exact). 40/40 CTest,
   73 bindings, full pytest green (226) across `WHISPERX_CORE_STAGES` ∈ {unset, `vad`,
   `db,edits,vad`}.
-- **Slice 2B (pending):** in-process `libav*` decode (`core/audio/decode.{hpp,cpp}` +
-  the shared `AudioBuffer`) replacing the ffmpeg subprocess, the ORT silero VAD, behind
-  a **`decode`** token, with vcpkg wiring + a dedicated CI job — gated by PCM
-  sample-for-sample parity, decode-once, and bench RTF.
+- **Slice 2B landed (`decode` token).** In-process `libav*` decode
+  (`core/audio/decode.{hpp,cpp}` + the shared `AudioBuffer`) replaces the ffmpeg
+  **subprocess**; `whisperx/audio.py::load_audio` is now a facade routing to
+  `whisperx_core.load_audio` under **`decode`** (`_py_load_audio` is the oracle). The ORT
+  **silero VAD** (`core/audio/vad_silero.cpp`, **sherpa-onnx**) emits the raw segments 2A's
+  `merge_chunks` consumes; `whisperx/vads/silero.py` facades to it under `decode` (torch.hub
+  stays the default/oracle — decoupled, smoke-only). Built behind a **`WHISPERX_CORE_AUDIO`**
+  CMake option (default OFF → the dep-free fast lane is untouched): ffmpeg via `pkg-config`
+  (system dev libs locally/CI; vcpkg ffmpeg for prod), sherpa-onnx vendored via FetchContent
+  (it brings its own ONNX Runtime; built **shared** so ORT's C++ internals stay behind the C
+  API). Pinned silero ONNX in `models/silero_vad.onnx`.
+- **Two non-obvious 2B build gotchas (settled):** (1) sherpa bundles its own `nlohmann_json`
+  and unconditionally `add_subdirectory()`s it → guard that one line so it reuses ours
+  (see `CMakeLists.txt`). (2) Link ORT **shared**, not the static archive — the prebuilt
+  static `libonnxruntime.a` is compiled against an older (glibc2_17) libstdc++ and corrupts
+  the heap (`free(): invalid pointer` in `DeviceDiscovery`'s `std::regex`) when pulled into a
+  system-libstdc++ binary; `BUILD_SHARED_LIBS ON` (sherpa scope) selects the shared/C-API path.
+- **Gates met:** PCM **sample-for-sample** parity vs the subprocess on every golden clip incl.
+  a committed **m4a/AAC** (wavs bit-exact, m4a ≤2 LSB) — `bindings/test/test_decode_parity.py`;
+  VAD smoke (`test_vad_smoke.py`); decode-once contract (`tests/test_pipeline_contract.py`);
+  40/40 CTest; full `uv run pytest tests/` green (226) across `WHISPERX_CORE_STAGES` ∈ {unset,
+  `decode`, `vad,decode`, `db,edits,vad,decode`}; bench RTF (`bench/bench_audio`, decode ≈ VAD
+  RTF ≪ 1). New vcpkg-less CI job (`cpp-core.yml` `audio-stage`, system ffmpeg + cached sherpa).
 
 ## Where to start
 

@@ -103,6 +103,15 @@
       "sha256": "3df29de88bc38a3f7fb04111420d7ac5710acf6243385f8f4dc1af0b96daaab0",
       "synthetic": true,
       "transcript": "clips/ru_dialog.json"
+    },
+    "ru_cv_71085_m4a": {
+      "file": "clips/ru_cv_71085.m4a",
+      "source_clip": "ru_cv_71085",
+      "sample_rate": 44100,
+      "channels": 2,
+      "codec": "aac",
+      "sha256": "3a6f527984078c8c47cfa1aa3f5d8b1c9c783924763e6a407f0823c8c200107e",
+      "note": "ffmpeg-decode parity (AAC, 44.1k stereo -> resample+downmix to 16k mono)"
     }
   }
 }
