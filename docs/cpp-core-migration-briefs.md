@@ -1,5 +1,8 @@
 # C++ Core Migration — Per-Phase Briefs
 
+> **Implementing this?** Start with the [`cpp-core-handoff.md`](./cpp-core-handoff.md)
+> kickoff prompt, then read "How to read these briefs" below.
+>
 > Execution briefs for each phase of the [`cpp-core-migration-plan.md`](./cpp-core-migration-plan.md)
 > roadmap (§6). One brief per phase, each with **Context** (why, what it depends
 > on, the Python code it maps to), **Goals** (concrete deliverables),
