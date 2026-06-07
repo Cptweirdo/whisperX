@@ -932,6 +932,17 @@ setup. Heed the 2B settled facts: link **ORT shared, not static** (the glibc2_17
 guard. The diarization parity goldens still come from the **vendored**
 `app/models/speaker-diarization-community-1.3533c8cf/` checkpoint (no HF token).
 
+**Model assets — extend the 3B mirror pattern (decide-during).** 4a/4b need *runtime*
+ONNX: sherpa **Whisper** (base ~150 MB … large ~3 GB), **pyannote-seg-3.0**, **CAM++**.
+Small fixed models can be **committed** like 2B's `models/silero_vad.onnx`; the large
+Whisper models can't, so reuse the **3B mirror mechanism** already in the tree —
+`huggingface_hub` pull + cache, a pinned `meta.json`/`contract_version`, offline export
+tooling (the "we host our own parity-pinned export" decision). sherpa publishes
+pre-exported Whisper/pyannote ONNX in its model zoo; if we pin those, mirror+sha-pin them
+the same way (don't hot-link an upstream URL). Whether to bundle the default model or
+lazy-download on first run is the **Phase-5 packaging policy** (the *mechanism* —
+`load_align_model`-style pull+cache — is already built for 3B; ASR/diarize reuse it).
+
 ### Goals — 4a (ASR backends)
 - An **ASR backend interface** producing `TranscriptionResult` (`segments` text +
   `language` + `avg_logprob`) from the Phase-2 VAD chunks. Ship **sherpa-onnx
@@ -984,6 +995,13 @@ guard. The diarization parity goldens still come from the **vendored**
 - **`avg_logprob` semantics** — used downstream/UI; does sherpa expose an
   equivalent, and is the scale comparable?
 - **num/min/max speakers** params — parity of the speaker-count controls.
+- **Batched inference parity (inherit the 3B gate)** — if 4a batches VAD chunks through
+  Whisper (or 4b windows pyannote-seg), apply the 3B finding: **a model that normalizes
+  over the time axis corrupts right-padded batch-mates, and no attention mask recovers
+  it** (the torchaudio `group_norm` result — eager drift ≈ 6 ≫ atol). *Prove* batched ==
+  single-segment within tolerance before trusting a batched path; gate batching on that,
+  per model. Whisper's fixed 30 s mel padding likely makes it uniform-length (low risk),
+  but verify rather than assume — it's a golden-parity gate, not just perf.
 
 ---
 
