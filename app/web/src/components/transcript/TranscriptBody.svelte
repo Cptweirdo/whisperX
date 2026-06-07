@@ -136,6 +136,7 @@
       </div>
 
       {#if editing === t.index}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="turn__text is-editing"
           contenteditable="true"
@@ -155,7 +156,7 @@
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="turn__text" ondblclick={() => enterEdit(t)}>
-          {#each t.words as w (w.gi)}<span
+          {#each t.words as w (w.gi)}<!-- svelte-ignore a11y_no_noninteractive_tabindex --><span
               class={wordClass(w)}
               class:seg--untranslated={w.stale}
               onclick={() => w.start != null && onseek(w.start + 0.001)}

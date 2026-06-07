@@ -136,7 +136,7 @@
 
     <div class="field" style="display:flex;gap:18px">
       <div style="flex:1">
-        <label class="field__label">Transcription Language</label>
+        <span class="field__label">Transcription Language</span>
         <sl-select value={language} placeholder="Auto-detect" hoist onsl-change={(e: any) => (language = e.target.value)}>
           {#each languages as l (l.code)}
             <sl-option value={l.code}>{l.label}</sl-option>
@@ -144,7 +144,7 @@
         </sl-select>
       </div>
       <div style="flex:1">
-        <label class="field__label">Model</label>
+        <span class="field__label">Model</span>
         <sl-select value={model} hoist onsl-change={(e: any) => (model = e.target.value)}>
           {#each models.models as m (m.name)}
             <sl-option value={m.name}>{models.modelLabel(m)}</sl-option>
@@ -170,7 +170,7 @@
     </div>
 
     <div class="field">
-      <label class="field__label">Audio Source</label>
+      <span class="field__label">Audio Source</span>
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <div
         class="dropzone"

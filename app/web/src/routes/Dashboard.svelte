@@ -48,7 +48,7 @@
         ondelete={(id, name) => deleteModal?.open(id, name)}
       />
     {:else}
-      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
       <article class="feature feature--empty" onclick={() => newModal?.open()}>
         <div class="dropzone__icon"><sl-icon name="file-earmark-arrow-up"></sl-icon></div>
         <h2 class="feature__title" style="margin-top:0">No recordings yet</h2>

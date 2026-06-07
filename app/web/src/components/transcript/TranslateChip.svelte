@@ -5,6 +5,8 @@
 
   let open = $state(false);
   const label = $derived(session.activeLang ? session.nativeOf(session.activeLang) : "Translate");
+  const ready = $derived(session.translationReady);
+  const reason = $derived(session.translationDisabledReason);
   const codes = $derived(Object.keys(session.translations));
 
   function choose(code: string) {
@@ -86,16 +88,21 @@
         </button>
       {/each}
 
-      <button
-        class="lang-opt lang-opt--enroll"
-        type="button"
-        onclick={() => {
-          open = false;
-          onadd();
-        }}
-      >
-        <sl-icon name="plus-lg"></sl-icon> Add a translation…
-      </button>
+      <sl-tooltip content={reason} disabled={ready}>
+        <button
+          class="lang-opt lang-opt--enroll"
+          class:is-disabled={!ready}
+          type="button"
+          aria-disabled={!ready}
+          onclick={() => {
+            if (!ready) return;
+            open = false;
+            onadd();
+          }}
+        >
+          <sl-icon name="plus-lg"></sl-icon> Add a translation…
+        </button>
+      </sl-tooltip>
     </div>
   {/if}
 </div>

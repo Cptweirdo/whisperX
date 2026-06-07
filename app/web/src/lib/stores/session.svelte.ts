@@ -49,6 +49,21 @@ class SessionStore {
   get googleKeySet(): boolean {
     return !!settings.data?.google_key?.key_set;
   }
+  get translationServiceId(): string {
+    return settings.data?.translation_service || "google";
+  }
+  get translationServiceLabel(): string {
+    const svcs = settings.data?.translation_services ?? [];
+    return svcs.find((s: any) => s.id === this.translationServiceId)?.label || "The translation service";
+  }
+  // Google (the only provider today) needs an API key; a future keyless
+  // provider would be ready unconditionally.
+  get translationReady(): boolean {
+    return this.translationServiceId === "google" ? this.googleKeySet : true;
+  }
+  get translationDisabledReason(): string {
+    return `${this.translationServiceLabel} needs an API key. Add one in Settings → Translation.`;
+  }
   get translationLanguages(): { code: string; name: string; native: string }[] {
     return settings.data?.translation_languages ?? [];
   }

@@ -77,7 +77,7 @@
       <strong>Start fresh</strong> overwrites the backup with this device's data.
     </div>
   {:else if s?.linked}
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_tabindex -->
     <div
       class="backup__provider backup__provider--on"
       role={state === "backing_up" || state === "restoring" ? undefined : "button"}

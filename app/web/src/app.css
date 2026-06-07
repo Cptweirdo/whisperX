@@ -482,6 +482,8 @@ body, body * { font-kerning: normal; }
 .lang-opt__stat.error { color: var(--error); }
 .lang-opt--enroll { color: var(--on-surface); font-family: var(--mono); font-size: 13px; font-weight: 500; border-bottom: 0; }
 .lang-opt--enroll sl-icon { font-size: 15px; }
+.lang-opt.is-disabled { opacity: 0.45; cursor: not-allowed; }
+.lang-opt.is-disabled:hover { background: none; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.9s linear infinite; display: inline-flex; }

@@ -44,10 +44,19 @@ function shoelaceAssets() {
   };
 }
 
+// Shoelace custom elements (<sl-*>) are interactive controls, but Svelte's a11y
+// pass treats every unknown tag as a non-interactive element and flags its
+// click/keydown/role/tabindex usage. Drop those false positives; keep every
+// other a11y warning (real <label>s, plain <div>/<span>, etc.).
+function onwarn(warning: any, handler: (w: any) => void) {
+  if (warning.code?.startsWith("a11y") && /<sl-[a-z][\w-]*>/.test(warning.message ?? "")) return;
+  handler(warning);
+}
+
 export default defineConfig(({ command }) => ({
   // Built assets are served by Flask from /static/spa/; dev runs at root.
   base: command === "build" ? "/static/spa/" : "/",
-  plugins: [svelte(), shoelaceAssets()],
+  plugins: [svelte({ onwarn }), shoelaceAssets()],
   build: {
     outDir: "../static/spa",
     emptyOutDir: true,

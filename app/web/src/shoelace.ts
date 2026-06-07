@@ -17,3 +17,4 @@ import "@shoelace-style/shoelace/dist/components/dialog/dialog.js";
 import "@shoelace-style/shoelace/dist/components/alert/alert.js";
 import "@shoelace-style/shoelace/dist/components/spinner/spinner.js";
 import "@shoelace-style/shoelace/dist/components/range/range.js";
+import "@shoelace-style/shoelace/dist/components/tooltip/tooltip.js";

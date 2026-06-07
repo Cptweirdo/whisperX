@@ -130,6 +130,7 @@
     <span>{rate % 1 === 0 ? rate.toFixed(1) : rate}x</span>
   </div>
   <div class="player__volume">
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <span class="icon-btn" title="Mute / unmute" onclick={toggleMute}>
       <sl-icon name={volIcon}></sl-icon>
     </span>

@@ -134,7 +134,7 @@
         <h1 class="ob__title">Connect Hugging Face.<br /><span style="font-weight:400;opacity:.6">Optional.</span></h1>
         <p class="ob__lede">Speaker diarization works out of the box — the pyannote model is bundled with Manuscript. Adding a free Hugging Face token is <strong>optional</strong>; it only lets you fetch model updates later.</p>
         <div class="ob__content">
-          <label class="ob__label">Access Token <span style="font-weight:400;opacity:.55">— optional</span></label>
+          <span class="ob__label">Access Token <span style="font-weight:400;opacity:.55">— optional</span></span>
           <div class="ob__tokenField">
             <sl-input type="password" password-toggle placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
               value={token} autocomplete="off" onsl-input={(e: any) => { token = e.target.value; verify = null; }}>
