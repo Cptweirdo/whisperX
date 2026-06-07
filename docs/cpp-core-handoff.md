@@ -34,6 +34,48 @@ engine — not a rewrite of the app.
 - **Build:** **CMake + Ninja + vcpkg**, CTest, Catch2 (tests) + Google Benchmark (bench).
 - **Dataset:** English + German + Russian, from **Common Voice Spontaneous Speech** (CC0) + LibriSpeech (EN). Two committed scripts in `golden/`: `fetch_datasets.py` pulls single-speaker ASR/align clips (`en_libri`; `ru_cv_*` for HF align loader + Cyrillic) + one m4a for ffmpeg decode; `synthesize_dialog.py` concats distinct speakers into **4-speaker synthetic dialogs** (`en/de/ru_dialog`, seed-pinned, byte-identical) with ground-truth RTTM for diarization. Pin lib + model revisions; diarization parity goldens from the **vendored** `app/models/speaker-diarization-community-1.3533c8cf/` checkpoint (no HF token). *Gap:* no real-overlap diarization (synthetic dialogs are sequential, no overlap) — add AMI later if needed.
 
+## Phase 0 — landed (status + findings)
+
+Phase 0 is **complete** (branch `cpp-core/phase0-scaffold`). The scaffold, goldens,
+and decision-gate measurements are in; the findings below are now *settled facts*
+for later phases — treat them like the "Already decided" list.
+
+**What exists now**
+- **`whisperx_core` pybind module** — root `CMakeLists.txt` (CMake+Ninja), pure-algo
+  lib in `core/`, the module in `adapters/py/`. Light deps (pybind11/Catch2/
+  nlohmann-json) via **FetchContent** so a fresh checkout builds with no vcpkg
+  bootstrap; `vcpkg.json` seeds the heavy runtime deps for the production toolchain.
+- **Tests/CI** — Catch2 + CTest under **ASan/UBSan** (`core/tests/`); the Python
+  **parity oracle** `bindings/test/test_core_parity.py` (C++ `edit_distance` ==
+  Python, bit-for-bit, incl. Cyrillic); CI in `.github/workflows/cpp-core.yml`
+  (build + CTest + parity, no heavy `whisperx` sync).
+- **Goldens** (`golden/`) — EN/DE/RU clips + `manifest.json`; the timing/WER baseline
+  (`tests/test_baseline_golden.py` → `baseline.json`); and the **per-stage tensor
+  intermediates** (`dump_goldens.py` → `intermediates/`: merged VAD chunks, CTC
+  emissions, backtrack path, char-segments, words, **transcript-as-separate-input**),
+  guarded torch-free by `tests/test_golden_intermediates.py`.
+
+**Decision-gate findings (carry into later phases)**
+- **wav2vec2 → ONNX works** (`WAV2VEC2_ASR_BASE_960H`, **opset 17**) and runs under
+  ORT — the highest-risk Phase-3 step is de-risked early. `golden/measure_ort_tolerance.py`.
+- **Tolerance budget is measured, not guessed:** ORT-vs-torch emission drift = **max
+  2.8e-3 / mean 2.3e-4**; cross-process torch run-noise ≈ **2.9e-3** (float
+  reduction-order). ⇒ **`emission_atol = 0.006`** (2× max drift), timings ±1 frame,
+  scores ±0.01 (`golden/intermediates/manifest.json`, `tolerance_report.json`).
+- **Emissions are never byte-equal** — only `atol`-compared. Reinforces the
+  decoupled-goldens rule; applies to *any* fp32 tensor golden.
+- **Trellis is not committed** (deterministically recomputable from emission+tokens).
+  The exact-match parity gates are `path` / `char_segments` / `merged_chunks` /
+  `speaker_labels` / `tokens`; emissions are the only fp32-`atol` golden.
+- **Wildcard column:** align.py appends a wildcard label column when a transcript char
+  is outside the model dictionary (e.g. `en_libri`: model emits 29 labels, golden is
+  30). The C++ aligner must reproduce this extension (max non-blank score per frame)
+  before trellis/backtrack.
+
+**Remaining for later phases (not Phase 0):** open a PR for the branch; wire the heavy
+vcpkg deps (ORT/sherpa-onnx) as the stages that need them land; port the existing
+`tests/test_pipeline_contract.py` writer byte-goldens + constants to Catch2.
+
 ## Where to start
 
 **Phase 0 is a decision gate, not just CMake setup.** Deliver: the `whisperx_core`
