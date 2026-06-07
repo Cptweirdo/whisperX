@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "whisperx-core",
+  "version-string": "0.0.0",
+  "description": "WhisperX C++ engine core — ONNX Runtime + sherpa-onnx reimplementation of the WhisperX pipeline (see docs/cpp-core-handoff.md).",
+  "dependencies": [
+    "nlohmann-json",
+    "pybind11",
+    "catch2",
+    "benchmark",
+    "eigen3",
+    "sqlitecpp",
+    "onnxruntime"
+  ],
+  "$notes": "sherpa-onnx is not yet in the vcpkg registry; it is vendored / built from source when the ASR/VAD/diarize stages land (Phases 2/4). The light deps (nlohmann-json, pybind11, catch2) are also pulled via CMake FetchContent so a fresh checkout builds without a vcpkg bootstrap; pass the vcpkg toolchain file to resolve them (and the heavy deps) from vcpkg instead."
+}

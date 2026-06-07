@@ -1,0 +1,65 @@
+name: C++ Core
+
+# Phase 0 of the C++ engine-core migration (docs/cpp-core-handoff.md): build the
+# whisperx_core pybind module + Catch2 tests, run CTest under ASan/UBSan, and
+# prove the Python parity oracle (C++ result == Python reference).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "CMakeLists.txt"
+      - "vcpkg.json"
+      - "core/**"
+      - "adapters/**"
+      - "bindings/**"
+      - ".github/workflows/cpp-core.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "CMakeLists.txt"
+      - "vcpkg.json"
+      - "core/**"
+      - "adapters/**"
+      - "bindings/**"
+      - ".github/workflows/cpp-core.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.11.6"
+          python-version: "3.12"
+
+      # The parity test imports only the built module + pytest, never `whisperx`,
+      # so we skip the heavy project sync (torch/pyannote) and use an ephemeral env.
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DPython_EXECUTABLE="$(uv run --no-project python -c 'import sys;print(sys.executable)')"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: CTest (ASan/UBSan)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Python parity oracle
+        run: PYTHONPATH=build uv run --no-project --with pytest pytest bindings/test/test_core_parity.py -v

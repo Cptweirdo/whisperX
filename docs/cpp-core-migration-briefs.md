@@ -153,8 +153,14 @@ Ninja + vcpkg**.
   downstream stages tested on fixed text; ASR tested by WER/CER (fact 3).
 
 ### Validation
-- `import whisperx_core` succeeds in the project venv.
-- `cmake --build` + `ctest` (with ASan/LSan) green locally and in CI.
+- `import whisperx_core` succeeds in the project venv. **Done:** the pybind module
+  (`adapters/py/whisperx_core.cpp`) builds to `build/whisperx_core.*.so` and imports.
+- `cmake --build` + `ctest` (with ASan/LSan) green locally and in CI. **Done:** root
+  `CMakeLists.txt` (FetchContent for pybind11/Catch2/nlohmann-json; light deps pulled
+  with no vcpkg bootstrap, `vcpkg.json` seeds the heavy ones), Catch2 suite green
+  under **ASan+UBSan**, and CI in `.github/workflows/cpp-core.yml` (builds + CTest +
+  parity, no heavy `whisperx` sync). *Note:* sanitizers run on the native test target,
+  not the dlopened pybind module (would need `libasan` `LD_PRELOAD`).
 - Goldens exist for the EN/DE/RU clip set, committed under `golden/` with a
   manifest (clip → pinned lib + model revisions → sha256), transcript stored as a
   separate artifact. **Done:** `golden/` holds the clips + `manifest.json`; the
@@ -163,6 +169,10 @@ Ninja + vcpkg**.
   with per-stage timings) are committed. **Remaining:** dump the per-stage tensor
   intermediates (VAD chunks / CTC emissions / trellis) for the align/VAD goldens.
 - The trivial parity test demonstrates a C++ function result matching Python.
+  **Done:** `bindings/test/test_core_parity.py` — the first ported algorithm,
+  `edit_distance` (WER/CER, lifted verbatim from the Python baseline), matches the
+  Python reference bit-for-bit across 11 cases incl. Cyrillic tokens; this is the
+  live strangler-fig oracle loop later stages plug into.
 
 ### Unknowns / open questions (remaining)
 - **pybind in CI** — manylinux build, vcpkg binary caching, build-time budget. Does
