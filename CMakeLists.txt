@@ -172,7 +172,8 @@ if(WHISPERX_CORE_AUDIO)
   add_library(whisperx_core_audio STATIC
     core/audio/decode.cpp
     core/audio/vad_silero.cpp
-    core/align/wav2vec2_onnx.cpp)
+    core/align/wav2vec2_onnx.cpp
+    core/asr/whisper_sherpa.cpp)
   target_include_directories(whisperx_core_audio PUBLIC core)
   # ORT C++ headers (onnxruntime_cxx_api.h) reach wav2vec2_onnx.cpp transitively via
   # sherpa-onnx-c-api's interface includes; the shared libonnxruntime.so is linked by

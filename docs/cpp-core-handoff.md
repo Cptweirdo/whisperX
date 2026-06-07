@@ -286,9 +286,58 @@ composable token. **Slice `assign` is landed**: the 4b analog of 3A.
   `import whisperx` + dep-free build unaffected.
 - **Remaining Phase 4 slices (later):** the **diarization model** swap (sherpa
   pyannote-seg-3.0 + CAM++) is **A/B, not parity** — Python pyannote `community-1` keeps
-  feeding the turns this glue consumes (strangler); the sherpa-onnx **Whisper `asr`**
-  backend (default-on-ORT, WER/CER-gated, ONNX **mirrored + sha-pinned** via the 3B
-  mechanism; whisper.cpp/GGML a follow-on) is unstarted.
+  feeding the turns this glue consumes (strangler).
+
+## Phase 4 — slice `asr` landed (sherpa-onnx Whisper ASR backend)
+
+The first 4a backend. **Whisper** moves to a **pluggable backend** behind a new
+composable **`asr`** token; faster-whisper (CTranslate2) stays the **default + WER/CER
+oracle** (strangler). No pure-IP sub-slice — ASR is all model forward + decode, so this
+is one heavy slice. **whisper.cpp/GGML** (Apple-Silicon Metal) remains an explicit
+follow-on.
+
+- **Native sherpa-onnx Whisper (`asr` token).** `core/asr/whisper_sherpa.{hpp,cpp}`
+  (pImpl, built only under `WHISPERX_CORE_AUDIO`) wraps sherpa's high-level
+  **`OfflineRecognizer`** (mel + encoder/decoder forward + greedy detokenize + language
+  ID all inside sherpa) — reuses the **already-vendored** sherpa-onnx (2B), not a fresh
+  ORT setup, so it's a thin batched front-end over the VAD spans (the wav2vec2 raw
+  `Ort::Session` pattern was **not** needed — decoupled WER/CER makes greedy-vs-beam a
+  non-issue). `WhisperSherpa::transcribe(AudioBuffer, spans, lang, task)` slices the
+  shared buffer per VAD span (zero-copy, 2B's `slice`); `detect_language` reads sherpa's
+  `<|xx|>` over the first 30 s. `avg_logprob` is best-effort (sherpa's `ys_log_probs`;
+  0.0 when the build doesn't expose them — a populated field only, never load-bearing).
+- **Python facade.** `whisperx/asr_sherpa.py` (`SherpaWhisperPipeline` +
+  `load_sherpa_model`, sibling of `asr_mlx`/`asr_whispercpp`) reuses the identical VAD
+  serial loop + `merge_chunks`, swapping the decode engine for `whisperx_core.WhisperSherpa`
+  — same `transcribe() -> {segments, language}` contract, so align/diarize are untouched.
+  `whisperx/asr.py::load_model` routes to it under `_core_asr_enabled()` (the `asr` token,
+  `hasattr`-guarded); signature preserved so `test_pipeline_contract.py` is untouched.
+- **Model assets — mirror + sha-pin (3B mechanism), with a fallback.**
+  `golden/mirror_whisper_onnx.py` re-hosts sherpa's pre-exported Whisper ONNX
+  (`encoder`/`decoder`/`tokens`, already ONNX — **no torch export**) to a repo we control
+  (`KonstantK/whisper-onnx-sherpa`, public), sha-pinned, with a `meta.json` (asset
+  filenames + `feature_dim` + shas). **Published: tiny / base / small** (the common
+  CPU/interactive set; tiny is the golden/CI model, matches `baseline.json`). The runtime
+  resolver (`asr_sherpa._resolve_sherpa_assets`) tries, in order: (1) a local dir
+  (`WHISPERX_SHERPA_WHISPER_DIR`, dev/CI), (2) our sha-pinned mirror via `huggingface_hub`
+  (the `load_align_model` cache path), (3) **sherpa-onnx's official release tarball**
+  (cached under `~/.cache/whisperx-sherpa`) for any model not on the mirror — so large-v2
+  etc. still load without us hosting GBs. Bundle-vs-lazy is Phase-5 packaging.
+- **Decoupled gate (settled fact 3).** Whisper text isn't byte-stable across decoders, so
+  the gate is **WER/CER vs the faster-whisper tiny baseline** (`golden/baseline.json`),
+  not exact text. `bindings/test/test_asr_sherpa_parity.py` runs the native backend over
+  each clip's **committed VAD spans** (`*.vad.json` merged_chunks — model-free) and asserts
+  WER ≤ baseline + 0.30 / CER ≤ baseline + 0.20 (measured worst-case greedy-vs-beam drift
+  ≈ +0.18 WER on a short CV clip), exact language detection, and the facade pipeline glue
+  shape (via a stub VAD, torch-free). **Gates met:** 15/15 on the en/de/ru golden set;
+  the seam (`test_pipeline_contract.py`) green under `asr`; full `uv run pytest tests/`
+  green (226) across `WHISPERX_CORE_STAGES` ∈ {unset, `asr`, `db,edits,vad,align,assign,asr`};
+  `import whisperx` clean (facade `hasattr`-guarded); dep-free `WHISPERX_CORE_AUDIO=OFF`
+  build unaffected (the TU only joins `whisperx_core_audio`). CI: a torch-free
+  `WhisperSherpa` smoke in the `audio-stage` lane (cached sherpa tiny).
+- **Remaining Phase 4 slices (later):** the **diarization model** swap (sherpa
+  pyannote-seg-3.0 + CAM++, **A/B not parity**) and the **whisper.cpp/GGML** ASR backend
+  (4a follow-on, Metal-shader/CMake build).
 
 ## Where to start
 

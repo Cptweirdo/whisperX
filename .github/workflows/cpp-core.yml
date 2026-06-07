@@ -137,3 +137,41 @@ jobs:
 
       - name: Bench (decode + VAD RTF)
         run: ./build/bench_audio golden/clips/en_dialog.wav models/silero_vad.onnx
+
+      # Phase 4 / 4a: cache + fetch the sherpa Whisper tiny ONNX (the golden/CI
+      # model) and smoke the native WhisperSherpa path. Torch-free (reads the 16 kHz
+      # mono golden wav via stdlib `wave`) so it stays in this no-`whisperx` lane; the
+      # full WER/CER gate (bindings/test/test_asr_sherpa_parity.py) runs in the
+      # whisperx-installed lane / locally with WHISPERX_SHERPA_WHISPER_DIR set.
+      - name: Cache sherpa Whisper tiny
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: whisper-tiny
+          key: sherpa-whisper-tiny-v1
+      - name: ASR (sherpa Whisper) smoke
+        run: |
+          if [ ! -d whisper-tiny/sherpa-onnx-whisper-tiny ]; then
+            mkdir -p whisper-tiny
+            curl -fsSL https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2 \
+              | tar xj -C whisper-tiny
+          fi
+          WHISPERX_SHERPA_WHISPER_DIR=whisper-tiny/sherpa-onnx-whisper-tiny \
+            PYTHONPATH=build uv run --no-project --with numpy python - <<'PY'
+          import glob, os, wave
+          import numpy as np
+          import whisperx_core as w
+          d = os.environ["WHISPERX_SHERPA_WHISPER_DIR"]
+          enc = sorted(glob.glob(f"{d}/*encoder*.onnx"), key=lambda p: "int8" in p)[0]
+          dec = sorted(glob.glob(f"{d}/*decoder*.onnx"), key=lambda p: "int8" in p)[0]
+          tok = glob.glob(f"{d}/*tokens*.txt")[0]
+          wf = wave.open("golden/clips/en_libri.wav", "rb")
+          pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+          audio = (pcm.astype(np.float32) / 32768.0)
+          m = w.WhisperSherpa(encoder=enc, decoder=dec, tokens=tok, num_threads=2, feature_dim=80)
+          lang = m.detect_language(audio[: 16000 * 30])
+          out = m.transcribe(audio, [(0.0, len(audio) / 16000)], "", "transcribe")
+          text = out[0]["text"].strip()
+          print(f"lang={lang!r} text={text!r}")
+          assert lang == "en", lang
+          assert text, "empty transcription"
+          PY

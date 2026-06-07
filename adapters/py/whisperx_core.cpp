@@ -34,6 +34,7 @@
 
 #ifdef WHISPERX_CORE_AUDIO
 #include "align/wav2vec2_onnx.hpp"
+#include "asr/whisper_sherpa.hpp"
 #include "audio/decode.hpp"
 #include "audio/vad_silero.hpp"
 #endif
@@ -595,6 +596,58 @@ void bind_audio(py::module_& m) {
             "Run the wav2vec2 forward over a list of 1-D float32 waveforms -> list "
             "of (T_i, V) raw-logit arrays. batched=True packs padded+masked batches "
             "(layer_norm models only); False runs each segment alone.");
+
+    // Native Whisper ASR backend under ORT (Phase 4 / 4a). Wraps sherpa-onnx's
+    // OfflineRecognizer; the Python asr_sherpa facade hands it the VAD spans +
+    // the decoded waveform. Judged by WER/CER (decoupled), not exact text.
+    using Span = std::pair<double, double>;
+    py::class_<whisperx::asr::WhisperSherpa>(m, "WhisperSherpa")
+        .def(py::init<const std::string&, const std::string&,
+                      const std::string&, int, int, const std::string&,
+                      const std::string&>(),
+             py::arg("encoder"), py::arg("decoder"), py::arg("tokens"),
+             py::arg("num_threads") = 1, py::arg("feature_dim") = 80,
+             py::arg("language") = "", py::arg("task") = "transcribe")
+        .def(
+            "transcribe",
+            [](whisperx::asr::WhisperSherpa& self,
+               const py::array_t<float, py::array::c_style |
+                                            py::array::forcecast>& audio,
+               const std::vector<Span>& spans, const std::string& language,
+               const std::string& task) {
+                if (audio.ndim() != 1)
+                    throw std::invalid_argument(
+                        "audio must be a 1-D float32 array");
+                whisperx::audio::AudioBuffer buf;
+                buf.samples.assign(audio.data(), audio.data() + audio.size());
+                auto chunks = self.transcribe(buf, spans, language, task);
+                py::list out;
+                for (const auto& c : chunks) {
+                    py::dict d;
+                    d["text"] = c.text;
+                    d["avg_logprob"] = c.avg_logprob;
+                    out.append(std::move(d));
+                }
+                return out;
+            },
+            py::arg("audio"), py::arg("spans"), py::arg("language") = "",
+            py::arg("task") = "",
+            "Transcribe each (start_s, end_s) VAD span of a float32 waveform with "
+            "sherpa-onnx Whisper -> list of {text, avg_logprob} (one per span).")
+        .def(
+            "detect_language",
+            [](whisperx::asr::WhisperSherpa& self,
+               const py::array_t<float, py::array::c_style |
+                                            py::array::forcecast>& audio) {
+                if (audio.ndim() != 1)
+                    throw std::invalid_argument(
+                        "audio must be a 1-D float32 array");
+                whisperx::audio::AudioBuffer buf;
+                buf.samples.assign(audio.data(), audio.data() + audio.size());
+                return self.detect_language(buf);
+            },
+            py::arg("audio"),
+            "Whisper language ID over the first 30 s -> bare code (e.g. 'en').");
 }
 #endif
 

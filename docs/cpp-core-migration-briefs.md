@@ -922,7 +922,29 @@ The aligner's ONNX Runtime + audio access are already wired by 2B's
 > (`bindings/test/test_assign_parity.py`) is torch/model-free. Gates: exact segment +
 > word labels on all 3 dialogs; Catch2 `test_assign_speakers` (9 cases, ASan/UBSan);
 > 78/78 CTest; pytest 226 green across `{unset, assign, db,edits,vad,align,assign}`.
-> **Still open:** the diarization **model** swap (4b, A/B) + the **`asr`** backend (4a).
+
+> **Slice `asr` LANDED** (4a, first backend). Native **sherpa-onnx Whisper**
+> (`core/asr/whisper_sherpa.{hpp,cpp}` in `whisperx_core_audio`, pImpl) wraps sherpa's
+> high-level **`OfflineRecognizer`** (mel+encode+decode+detokenize+lang-ID built in,
+> greedy) behind the **`asr`** token — reuses the vendored sherpa-onnx/ORT (2B), so it's
+> a thin batched front-end over the VAD spans (no raw `Ort::Session`). faster-whisper
+> stays the **default + WER/CER oracle**. `whisperx/asr_sherpa.py` (`SherpaWhisperPipeline`,
+> sibling of `asr_mlx`/`asr_whispercpp`) reuses the VAD loop + `merge_chunks`, same
+> `transcribe()->{segments,language}` contract; `asr.py::load_model` facades under
+> `_core_asr_enabled()` (signature preserved → `test_pipeline_contract.py` untouched).
+> **Assets:** `golden/mirror_whisper_onnx.py` re-hosts + sha-pins sherpa's pre-exported
+> Whisper ONNX (already ONNX — no torch export) to a public repo we control
+> (`KonstantK/whisper-onnx-sherpa`, **tiny/base/small published**), pulled via the 3B
+> `huggingface_hub` cache; resolver order = local dir (`WHISPERX_SHERPA_WHISPER_DIR`) →
+> mirror → **sherpa-onnx official release** (cached) for unmirrored models, so any model
+> still loads. **Decoupled gate (fact 3):** `bindings/test/test_asr_sherpa_parity.py` runs
+> the backend over the committed VAD spans (model-free) and asserts WER ≤ baseline + 0.30
+> / CER ≤ baseline + 0.20, exact language detection, + facade glue shape — 15/15 on
+> en/de/ru. `avg_logprob` best-effort. Gates: pytest 226 green across `{unset, asr,
+> db,edits,vad,align,assign,asr}`; seam green under `asr`; dep-free build unaffected; CI
+> torch-free `WhisperSherpa` smoke in `audio-stage`.
+> **Still open:** the diarization **model** swap (4b, A/B) + the **whisper.cpp/GGML** ASR
+> backend (4a follow-on).
 
 ### Context
 Swap the two remaining models. **Whisper** moves to a **pluggable ASR backend**
