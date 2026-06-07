@@ -438,22 +438,6 @@ class SessionStore:
             ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
-    # --- settings (global key/value) ------------------------------------
-    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT value FROM settings WHERE key=?", (key,)
-            ).fetchone()
-        return row["value"] if row is not None else default
-
-    def set_setting(self, key: str, value: str) -> None:
-        with self._lock, self._db:
-            self._db.execute(
-                "INSERT INTO settings (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (key, value),
-            )
-
     def has_active_jobs(self) -> bool:
         """Whether any session is queued or running (used to gate device switches)."""
         with self._lock:
