@@ -18,6 +18,9 @@ project(whisperx_core LANGUAGES CXX C VERSION 0.0.0)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Emit build/compile_commands.json — drives the `cppcheck` static-analysis
+# target below (and clang-tidy / IDEs / clangd).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
 endif()
@@ -29,6 +32,11 @@ option(WHISPERX_CORE_TESTS "Build the Catch2 test suite" ON)
 # dep-free Phase-0/1/2A build (and the fast CI lane) need no ffmpeg/ORT/sherpa.
 # ON pulls system ffmpeg (pkg-config) + a vendored sherpa-onnx (FetchContent).
 option(WHISPERX_CORE_AUDIO "Build the audio decode + VAD stage (ffmpeg + sherpa-onnx)" OFF)
+# Host swap: the native oat++ HTTP/SSE server (adapters/server/) that replaces the
+# Python Flask app/. Links whisperx_core_audio directly (no pybind/Python), so it
+# requires WHISPERX_CORE_AUDIO. OFF by default — the pybind/dep-free lanes (and CI)
+# are unaffected. Pulls oatpp + spdlog via FetchContent (the light-dep pattern).
+option(WHISPERX_BUILD_SERVER "Build the native oat++ HTTP/SSE server (adapters/server/)" OFF)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -277,4 +285,68 @@ if(WHISPERX_CORE_TESTS)
   list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
   include(Catch)
   catch_discover_tests(whisperx_core_tests)
+endif()
+
+# --- native oat++ HTTP/SSE server (host swap) --------------------------------
+# Replaces the Python Flask app/ host. Links whisperx_core_audio directly (the
+# whole compute chain + SessionStore + writers are already native), adds oat++
+# (HTTP/SSE) + spdlog (logging). Pure C++ runtime — no Python. See
+# docs/cpp-core-spa-architecture.md §3 + docs/api-reference.md (the contract).
+if(WHISPERX_BUILD_SERVER)
+  if(NOT WHISPERX_CORE_AUDIO)
+    message(FATAL_ERROR
+      "WHISPERX_BUILD_SERVER requires WHISPERX_CORE_AUDIO=ON (the server links "
+      "the native compute chain in whisperx_core_audio).")
+  endif()
+
+  # spdlog — fast logging (console + rotating file). Compiled (not header-only)
+  # to keep server TUs lean; same FetchContent + FIND_PACKAGE_ARGS pattern.
+  set(SPDLOG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog
+    GIT_TAG v1.14.1
+    FIND_PACKAGE_ARGS NAMES spdlog)
+  FetchContent_MakeAvailable(spdlog)
+
+  # oat++ — HTTP + Server-Sent Events. Builds the `oatpp` static lib.
+  set(OATPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(OATPP_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    oatpp
+    GIT_REPOSITORY https://github.com/oatpp/oatpp
+    GIT_TAG 1.3.0
+    FIND_PACKAGE_ARGS NAMES oatpp)
+  FetchContent_MakeAvailable(oatpp)
+
+  add_subdirectory(adapters/server)
+endif()
+
+# --- cppcheck static analysis ------------------------------------------------
+# `cmake --build build --target cppcheck` runs cppcheck over our own code only
+# (core/ + adapters/), reading build/compile_commands.json for the exact
+# includes/defines per TU. FetchContent deps (build/_deps/*) are suppressed —
+# we don't own them, and SQLiteCpp already disables its own cppcheck hook.
+# The target only exists when cppcheck is on PATH; otherwise it's a no-op so a
+# fresh checkout still configures without the tool installed.
+find_program(CPPCHECK_EXE NAMES cppcheck)
+if(CPPCHECK_EXE)
+  add_custom_target(cppcheck
+    COMMAND ${CPPCHECK_EXE}
+      --project=${CMAKE_BINARY_DIR}/compile_commands.json
+      --enable=warning,performance,portability
+      --inline-suppr
+      --std=c++20
+      --error-exitcode=1
+      --suppress=missingIncludeSystem
+      --suppress=*:${CMAKE_BINARY_DIR}/_deps/*
+      --suppress=*:${CMAKE_BINARY_DIR}/generated/*
+      -i ${CMAKE_BINARY_DIR}/_deps
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Running cppcheck over core/ + adapters/"
+    VERBATIM)
+else()
+  message(STATUS "cppcheck not found — `cppcheck` build target unavailable")
 endif()
