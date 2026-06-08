@@ -1106,10 +1106,33 @@ lazy-download on first run is the **Phase-5 packaging policy** (the *mechanism* 
 > `align_onnx,align_driver`, full native set}; `import whisperx` + dep-free `AUDIO=OFF` build
 > unaffected.
 >
-> **Slice `orchestrate` — now unblocked.** With `align()` native, the 100%-native `run_job`
-> (decode → silero VAD → `merge_chunks` → sherpa ASR → `align_run` → sherpa diarize →
-> `assign_word_speakers` → writers, no Python re-entry) builds directly on `align_run`. Live
-> end-to-end stays per-stage + A/B (sherpa engines), never end-to-end text byte-equality.
+> **Slice `orchestrate` LANDED — native decode-once `run_job`.** The orchestration itself is
+> ported behind a new composable `orchestrate` token, so the whole compute chain runs in C++ over
+> one `AudioBuffer` (the prior full-token path still marshaled the waveform across the seam ~5×).
+> `core/orchestrate/orchestrate.{hpp,cpp}` (in `whisperx_core_lib`) is **pure sequencing** — the
+> per-stage compute is injected as a `Steps` struct of `std::function`s, so the TU is dep-free +
+> unit-testable; it fires `stage()` in run_job's order (`decoding→transcribing→loading_align→
+> aligning→[diarizing]`), `on_duration` once, and returns `{segments, word_segments, language,
+> diarized}` with **stage-boundary-only** cancellation. The pybind `run_job` (`bind_audio`,
+> `whisperx_core_audio`) wires the real closures over `load_audio` → `silero_segments`+
+> `merge_chunks`+`WhisperSherpa` → `align_run` → (optional) `SherpaDiarizer`+`assign_word_speakers`,
+> releasing the GIL for compute and re-acquiring per callback. The **one honest Python touch** is
+> the align-model **resolver** `resolve_align(lang) -> (Wav2Vec2Onnx, dict, batchable)`, called
+> once at the `loading_align` boundary (HF download is Python I/O; the lang is ASR-determined) —
+> the buffer/segments/emissions never round-trip to Python between stages. `app/pipeline.py::run_job`
+> delegates under `_core_orchestrate_enabled()` **only when the chain is native-capable** (ASR is
+> `WhisperSherpa`; any diarizer is the native `SherpaDiarizer`, else fall back to the untouched
+> Python staged path — the oracle, which keeps `test_pipeline_contract.py`'s stubbed bundle on the
+> fallback). **Writers stay in the facade loop** (already native via `writers`); VAD is the
+> decode-token **silero** (an A/B swap vs pyannote), so the parity baseline is the native-silero
+> staged path. **Gates met:** Catch2 `test_orchestrate.cpp` (4, dep-free/ASan: stage order,
+> diarizer-optional + `diarized`, `on_duration`-once, throwing-stage unwind);
+> `test_orchestrate_parity.py` (`RUN_MIRROR=1`) — `run_job` == the staged native path on en/ru
+> dialogs (word text/structure/speakers exact, timings/scores within ±1-frame/±0.01) + the
+> progress sequence + resolver-once + diarizer-absent; pytest 226 green across `{unset,
+> orchestrate, full native set}`; `test_pipeline_contract.py` green under `orchestrate`; `import
+> whisperx` + dep-free `AUDIO=OFF` build unaffected. **Phase 5 complete** bar the e2e Playwright
+> integration gate (carried to the host swap).
 
 ### Context
 Port the output writers and assemble the **full `run_job` parity** path, so a C++
@@ -1188,6 +1211,17 @@ Replace the **guessed RTF constants** (`pipeline.py:184-202`,
 CI, and use the data to *prove the streamlining claims* (decode-once, batched
 alignment, models-resident) rather than assert them. *(Stage pipelining is
 deferred — not a claim to measure here.)*
+
+**Now unblocked by the `orchestrate` slice (Phase 5):** the native `whisperx_core.run_job`
+runs the whole compute chain in C++ over one decode-once `AudioBuffer`, so the
+streamlining claims are now **directly measurable** by benching `run_job`-on vs
+`run_job`-off (the Python staged path that still marshals the waveform across the seam
+~5×) on the same clip — that A/B *is* the decode-3×→1× / data-stays-native proof, not an
+assertion. The existing `bench/bench_audio` (decode + VAD RTF) extends to a full
+end-to-end native bench through `run_job`. This is also where the **deferred per-job
+`std::pmr` arena** (the "Already decided" memory plan; the orchestrator owns the job
+lifetime) gets wired + measured — the bench decides whether the alloc-churn win justifies
+it before it lands.
 
 ### Goals
 - A **`bench/` target** (Google Benchmark or nanobench) timing each stage with

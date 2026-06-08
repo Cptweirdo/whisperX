@@ -9,6 +9,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -29,6 +31,7 @@
 #include "db/session_store.hpp"
 #include "diarize/assign_speakers.hpp"
 #include "edits/edits.hpp"
+#include "orchestrate/orchestrate.hpp"
 #include "text/edit_distance.hpp"
 #include "text/sentence_split.hpp"
 #include "text/sequence_matcher.hpp"
@@ -569,6 +572,29 @@ void bind_writers(py::module_& m) {
 }
 
 #ifdef WHISPERX_CORE_AUDIO
+// --- run_job (orchestrate token) helpers — mirror asr_sherpa.py's per-segment
+// assembly so the native orchestrator's transcript matches the staged path.
+// Python str.strip(): trim leading/trailing ASCII whitespace (sherpa Whisper
+// text never carries exotic Unicode spaces at the ends).
+std::string strip_ws(const std::string& s) {
+    const char* ws = " \t\n\r\f\v";
+    const auto b = s.find_first_not_of(ws);
+    if (b == std::string::npos) return "";
+    const auto e = s.find_last_not_of(ws);
+    return s.substr(b, e - b + 1);
+}
+
+// Python round(x, 3): round-half-to-even at 3 decimals (banker's, via nearbyint
+// under the default FE_TONEAREST), matching asr_sherpa's round(start/end, 3).
+double round3(double x) { return std::nearbyint(x * 1000.0) / 1000.0; }
+
+// Cluster id -> pyannote-style "SPEAKER_xx" (diarize_sherpa._speaker_label).
+std::string speaker_label(int cluster_id) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "SPEAKER_%02d", cluster_id);
+    return std::string(buf);
+}
+
 // In-process libav* decode (replaces the ffmpeg subprocess; `decode` token).
 // Built only with WHISPERX_CORE_AUDIO; the Python facade hasattr-guards so a
 // dep-free module degrades to the subprocess oracle.
@@ -806,6 +832,142 @@ void bind_audio(py::module_& m) {
             "Per-speaker mean embedding over its turns -> {speaker:int: list[float]}.")
         .def("embedding_dim", &whisperx::diarize::SherpaDiarizer::embedding_dim,
              "Embedding dimensionality of the extractor model.");
+
+    // Native end-to-end orchestrator (`orchestrate` token, Phase 5). Decodes once
+    // and drives the whole compute chain over one AudioBuffer — silero VAD ->
+    // merge_chunks -> WhisperSherpa -> align_run -> SherpaDiarizer +
+    // assign_word_speakers — with no Python re-entry except the align-model
+    // resolver at the loading_align boundary (model load is HF/Python I/O). The
+    // GIL is released for the native compute and re-acquired inside each callback
+    // (progress / on_duration / resolve_align); a raising progress cb propagates
+    // (stage-boundary cancellation). Returns the run_job result dict.
+    m.def(
+        "run_job",
+        [](const std::string& audio_path, whisperx::asr::WhisperSherpa& asr,
+           const std::string& silero_model_path, double vad_onset,
+           double vad_offset, double chunk_size,
+           const std::string& forced_language, const std::string& task,
+           const py::object& resolve_align,
+           const std::string& interpolate_method, bool return_char_alignments,
+           const py::object& diarizer_obj, int num_clusters,
+           const py::object& progress, const py::object& on_duration_cb) {
+            namespace wa = whisperx::audio;
+            namespace wal = whisperx::align;
+            namespace wd = whisperx::diarize;
+            using whisperx::orchestrate::Steps;
+
+            wd::SherpaDiarizer* diarizer =
+                diarizer_obj.is_none() ? nullptr
+                                       : diarizer_obj.cast<wd::SherpaDiarizer*>();
+
+            // The align model resolved (under the GIL) at the loading_align
+            // boundary, then consumed by the aligning step.
+            struct AlignHandle {
+                wal::Wav2Vec2Onnx* model = nullptr;
+                std::map<std::string, int> dictionary;
+                bool batchable = false;
+            } align_handle;
+
+            Steps steps;
+
+            steps.decode = [&] { return wa::load_audio(audio_path); };
+
+            steps.transcribe =
+                [&](const wa::AudioBuffer& buf) -> std::pair<json, std::string> {
+                auto segs = wa::silero_segments(buf, silero_model_path, vad_onset,
+                                                chunk_size);
+                json merged = whisperx::vad::merge_chunks(segs, chunk_size,
+                                                          vad_onset, vad_offset);
+                std::vector<std::pair<double, double>> spans;
+                spans.reserve(merged.size());
+                for (const auto& mc : merged)
+                    spans.emplace_back(mc.at("start").get<double>(),
+                                       mc.at("end").get<double>());
+
+                std::string lang = forced_language;
+                if (lang.empty() && !spans.empty())
+                    lang = asr.detect_language(buf);
+
+                auto chunks = asr.transcribe(buf, spans, lang, task);
+                json out = json::array();
+                for (std::size_t i = 0; i < spans.size(); ++i) {
+                    json seg;
+                    seg["text"] = strip_ws(chunks[i].text);
+                    seg["start"] = round3(spans[i].first);
+                    seg["end"] = round3(spans[i].second);
+                    seg["avg_logprob"] =
+                        static_cast<double>(chunks[i].avg_logprob);
+                    out.push_back(std::move(seg));
+                }
+                return {std::move(out), lang.empty() ? std::string("en") : lang};
+            };
+
+            steps.load_align = [&](const std::string& lang) {
+                py::gil_scoped_acquire gil;
+                py::tuple t = resolve_align(lang).cast<py::tuple>();
+                align_handle.model = t[0].cast<wal::Wav2Vec2Onnx*>();
+                align_handle.dictionary =
+                    t[1].cast<std::map<std::string, int>>();
+                align_handle.batchable = t[2].cast<bool>();
+            };
+
+            steps.align = [&](const wa::AudioBuffer& buf, const json& transcript,
+                              const std::string& lang) {
+                std::span<const float> aspan(buf.samples.data(),
+                                             buf.samples.size());
+                return wal::align_run(transcript, *align_handle.model,
+                                      align_handle.dictionary, aspan, lang,
+                                      align_handle.batchable, interpolate_method,
+                                      return_char_alignments, nullptr);
+            };
+
+            if (diarizer != nullptr)
+                steps.diarize = [&](const wa::AudioBuffer& buf, json aligned) {
+                    auto raw = diarizer->diarize(buf, num_clusters);
+                    std::vector<wd::Turn> turns;
+                    turns.reserve(raw.size());
+                    for (const auto& d : raw)
+                        turns.push_back(
+                            {d.start, d.end, speaker_label(d.speaker)});
+                    aligned["segments"] = wd::assign_word_speakers(
+                        turns, aligned["segments"], /*fill_nearest=*/false);
+                    return aligned;
+                };
+
+            std::function<void(const std::string&)> stage;
+            if (!progress.is_none())
+                stage = [&progress](const std::string& s) {
+                    py::gil_scoped_acquire gil;
+                    progress(s);
+                };
+            std::function<void(double)> on_duration;
+            if (!on_duration_cb.is_none())
+                on_duration = [&on_duration_cb](double d) {
+                    py::gil_scoped_acquire gil;
+                    on_duration_cb(d);
+                };
+
+            json out;
+            {
+                py::gil_scoped_release rel;
+                out = whisperx::orchestrate::run_job(steps, stage, on_duration);
+            }
+            return json_to_py(out);
+        },
+        py::arg("audio_path"), py::arg("asr"), py::arg("silero_model_path"),
+        py::arg("vad_onset") = 0.5, py::arg("vad_offset") = 0.363,
+        py::arg("chunk_size") = 30.0, py::arg("language") = "",
+        py::arg("task") = "transcribe", py::arg("resolve_align"),
+        py::arg("interpolate_method") = "nearest",
+        py::arg("return_char_alignments") = false,
+        py::arg("diarizer") = py::none(), py::arg("num_clusters") = 0,
+        py::arg("progress") = py::none(), py::arg("on_duration") = py::none(),
+        "Native end-to-end run_job for the sherpa-ASR device: decode-once "
+        "AudioBuffer driven through silero VAD -> merge_chunks -> WhisperSherpa "
+        "-> align_run -> (optional) SherpaDiarizer + assign_word_speakers. "
+        "resolve_align(lang) -> (Wav2Vec2Onnx, dict, batchable) is called once at "
+        "the loading_align boundary. Returns {segments, word_segments, language, "
+        "diarized}.");
 }
 #endif
 

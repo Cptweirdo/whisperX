@@ -399,10 +399,12 @@ glue consumes either model's turns unchanged.
 
 ## Phase 5 — slice `writers` landed (native output writers)
 
-Phase 5 ports the output writers and (later) a native end-to-end orchestrator. Per the
+Phase 5 ports the output writers and a native end-to-end orchestrator. Per the
 prior-phase pattern the **pure dep-free writer IP ships first** behind a new composable
-**`writers`** token; the **`orchestrate`** slice (a fully-native `run_job`) is **deferred**
-(see below).
+**`writers`** token; the **`align_driver`** then **`orchestrate`** slices follow (both
+**landed** — see below). With `orchestrate` in, Phase 5 is complete bar the e2e
+Playwright host-integration gate (deferred to the host swap) and the per-job `std::pmr`
+arena (a separable perf/memory follow-on — see the closing note).
 
 - **Native writers (`writers` token).** `core/writers/writers.{hpp,cpp}` (verbatim port of
   `whisperx/utils.py`'s `ResultWriter` family + `SubtitlesWriter.iterate_result`) live in the
@@ -477,10 +479,67 @@ prerequisite for the 100%-native orchestrator). **Not** the hybrid Python-callba
   `decode,vad,align_onnx,align_driver,asr,assign,diarize,writers`}; `import whisperx` clean;
   dep-free `WHISPERX_CORE_AUDIO=OFF` build unaffected (char_clean TU + utf8proc are dep-free;
   align_driver TU only joins `whisperx_core_audio`).
-- **Slice `orchestrate` — now unblocked.** With `align()` a native entrypoint, the 100%-native
-  `run_job` (decode → silero VAD → `merge_chunks` → sherpa ASR → `align_run` → sherpa diarize →
-  `assign_word_speakers` → writers, no Python re-entry) can be built directly on `align_run`.
-  Live end-to-end stays **per-stage + A/B** (sherpa engines), never end-to-end text byte-equality.
+## Phase 5 — slice `orchestrate` landed (native decode-once `run_job`)
+
+With every stage native, `app/pipeline.py::run_job` still **orchestrated in Python** under the
+full token set: it copied the decoded waveform out to numpy and passed it **back across the
+pybind seam ~5×** (VAD, ASR, align, diarize), marshaling each intermediate (numpy↔json) between
+stages — defeating the decode-once / data-stays-native win. This slice ports the orchestration
+itself behind a new composable **`orchestrate`** token, so the whole compute chain runs in C++
+over one `AudioBuffer`.
+
+- **Native sequencer (`core/orchestrate/orchestrate.{hpp,cpp}`, `whisperx_core_lib`).** `run_job`
+  is **pure sequencing** with the per-stage compute injected as a `Steps` struct of
+  `std::function`s — so the TU is dep-free (no ORT/sherpa) and unit-testable. It fires
+  `stage(name)` in run_job's exact order (`decoding→transcribing→loading_align→aligning→
+  [diarizing]`), `on_duration` once after decode, sets `language`/`diarized`, and returns
+  `{segments, word_segments, language, diarized}`. Cancellation is **stage-boundary only** (a
+  throwing `stage` cb unwinds; never checked mid-stage — jobs run to completion).
+- **pybind `run_job` (`bind_audio`, `whisperx_core_audio`).** Supplies the real `Steps` closures
+  over the existing native engines — `load_audio` → `silero_segments`+`merge_chunks`+
+  `WhisperSherpa` (the `asr_sherpa.py` serial-loop assembly: `strip`, `round(·,3)`,
+  `avg_logprob`) → `align_run` → (optional) `SherpaDiarizer`+`assign_word_speakers` (cluster id →
+  `SPEAKER_xx`). The GIL is released for the native compute and re-acquired per callback. The
+  **one honest Python touch** is the **align-model resolver** — `resolve_align(lang) ->
+  (Wav2Vec2Onnx, dict, batchable)`, called once at the `loading_align` boundary (HF download is
+  Python I/O, and the language is only known after ASR). The buffer/segments/emissions never
+  round-trip to Python between stages.
+- **Facade (`app/pipeline.py`).** `_core_orchestrate_enabled()` (token + `hasattr(run_job)`)
+  gates a delegation in `run_job` that engages **only when the chain is native-capable**: the ASR
+  is the native sherpa backend (`isinstance(bundle.asr.model, WhisperSherpa)`) **and** any
+  diarizer is the native `SherpaDiarizer` (a Python pyannote diarizer can't run inside the
+  no-re-entry orchestrator → fall back). `_stage` is passed straight through (keeps `mark_stage`/
+  SSE + stage-boundary cancel); the **writer artifacts stay in the facade loop** (already native
+  via the `writers` token — no path logic duplicated in C++); the tail sets
+  `duration`/`num_segments`/`artifacts`. Non-sherpa devices + the token-off path keep the
+  **untouched Python staged `run_job`** (the oracle) — which also keeps `test_pipeline_contract.py`
+  (stubbed, non-sherpa bundle) exercising the fallback.
+- **VAD is silero (decode-token), not pyannote.** The orchestrator owns VAD natively (the ORT
+  silero of slice 2B), so flipping `orchestrate` swaps VAD pyannote→silero — an A/B engine swap
+  (decoupled), consistent with the rest of the native chain. The parity baseline is therefore the
+  **native-silero staged path**, not `bundle.asr`'s pyannote VAD.
+- **Gates met.** Catch2 `test_orchestrate.cpp` (4 cases, dep-free/ASan: the exact stage order,
+  the diarizer-optional branch + `diarized` flag, `on_duration`-once, a throwing-stage unwind);
+  `bindings/test/test_orchestrate_parity.py` (`RUN_MIRROR=1`) — `run_job` **==** the staged
+  native path on en/ru dialogs (word text + structure + speaker labels exact, timings/scores
+  within ±1-frame/±0.01), the progress sequence, `on_duration`-once, the resolver fires once at
+  `loading_align`, and the diarizer-absent path; full `uv run pytest tests/` green across
+  `WHISPERX_CORE_STAGES` ∈ {unset, `orchestrate` (no-op → Python fallback on the contract bundle),
+  the full native set incl. `orchestrate`}; `test_pipeline_contract.py` green under `orchestrate`;
+  `import whisperx` clean; dep-free `WHISPERX_CORE_AUDIO=OFF` build unaffected (the orchestrate TU
+  is dep-free `whisperx_core_lib`; the `run_job` binding only joins `whisperx_core_audio`).
+
+**Phase 5 is complete** bar two **deferred** items:
+- **End-to-end Playwright integration gate** — run the SPA e2e (`app/web/tests/e2e/`) with
+  `orchestrate` off (Python) vs on (`orchestrate,edits,…`) against a seeded clip, asserting the
+  SPA-rendered turns/timings/exports match. Carried to the **host-swap** work — the point where
+  the strangler flag flips fully on for the host (the brief's integration gate on top of the
+  per-stage goldens).
+- **Per-job `std::pmr` arena** — the "Already decided" memory plan (+ the Phase 5 brief) puts the
+  **arena reset at job end** *in the orchestrator*, but the landed slice is pure sequencing and
+  does **not** yet wire one (the native engines still allocate via the default resource). It's a
+  separable perf/memory follow-on now that the orchestrator owns the job lifetime; **fold it in
+  with Phase 6** (the bench will quantify whether it's worth it) or alongside the host swap.
 
 ## Where to start
 
