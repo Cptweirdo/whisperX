@@ -1,5 +1,6 @@
 #include "audio/decode.hpp"
 
+#include <algorithm>
 #include <string>
 
 extern "C" {
@@ -93,7 +94,15 @@ AudioBuffer load_audio(const std::string& path, int sr) {
     // the audio took 150x the decode time; a ~100 MB wav spent minutes here.
     if (fmt.p->duration > 0) {
         const double secs = static_cast<double>(fmt.p->duration) / AV_TIME_BASE;
-        out.samples.reserve(static_cast<std::size_t>(secs * sr) + sr);  // +1 s margin
+        // Clamp the hint: a corrupt header can claim a bogus-huge duration, and the
+        // reserve is only an optimization — push_back's geometric growth still covers
+        // anything beyond it in O(n). Cap at a generous ceiling so a bad header can't
+        // trigger a multi-GB up-front allocation (a real longer file just reallocs a
+        // few times past the cap).
+        constexpr double kMaxReserveSecs = 4.0 * 3600.0;  // 4 h
+        const std::size_t want =
+            static_cast<std::size_t>(std::min(secs, kMaxReserveSecs) * sr) + sr;
+        out.samples.reserve(want);  // + 1 s margin
     }
 
     auto convert_frame = [&](const AVFrame* fr) {
