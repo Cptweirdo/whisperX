@@ -204,6 +204,26 @@ def eta_seconds(stage: str, duration: Optional[float]) -> Optional[float]:
     return rtf * duration
 
 
+# Past this, warn once: the native CPU sherpa path holds the whole decoded waveform
+# resident (~SAMPLE_RATE×4 B/s ≈ 0.23 GB/h) and runs the full chain on CPU, so wall
+# time climbs to hours and diarization clustering scales ~O(n²) in segment count.
+# Override with WHISPERX_LONG_AUDIO_WARN_S; 0 disables.
+LONG_AUDIO_WARN_S = int(os.environ.get("WHISPERX_LONG_AUDIO_WARN_S", str(2 * 3600)))
+
+
+def _warn_if_long(duration: Optional[float]) -> None:
+    """Log a heads-up for very long inputs (multi-hour runtime / high memory)."""
+    if not duration or LONG_AUDIO_WARN_S <= 0 or duration < LONG_AUDIO_WARN_S:
+        return
+    logger.warning(
+        "Long audio: %.1f h (~%.1f GB decoded, held resident). The native CPU "
+        "pipeline runs the whole chain on CPU — expect multi-hour runtime and high "
+        "memory; diarization clustering scales worst. Consider splitting the file, "
+        "or the GPU path (WHISPERX_NO_CORE=1).",
+        duration / 3600.0, duration * SAMPLE_RATE * 4 / 1e9,
+    )
+
+
 @dataclass
 class ModelBundle:
     asr: object  # FasterWhisperPipeline
@@ -643,6 +663,7 @@ def run_job(
         )
         if native is not None:
             result, duration = native
+            _warn_if_long(duration)
             result["duration"] = duration
             result["num_segments"] = len(result.get("segments", []))
             artifacts = {}
@@ -660,6 +681,7 @@ def run_job(
     logger.info("Decoding audio: %s", audio_path)
     audio = whisperx.load_audio(audio_path)  # 16kHz mono float32, decoded once
     duration = len(audio) / SAMPLE_RATE
+    _warn_if_long(duration)
     if on_duration is not None:
         on_duration(duration)  # report early so later stages can be ETA'd live
 
