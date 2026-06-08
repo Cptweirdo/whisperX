@@ -121,7 +121,16 @@ def _load_align_onnx(language_code: str, model_name: Optional[str]):
         logger.info(f"align_onnx: {resolved} not on the mirror ({e}); using torch")
         return None
     meta = json.loads(open(meta_path, encoding="utf-8").read())
-    model = whisperx_core.Wav2Vec2Onnx(onnx_path)
+    # ORT intra-op threads for the wav2vec2 forward. The ctor defaults to 1 (single
+    # core) — without this the matmul-bound align stage pegs one CPU while the rest
+    # idle. wav2vec2 forwards are big GEMMs that scale well intra-op, and the native
+    # orchestrator emits few/long segments (one per VAD chunk), so threading *within*
+    # each forward beats running segments concurrently (which would also multiply the
+    # peak RSS we cap in wav2vec2_onnx.cpp). Override with WHISPERX_ALIGN_THREADS.
+    threads = int(os.environ.get("WHISPERX_ALIGN_THREADS", "0")) or (os.cpu_count() or 4)
+    model = whisperx_core.Wav2Vec2Onnx(onnx_path, num_threads=threads)
+    logger.info("align_onnx: %s, %d ORT intra-op threads",
+                os.path.basename(onnx_path), threads)
     metadata = {
         "language": language_code,
         "dictionary": meta["dictionary"],
