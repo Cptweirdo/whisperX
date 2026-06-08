@@ -395,10 +395,9 @@ public:
 
     // Reassign a *selection* inside a turn to another speaker (the edit-mode
     // 3-way split: head + tail keep the original speaker, the [start,end) middle
-    // moves to `speaker`/`name`). STUB: validates the request shape, but the
-    // segment-level split is not wired into the edits engine yet, so this returns
-    // 501. The SPA applies the split optimistically meanwhile (see
-    // docs/api-reference.md and web/src/lib/stores/session.svelte.ts).
+    // moves to `speaker`/`name`). Offsets are UTF-16 code units into the turn's
+    // space-joined words. Speaker resolution mirrors reassign_turn (existing key,
+    // or mint one from `name` after a case-insensitive duplicate check).
     ENDPOINT("POST", "/api/sessions/{id}/turns/{idx}/split", split_reassign_turn,
              PATH(String, id), PATH(String, idx),
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
@@ -416,8 +415,37 @@ public:
         const long end = body.value("end", -1L);
         if (start < 0 || end <= start)
             return jr(Status::CODE_400, {{"error", "Empty or invalid selection."}});
-        return jr(Status::CODE_501,
-                  {{"error", "Selection reassignment is not implemented yet."}});
+        if (speaker.empty()) {
+            json segs = current_segments(sid);
+            json names = app_.store.get_speaker_names(sid);
+            auto casefold = [](std::string s) {
+                std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+                return s;
+            };
+            std::set<std::string> taken;
+            for (const auto& k : whisperx::edits::distinct_speakers(segs))
+                taken.insert(casefold(views::resolve_label(k, names)));
+            for (auto it = names.begin(); it != names.end(); ++it)
+                if (it.value().is_string())
+                    taken.insert(casefold(it.value().get<std::string>()));
+            if (taken.count(casefold(name)))
+                return jr(Status::CODE_409,
+                          {{"error", "A speaker named '" + name +
+                                         "' already exists."}});
+            json existing = json::array();
+            for (const auto& k : whisperx::edits::distinct_speakers(segs))
+                existing.push_back(k);
+            for (auto it = names.begin(); it != names.end(); ++it)
+                existing.push_back(it.key());
+            speaker = whisperx::edits::next_speaker_key(existing);
+        }
+        if (!name.empty()) app_.store.set_speaker_name(sid, speaker, name);
+        try {
+            app_.store.save_turn_split(sid, std::stol(idx), start, end, speaker);
+        } catch (const std::exception&) {
+            return jr(Status::CODE_400, {{"error", "Unknown turn."}});
+        }
+        return jr(Status::CODE_200, transcript_payload(sid));
     }
 
     // --- Models / device -------------------------------------------------

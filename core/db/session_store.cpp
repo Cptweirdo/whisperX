@@ -596,6 +596,30 @@ json SessionStore::save_turn_reassign(const std::string& sid, long turn_index,
     return new_segments;
 }
 
+json SessionStore::save_turn_split(const std::string& sid, long turn_index,
+                                   long sel_start, long sel_end,
+                                   const std::string& new_speaker) {
+    std::lock_guard<std::mutex> g(files_lock_);
+    const json edits = load_edits(sid);
+    const bool has = edits.is_object();
+    json segments = has ? edits["segments"] : baseline_segments_(sid);
+    json history = has ? json(edits["history"]) : json::array();
+    json new_segments;
+    json delta;
+    try {
+        auto pr = whisperx::edits::apply_turn_split(segments, turn_index,
+                                                    sel_start, sel_end,
+                                                    new_speaker);
+        new_segments = std::move(pr.first);
+        delta = std::move(pr.second);
+    } catch (const whisperx::edits::NoChange&) {
+        return segments;  // empty selection / same speaker: nothing written
+    }
+    append_capped(history, delta);
+    write_edits_(sid, new_segments, history);
+    return new_segments;
+}
+
 json SessionStore::undo_turn_edit(const std::string& sid) {
     std::lock_guard<std::mutex> g(files_lock_);
     const json edits = load_edits(sid);

@@ -39,6 +39,15 @@ struct NoChange : std::runtime_error {
 //    seg_indices:[int], text:str}
 json group_turns(const json& segments);
 
+// turn_atoms(segments, seg_indices) -> the ordered word atoms a turn renders as:
+// trimmed word tokens (raw start/end carried only when BOTH are numeric), or one
+// fallback atom per wordless segment (its trimmed text + segment timing, plus a
+// `stale` flag passthrough). Empty tokens are dropped. This is the SINGLE source
+// for the char-offset contract: server-side views (views::turn_words) and
+// apply_turn_split both derive from it, so the offsets the SPA sends never drift
+// from the tokens it rendered. Each atom: {word:str, start?:num, end?:num, stale?:true}.
+json turn_atoms(const json& segments, const json& seg_indices);
+
 // Ordered unique non-null speaker keys, first-appearance order.
 json distinct_speakers(const json& segments);
 
@@ -62,6 +71,17 @@ std::pair<json, json> apply_turn_edit(const json& segments, long turn_index,
                                       const std::string& new_text);
 std::pair<json, json> apply_turn_reassign(const json& segments, long turn_index,
                                           const std::string& new_speaker);
+
+// apply_turn_split: reassign chars [sel_start, sel_end) of a turn to new_speaker,
+// rebuilding it as up to 3 segments — head(orig)/middle(new)/tail(orig). Offsets
+// are UTF-16 code units into the turn's turn_atoms joined by a single space (the
+// SPA's DOM-selection contract); a partial-word selection snaps outward to whole
+// words. Returns (new_segments, delta) like the other ops (delta carries new_len
+// so undo_last restores the run). Throws std::out_of_range on a bad turn_index,
+// NoChange on an empty selection or when new_speaker is the turn's current speaker.
+std::pair<json, json> apply_turn_split(const json& segments, long turn_index,
+                                       long sel_start, long sel_end,
+                                       const std::string& new_speaker);
 
 // undo_last(segments, history) -> (new_segments, new_history). Strict LIFO.
 std::pair<json, json> undo_last(const json& segments, const json& history);

@@ -38,7 +38,7 @@
   them.
 - **Status codes:** `200` ok · `201` created · `202` accepted (async) · `400`
   bad input · `404` missing · `409` conflict/busy · `413` upload too large · `500`
-  server/secret-store error · `501` not implemented (stub) · `503` models not ready.
+  server/secret-store error · `503` models not ready.
 
 ---
 

@@ -165,7 +165,7 @@ class SessionStore {
   /** Reassign a selected passage inside a turn (the edit-mode flow): the turn
    *  splits in three, the `[start,end)` middle moving to `target`. Waits for the
    *  server and applies its `TranscriptPayload`; no optimistic update. Failures
-   *  (incl. the current 501 stub) surface as a toast and leave turns unchanged. */
+   *  surface as a toast and leave turns unchanged. */
   async splitReassign(
     turnIndex: number,
     sel: { start: number; end: number },

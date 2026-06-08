@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <unordered_map>
@@ -118,6 +119,49 @@ json group_turns(const json& segments) {
         t["text"] = py_join(parts, " ");
     }
     return turns;
+}
+
+json turn_atoms(const json& segments, const json& seg_indices) {
+    auto truthy = [](const json& v) {
+        if (v.is_boolean()) return v.get<bool>();
+        if (v.is_number()) return v.get<double>() != 0.0;
+        if (v.is_string()) return !v.get<std::string>().empty();
+        return false;
+    };
+    json out = json::array();
+    for (const json& k_j : seg_indices) {
+        const std::size_t k = k_j.get<std::size_t>();
+        if (k >= segments.size()) continue;
+        const json& seg = segments[k];
+        const json words = (seg.contains("words") && seg["words"].is_array())
+                               ? seg["words"]
+                               : json::array();
+        if (!words.empty()) {
+            for (const json& w : words) {
+                const std::string token = py_strip(get_str(w, "word"));
+                if (token.empty()) continue;
+                json wd = {{"word", token}};
+                if (w.contains("start") && w["start"].is_number() &&
+                    w.contains("end") && w["end"].is_number()) {
+                    wd["start"] = w["start"];
+                    wd["end"] = w["end"];
+                }
+                out.push_back(std::move(wd));
+            }
+        } else {
+            const std::string text = py_strip(get_str(seg, "text"));
+            if (text.empty()) continue;
+            json wd = {{"word", text}};
+            if (seg.contains("start") && seg["start"].is_number() &&
+                seg.contains("end") && seg["end"].is_number()) {
+                wd["start"] = seg["start"];
+                wd["end"] = seg["end"];
+            }
+            if (seg.contains("stale") && truthy(seg["stale"])) wd["stale"] = true;
+            out.push_back(std::move(wd));
+        }
+    }
+    return out;
 }
 
 json distinct_speakers(const json& segments) {
@@ -358,6 +402,40 @@ void require_turn(long turn_index, const json& turns) {
     }
 }
 
+// Length of a UTF-8 string in UTF-16 code units — the unit the browser's
+// Selection/Range API (and JS `string.length`) counts in, so split offsets line
+// up with what the SPA sent. A codepoint above U+FFFF needs a surrogate pair (2).
+long utf16_len(const std::string& s) {
+    long n = 0;
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        std::uint32_t cp;
+        int adv;
+        if (c < 0x80) {
+            cp = c;
+            adv = 1;
+        } else if ((c >> 5) == 0x6) {
+            cp = c & 0x1F;
+            adv = 2;
+        } else if ((c >> 4) == 0xE) {
+            cp = c & 0x0F;
+            adv = 3;
+        } else if ((c >> 3) == 0x1E) {
+            cp = c & 0x07;
+            adv = 4;
+        } else {
+            cp = c;
+            adv = 1;  // stray byte: count as one unit, stay in sync
+        }
+        for (int k = 1; k < adv && i + k < s.size(); ++k)
+            cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        n += (cp > 0xFFFF) ? 2 : 1;
+        i += adv;
+    }
+    return n;
+}
+
 }  // namespace
 
 std::pair<json, json> apply_turn_edit(const json& segments, long turn_index,
@@ -448,6 +526,98 @@ std::pair<json, json> apply_turn_reassign(const json& segments, long turn_index,
     json new_segments = json::array();
     for (int k = 0; k < i; ++k) new_segments.push_back(segments[k]);
     for (const json& s : replacement) new_segments.push_back(s);
+    for (int k = j + 1; k < static_cast<int>(segments.size()); ++k) {
+        new_segments.push_back(segments[k]);
+    }
+
+    json delta = json::object();
+    delta["ts"] = now_iso();
+    delta["turn_index"] = turn_index;
+    delta["seg_range"] = json::array({i, j});
+    delta["old_segments"] = old_segments;
+    delta["new_len"] = static_cast<int>(replacement.size());
+    return {std::move(new_segments), std::move(delta)};
+}
+
+std::pair<json, json> apply_turn_split(const json& segments, long turn_index,
+                                       long sel_start, long sel_end,
+                                       const std::string& new_speaker) {
+    if (turn_index < 0) {
+        throw std::out_of_range("turn_index out of range: " +
+                                std::to_string(turn_index));
+    }
+    const json turns = group_turns(segments);
+    require_turn(turn_index, turns);
+    const json& turn = turns[turn_index];
+    const json orig_speaker = turn["speaker"];  // string or null
+    const int i = turn["seg_indices"].front().get<int>();
+    const int j = turn["seg_indices"].back().get<int>();
+
+    const json atoms = turn_atoms(segments, turn["seg_indices"]);
+    const int n = static_cast<int>(atoms.size());
+
+    // Map the UTF-16 offsets onto the atom range they cover. Atom k occupies
+    // [pos, pos+len) in the space-joined text; the trailing +1 is the joiner.
+    // An atom overlapping [sel_start, sel_end) is taken whole (partial-word
+    // selections snap outward), so the middle is never empty for a real span.
+    long pos = 0;
+    int wi = -1, wj = -1;
+    for (int k = 0; k < n; ++k) {
+        const long len = utf16_len(atoms[k]["word"].get<std::string>());
+        if (pos < sel_end && sel_start < pos + len) {
+            if (wi < 0) wi = k;
+            wj = k + 1;
+        }
+        pos += len + 1;
+    }
+    if (wi < 0 || wi >= wj) throw NoChange();  // empty / out-of-text selection
+    // Moving the passage to the speaker it already has changes nothing (a null
+    // turn speaker never equals a key, mirroring apply_turn_reassign).
+    if (orig_speaker.is_string() && orig_speaker.get<std::string>() == new_speaker) {
+        throw NoChange();
+    }
+
+    json old_segments = json::array();
+    for (int k = i; k <= j; ++k) old_segments.push_back(segments[k]);
+
+    // Build one segment from atoms [lo, hi) under `spk` (key omitted when null),
+    // mirroring apply_turn_edit's new-seg shape: bounds from the first/last timed
+    // atom (null when none), text from the tokens, words carrying key-presence timing.
+    auto build_seg = [&](int lo, int hi, const json& spk) -> json {
+        json words = json::array();
+        std::vector<std::string> tokens;
+        for (int k = lo; k < hi; ++k) {
+            json w = json::object();
+            w["word"] = atoms[k]["word"];
+            if (atoms[k].contains("start") && atoms[k].contains("end")) {
+                w["start"] = atoms[k]["start"];
+                w["end"] = atoms[k]["end"];
+            }
+            tokens.push_back(atoms[k]["word"].get<std::string>());
+            words.push_back(std::move(w));
+        }
+        json sstart(nullptr), send(nullptr);
+        for (int k = lo; k < hi; ++k)
+            if (atoms[k].contains("start")) { sstart = atoms[k]["start"]; break; }
+        for (int k = hi - 1; k >= lo; --k)
+            if (atoms[k].contains("end")) { send = atoms[k]["end"]; break; }
+        json seg = json::object();
+        seg["start"] = sstart;
+        seg["end"] = send;
+        seg["text"] = py_join(tokens, " ");
+        seg["words"] = std::move(words);
+        if (!spk.is_null()) seg["speaker"] = spk;
+        return seg;
+    };
+
+    json replacement = json::array();
+    if (wi > 0) replacement.push_back(build_seg(0, wi, orig_speaker));     // head
+    replacement.push_back(build_seg(wi, wj, json(new_speaker)));           // middle
+    if (wj < n) replacement.push_back(build_seg(wj, n, orig_speaker));     // tail
+
+    json new_segments = json::array();
+    for (int k = 0; k < i; ++k) new_segments.push_back(segments[k]);
+    for (json& s : replacement) new_segments.push_back(std::move(s));
     for (int k = j + 1; k < static_cast<int>(segments.size()); ++k) {
         new_segments.push_back(segments[k]);
     }

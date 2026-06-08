@@ -104,6 +104,9 @@ public:
                         const std::string& new_text);
     json save_turn_reassign(const std::string& session_id, long turn_index,
                             const std::string& new_speaker);
+    json save_turn_split(const std::string& session_id, long turn_index,
+                         long sel_start, long sel_end,
+                         const std::string& new_speaker);
     json undo_turn_edit(const std::string& session_id);
     json load_translation(const std::string& session_id,
                           const std::string& lang);  // object or null

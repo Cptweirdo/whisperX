@@ -93,44 +93,19 @@ std::string resolve_label(const json& raw, const json& names) {
 }
 
 json turn_words(const json& segments, const json& seg_indices) {
+    // Derive display words from the canonical tokenization (edits::turn_atoms) so
+    // the rendered tokens — and thus the char offsets the SPA computes over them —
+    // match exactly what apply_turn_split splits on. Here we only add the
+    // view-only concerns: round timing to 3dp and rename the token key to `text`.
     json out = json::array();
-    for (const auto& k_j : seg_indices) {
-        std::size_t k = k_j.get<std::size_t>();
-        if (k >= segments.size()) continue;
-        const json& seg = segments[k];
-        const json words =
-            seg.contains("words") && seg["words"].is_array() ? seg["words"]
-                                                             : json::array();
-        if (!words.empty()) {
-            for (const auto& w : words) {
-                std::string token =
-                    trim(w.contains("word") && w["word"].is_string()
-                             ? w["word"].get<std::string>()
-                             : "");
-                if (token.empty()) continue;
-                json wd = {{"text", token}};
-                if (w.contains("start") && w["start"].is_number() &&
-                    w.contains("end") && w["end"].is_number()) {
-                    wd["start"] = round3(w["start"].get<double>());
-                    wd["end"] = round3(w["end"].get<double>());
-                }
-                out.push_back(std::move(wd));
-            }
-        } else {
-            std::string text =
-                trim(seg.contains("text") && seg["text"].is_string()
-                         ? seg["text"].get<std::string>()
-                         : "");
-            if (text.empty()) continue;
-            json wd = {{"text", text}};
-            if (seg.contains("start") && seg["start"].is_number() &&
-                seg.contains("end") && seg["end"].is_number()) {
-                wd["start"] = round3(seg["start"].get<double>());
-                wd["end"] = round3(seg["end"].get<double>());
-            }
-            if (seg.contains("stale") && truthy(seg["stale"])) wd["stale"] = true;
-            out.push_back(std::move(wd));
+    for (const auto& a : whisperx::edits::turn_atoms(segments, seg_indices)) {
+        json wd = {{"text", a.at("word")}};
+        if (a.contains("start") && a.contains("end")) {
+            wd["start"] = round3(a["start"].get<double>());
+            wd["end"] = round3(a["end"].get<double>());
         }
+        if (a.contains("stale")) wd["stale"] = true;
+        out.push_back(std::move(wd));
     }
     return out;
 }

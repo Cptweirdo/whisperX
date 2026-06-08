@@ -6,6 +6,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
 
@@ -35,7 +36,83 @@ struct TempDir {
     std::string str() const { return path.string(); }
 };
 
+// Drop a transcript.json sidecar (the ASR result) next to a session row so the
+// file-backed edit methods have a baseline to read.
+void write_result(const TempDir& dir, const std::string& sid,
+                  const json& segments) {
+    fs::path d = fs::path(dir.path) / "sessions" / sid;
+    fs::create_directories(d);
+    std::ofstream(d / "transcript.json")
+        << json{{"segments", segments}}.dump();
+}
+
+// One SPEAKER_00 turn over two segments: "Hello there good friend" — atoms
+// Hello[0,5) there[6,11) good[12,16) friend[17,23).
+json one_turn_segments() {
+    return json::array(
+        {json{{"start", 0.0},
+              {"end", 1.0},
+              {"text", "Hello there"},
+              {"speaker", "SPEAKER_00"},
+              {"words", json::array({json{{"word", "Hello"}, {"start", 0.0}, {"end", 0.5}},
+                                     json{{"word", "there"}, {"start", 0.5}, {"end", 1.0}}})}},
+         json{{"start", 1.0},
+              {"end", 2.0},
+              {"text", "good friend"},
+              {"speaker", "SPEAKER_00"},
+              {"words", json::array({json{{"word", "good"}, {"start", 1.0}, {"end", 1.5}},
+                                     json{{"word", "friend"}, {"start", 1.5}, {"end", 2.0}}})}}});
+}
+
 }  // namespace
+
+TEST_CASE("save_turn_split writes the 3-way overlay (S1)", "[store]") {
+    TempDir dir;
+    SessionStore store(dir.str());
+    store.create("s1", "rec.mp3", "audio.mp3", json::object(),
+                 std::optional<std::string>("tiny"));
+    write_result(dir, "s1", one_turn_segments());
+
+    json out = store.save_turn_split("s1", 0, 6, 16, "SPEAKER_01");  // "there good"
+    REQUIRE(out.size() == 3);
+    CHECK(out[0]["text"] == "Hello");
+    CHECK(out[0]["speaker"] == "SPEAKER_00");
+    CHECK(out[1]["text"] == "there good");
+    CHECK(out[1]["speaker"] == "SPEAKER_01");
+    CHECK(out[2]["text"] == "friend");
+    CHECK(out[2]["speaker"] == "SPEAKER_00");
+    CHECK(store.edit_history_len("s1") == 1);
+    CHECK(store.load_edits("s1").is_object());
+}
+
+TEST_CASE("undo after a split reverts and drops the overlay (S2)", "[store]") {
+    TempDir dir;
+    SessionStore store(dir.str());
+    store.create("s2", "rec.mp3", "audio.mp3", json::object(),
+                 std::optional<std::string>("tiny"));
+    write_result(dir, "s2", one_turn_segments());
+
+    store.save_turn_split("s2", 0, 6, 16, "SPEAKER_01");
+    json reverted = store.undo_turn_edit("s2");
+    REQUIRE(reverted.size() == 2);
+    CHECK(reverted[0]["speaker"] == "SPEAKER_00");
+    CHECK(reverted[1]["speaker"] == "SPEAKER_00");
+    CHECK(store.edit_history_len("s2") == 0);
+    CHECK(store.load_edits("s2").is_null());  // back at baseline -> overlay removed
+}
+
+TEST_CASE("same-speaker split is a NoChange that writes nothing (S3)", "[store]") {
+    TempDir dir;
+    SessionStore store(dir.str());
+    store.create("s3", "rec.mp3", "audio.mp3", json::object(),
+                 std::optional<std::string>("tiny"));
+    write_result(dir, "s3", one_turn_segments());
+
+    json out = store.save_turn_split("s3", 0, 6, 16, "SPEAKER_00");  // already 00
+    CHECK(out.size() == 2);                       // baseline, untouched
+    CHECK(store.edit_history_len("s3") == 0);
+    CHECK(store.load_edits("s3").is_null());      // nothing persisted
+}
 
 TEST_CASE("create + get round-trips the row shape", "[store]") {
     TempDir dir;

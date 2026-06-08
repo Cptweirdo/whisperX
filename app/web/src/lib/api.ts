@@ -131,8 +131,8 @@ class SessionsApi {
   reassign(id: string, turn: number, body: ReassignBody) {
     return request<TranscriptPayload>("POST", `/sessions/${id}/turns/${turn}/speaker`, body);
   }
-  /** Reassign a selected passage inside a turn to another speaker (3-way split).
-   *  Backend is a stub today (501); the SPA toasts the error and leaves turns as-is. */
+  /** Reassign a selected passage inside a turn to another speaker (3-way split):
+   *  head + tail keep the original speaker, the `[start,end)` middle moves. */
   splitReassign(id: string, turn: number, body: SplitReassignBody) {
     return request<TranscriptPayload>("POST", `/sessions/${id}/turns/${turn}/split`, body);
   }
