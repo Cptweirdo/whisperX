@@ -13,10 +13,11 @@
 - **Acceleration:** CPU-only v1 — sherpa-onnx/ORT on CPU. faster-whisper, torch
   wav2vec2, pyannote, mlx, whisper.cpp/Metal are gone with Python. GPU (ORT CUDA EP)
   and Metal/GGML are explicit later passes.
-- **Scope:** Core MVP + translation + the Google Drive **auth link and Drive REST
-  client** — all built. The remaining backup **engine** (manifest pointer +
-  content-addressed object store + GC + restore) is the one piece still deferred
-  (status/connect/disconnect already report real link state).
+- **Scope:** Core MVP + translation + the Google Drive **auth link, Drive REST
+  client, and the backup engine** — all built. The full cloud-backup path
+  (manifest pointer + content-addressed object store + GC + streamed restore +
+  bootstrap/conflict + periodic) now works end-to-end; only later upload hardening
+  (chunk-resume) and alternate backends remain.
 - **Backup auth:** a **hand-rolled OAuth2 (auth-code + PKCE/S256) lib** over the
   existing libcurl client — NOT `google_auth_oauthlib`/google-cloud-cpp. Provider
   config is injectable (Google wired now); credentials persist in the OS keyring
@@ -30,7 +31,17 @@
 - **Drive client:** `drive::DriveClient` wraps Drive v3 `files.*` (list/get/
   download/create/update/delete + `find_child`/`ensure_folder`) over libcurl —
   the native analog of `app/backup/gdrive.py`'s googleapiclient calls. Auth +
-  HTTP transport are injectable, so request shaping is unit-tested offline.
+  HTTP transport are injectable, so request shaping is unit-tested offline. Large
+  objects stream: `upload_resumable` (single streamed PUT via a resumable session)
+  up, `download_to_file` down, so 300-400 MB audio blobs never sit in memory.
+- **Backup engine:** `backup::BackupEngine` (port of `app/backup/service.py`)
+  over a `StorageBackend` abstraction — `GDriveBackend` (Drive) + `LocalFsBackend`
+  (filesystem reference / offline tests). Content-addressed `objects/<sha256>` +
+  an atomic `manifest.json` commit pointer; `backup_now`+GC, streamed `restore`+
+  prune, bootstrap/`assess_link` (fresh/remote-only/in-sync/diverged), adopt/
+  overwrite, a periodic auto-backup thread, and a per-device `.backup/state.json`
+  sidecar. The `BackupService` facade composes it: OAuth link + engine, two SSE
+  channels (`__backup__` connect, `__backup_status__` persistent).
 - **Translation:** Google Cloud Translation **v2 REST (API key)** — **built**. Ported
   `app/translation/google.py` 1:1 over the existing libcurl client (NOT google-cloud-cpp,
   which is v3/gRPC + service-account auth — it would break the API-key UI/keyring contract
