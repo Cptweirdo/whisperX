@@ -212,11 +212,40 @@ def format_timestamp(
     )
 
 
+def _core_writers_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` writers back this run (Phase 5 ``writers``).
+
+    ``WHISPERX_CORE_STAGES`` carries comma-separated stage tokens; ``writers`` routes
+    each ``ResultWriter`` body (srt/vtt/txt/tsv/aud/json + ``iterate_result``) to the
+    native ``write_<fmt>`` — byte-identical for srt/vtt/txt/tsv/aud, semantic
+    round-trip for json. The Python bodies below stay the live oracle. File naming +
+    open stay Python (``__call__``); only the formatted string crosses the seam.
+    ``hasattr``-guarded so a module built without the writers degrades cleanly.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "writers" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "write_srt")
+
+
 class ResultWriter:
     extension: str
 
     def __init__(self, output_dir: str):
         self.output_dir = output_dir
+
+    def _core_string(self, result: dict, options: dict):
+        """The native file bytes when the ``writers`` token is on, else ``None``
+        (fall back to the Python ``write_result`` oracle)."""
+        if not _core_writers_enabled():
+            return None
+        import whisperx_core
+        fn = getattr(whisperx_core, "write_" + self.extension, None)
+        return None if fn is None else fn(result, options)
 
     def __call__(self, result: dict, audio_path: str, options: dict):
         audio_basename = os.path.basename(audio_path)
@@ -225,8 +254,12 @@ class ResultWriter:
             self.output_dir, audio_basename + "." + self.extension
         )
 
+        native = self._core_string(result, options)
         with open(output_path, "w", encoding="utf-8") as f:
-            self.write_result(result, file=f, options=options)
+            if native is not None:
+                f.write(native)
+            else:
+                self.write_result(result, file=f, options=options)
 
     def write_result(self, result: dict, file: TextIO, options: dict):
         raise NotImplementedError

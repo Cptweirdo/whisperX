@@ -391,8 +391,60 @@ glue consumes either model's turns unchanged.
   across `WHISPERX_CORE_STAGES` ∈ {unset, `diarize`, `db,edits,vad,align,assign,diarize`};
   `import whisperx` clean (facade `hasattr`-guarded); dep-free `WHISPERX_CORE_AUDIO=OFF`
   build unaffected. CI: a torch-free `SherpaDiarizer` smoke in the `audio-stage` lane.
-- **Remaining Phase 4 slice (later):** only the **whisper.cpp/GGML** ASR backend (4a
-  follow-on, Metal-shader/CMake build).
+- **Remaining Phase 4 slice — deferred/skipped:** the **whisper.cpp/GGML** ASR backend
+  (4a follow-on, Metal-shader/CMake build) **and its Apple-Silicon Metal acceleration** are
+  **explicitly out of scope for now** (build cost not yet worth it). Phase 4 has no active
+  remaining slice; sherpa-onnx Whisper is the ASR backend on all platforms until/unless the
+  GGML path is picked up.
+
+## Phase 5 — slice `writers` landed (native output writers)
+
+Phase 5 ports the output writers and (later) a native end-to-end orchestrator. Per the
+prior-phase pattern the **pure dep-free writer IP ships first** behind a new composable
+**`writers`** token; the **`orchestrate`** slice (a fully-native `run_job`) is **deferred**
+(see below).
+
+- **Native writers (`writers` token).** `core/writers/writers.{hpp,cpp}` (verbatim port of
+  `whisperx/utils.py`'s `ResultWriter` family + `SubtitlesWriter.iterate_result`) live in the
+  always-built `whisperx_core_lib` — **no new deps** (pure `nlohmann::json` in / `std::string`
+  out, the `merge_chunks`/`assign` pattern). All **six** formats: `write_srt`/`write_vtt`/
+  `write_txt`/`write_tsv`/`write_aud`/`write_json` + `format_timestamp` + the full
+  `iterate_result` (the word-grouping cue loop incl. the CLI-live `highlight_words` `<u>` path
+  and `max_line_width`/`max_line_count` line-splitting, `LANGUAGES_WITHOUT_SPACES` join,
+  speaker `[SPK]:` prefix, the no-`words` segment fallback). `whisperx/utils.py` is a **facade**:
+  `ResultWriter.__call__` routes to `whisperx_core.write_<fmt>` under `writers` (one routing
+  point covers all six subclasses; file naming + open stay Python, `get_writer`'s signature
+  unchanged), keeping the Python bodies as the oracle.
+- **Byte-parity is provable (the brief's float-repr worry dissolves).** srt/vtt/txt/tsv
+  timecodes are `round(seconds*1000)` **integer-ms** math (`nearbyint`, banker's), so they're
+  pure integer + string formatting → **byte-identical**. `aud` prints raw floats via a
+  Python-`repr`-compatible formatter (the increasing-`%.{p}g` shortest-round-trip loop + the
+  repr `.0` rule) → byte-identical on the timestamp domain. `json` is `dump()` — **semantic**
+  round-trip parity (compact/sorted-key OK; values + structure round-trip — the Phase-1
+  store-JSON precedent; the contract test checks `json.loads`, not bytes). **`SubtitlesProcessor.py`
+  is NOT ported** — it is dead code (imported nowhere in `whisperx/`/`app/`); revisit if a
+  caller appears.
+- **Gates met.** `bindings/test/test_writers_parity.py` — C++ `write_<fmt>` vs the Python
+  `write_result` oracle, **byte-exact** for srt/vtt/txt/tsv/aud and **round-trip-equal** for
+  json, across 5 result shapes × 4 option-sets (defaults / highlight / line-width / both) +
+  `format_timestamp` parity (**106 cases**); Catch2 `test_writers.cpp` (7 cases: timecode
+  rounding/hours gating, the `iterate_result` branch matrix, the `<u>` wrap) under ASan/UBSan;
+  **85/85 CTest**; the existing `test_pipeline_contract.py` writer byte-goldens + json
+  round-trip stay green under `writers`; full `uv run pytest tests/` green (226) across
+  `WHISPERX_CORE_STAGES` ∈ {unset, `writers`}; `import whisperx` clean; dep-free build
+  unaffected (the writers TU is in `whisperx_core_lib`, no audio deps).
+- **Slice `orchestrate` — deferred; next up is the align driver.** A *fully-native* `run_job`
+  was the intended second slice, but the **align stage has no native driver**:
+  `alignment.py::align`'s Phase-1 preprocessing (per-language char-clean →
+  `clean_char`/`clean_cdx`, the OOV/wildcard handling, the gather + batched-forward loop,
+  sentence spans) stays Python — only the native *pieces* `Wav2Vec2Onnx.forward` /
+  `emission_post` / `align_assemble` exist, and they consume already-preprocessed inputs. So a
+  "no Python re-entry" orchestrator isn't achievable for align without first porting that
+  driver. **Decided: the next slice ports the align driver** (making `align()` a true native
+  entrypoint), *then* the 100%-native orchestrator builds on it — **not** the hybrid
+  Python-callback shape. (Watch: `align()` still calls **nltk punkt** for `sentence_spans` even
+  though `align_assemble` already carries the native splitter — the driver port must reconcile
+  that.)
 
 ## Where to start
 

@@ -31,6 +31,7 @@
 #include "text/sentence_split.hpp"
 #include "text/sequence_matcher.hpp"
 #include "vad/merge_chunks.hpp"
+#include "writers/writers.hpp"
 
 #ifdef WHISPERX_CORE_AUDIO
 #include "align/wav2vec2_onnx.hpp"
@@ -515,6 +516,40 @@ void bind_diarize(py::module_& m) {
         "nearest turn when there is no overlap).");
 }
 
+// Output writers — the six ResultWriter bodies (srt/vtt/txt/tsv/aud/json) +
+// SubtitlesWriter.iterate_result. Pure JSON in / string out; the Python facade in
+// whisperx/utils.py routes each write_result here under the `writers` token and
+// writes the returned string to the file (naming + open stay Python).
+void bind_writers(py::module_& m) {
+    namespace wr = whisperx::writers;
+    auto def_writer = [&](const char* name,
+                          std::string (*fn)(const json&, const json&),
+                          const char* doc) {
+        m.def(
+            name,
+            [fn](const py::handle& result, const py::handle& options) {
+                return fn(py_to_json(result), py_to_json(options));
+            },
+            py::arg("result"), py::arg("options"), doc);
+    };
+    def_writer("write_srt", &wr::write_srt, "SRT file bytes from a result dict.");
+    def_writer("write_vtt", &wr::write_vtt, "WebVTT file bytes from a result dict.");
+    def_writer("write_txt", &wr::write_txt, "Plain-text file bytes from a result dict.");
+    def_writer("write_tsv", &wr::write_tsv, "TSV file bytes from a result dict.");
+    def_writer("write_aud", &wr::write_aud, "Audacity-label file bytes from a result dict.");
+    def_writer("write_json", &wr::write_json,
+               "JSON file bytes (compact dump; semantic round-trip parity).");
+    m.def(
+        "format_timestamp",
+        [](double seconds, bool always_include_hours, const std::string& marker) {
+            return wr::format_timestamp(seconds, always_include_hours,
+                                        marker.empty() ? '.' : marker[0]);
+        },
+        py::arg("seconds"), py::arg("always_include_hours") = false,
+        py::arg("decimal_marker") = ".",
+        "SRT/VTT timecode from seconds (integer-ms, exact).");
+}
+
 #ifdef WHISPERX_CORE_AUDIO
 // In-process libav* decode (replaces the ffmpeg subprocess; `decode` token).
 // Built only with WHISPERX_CORE_AUDIO; the Python facade hasattr-guards so a
@@ -747,6 +782,7 @@ PYBIND11_MODULE(whisperx_core, m) {
     bind_vad(m);
     bind_align(m);
     bind_diarize(m);
+    bind_writers(m);
 #ifdef WHISPERX_CORE_AUDIO
     bind_audio(m);
 #endif

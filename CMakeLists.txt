@@ -87,6 +87,7 @@ add_library(whisperx_core_lib STATIC
   core/align/emission_post.cpp
   core/diarize/interval_tree.cpp
   core/diarize/assign_speakers.cpp
+  core/writers/writers.cpp
   core/build_info.cpp)
 target_include_directories(whisperx_core_lib PUBLIC core ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(whisperx_core_lib PUBLIC
@@ -228,7 +229,8 @@ if(WHISPERX_CORE_TESTS)
     core/tests/test_trellis.cpp
     core/tests/test_sentence_split.cpp
     core/tests/test_emission_post.cpp
-    core/tests/test_assign_speakers.cpp)
+    core/tests/test_assign_speakers.cpp
+    core/tests/test_writers.cpp)
   target_link_libraries(whisperx_core_tests
     PRIVATE whisperx_core_lib Catch2::Catch2WithMain)
 

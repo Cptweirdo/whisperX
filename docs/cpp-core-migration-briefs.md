@@ -965,7 +965,10 @@ The aligner's ONNX Runtime + audio access are already wired by 2B's
 > bound), ≥ 2 speakers, the assign-glue contract, embedding dim — 5/5 on en/de/ru. Gates:
 > pytest 226 green across `{unset, diarize, db,edits,vad,align,assign,diarize}`; seam green
 > under `diarize`; dep-free build unaffected; CI torch-free `SherpaDiarizer` smoke.
-> **Still open:** only the **whisper.cpp/GGML** ASR backend (4a follow-on).
+> **Deferred/skipped:** the **whisper.cpp/GGML** ASR backend (4a follow-on) **and its
+> Apple-Silicon Metal acceleration** are explicitly out of scope for now (build cost not yet
+> worth it); sherpa-onnx Whisper is the ASR backend on all platforms. Phase 4 has no active
+> remaining slice.
 
 ### Context
 Swap the two remaining models. **Whisper** moves to a **pluggable ASR backend**
@@ -1065,6 +1068,35 @@ lazy-download on first run is the **Phase-5 packaging policy** (the *mechanism* 
 ---
 
 ## Phase 5 — writers + end-to-end
+
+> **Slice `writers` LANDED** (the pure writer IP, the 2A/3A/`assign` analog). Native
+> `core/writers/writers.{hpp,cpp}` (in `whisperx_core_lib`, **no deps**) ports all six
+> `ResultWriter` bodies (srt/vtt/txt/tsv/aud/json) + the full `SubtitlesWriter.iterate_result`
+> (incl. the CLI-live `highlight_words` + `max_line_width`/`max_line_count` branches) behind
+> the **`writers`** token; `whisperx/utils.py::ResultWriter.__call__` facades to
+> `whisperx_core.write_<fmt>` (Python bodies stay the oracle; file naming/open stay Python).
+> **Byte-parity is provable** — srt/vtt/txt/tsv timecodes are integer-ms (`round(seconds*1000)`)
+> so they're integer+string formatting; `aud` floats use a Python-`repr` formatter; `json` is
+> `dump()` (semantic round-trip, the Phase-1 precedent — the float-repr "open question" below
+> dissolves). **`SubtitlesProcessor.py` is NOT ported** (dead code, imported nowhere). Gates:
+> `bindings/test/test_writers_parity.py` (byte-exact srt/vtt/txt/tsv/aud + json round-trip, 5
+> results × 4 option-sets, **106 cases**), Catch2 `test_writers.cpp` (7, ASan/UBSan), 85/85
+> CTest, the contract writer byte-goldens green under `writers`, pytest 226 green across
+> `{unset, writers}`, dep-free build unaffected.
+>
+> **Slice `orchestrate` DEFERRED — next up: the align driver.** A fully-native `run_job` needs a
+> native align *driver*, but `alignment.py::align`'s preprocessing
+> (char-clean/`clean_cdx`/OOV-wildcard/gather/sentence-spans) is still Python — only
+> `Wav2Vec2Onnx.forward`/`emission_post`/`align_assemble` are native, and they take
+> already-preprocessed inputs. **Decided direction: port the align driver first** (an
+> `align_driver` sub-slice making `align()` a true native entrypoint), *then* the 100%-native
+> orchestrator — **not** the hybrid Python-callback shape. See the Phase 3 brief for the
+> driver's scope (the `align()` Phase-1 loop: per-language char normalization →
+> `clean_char`/`clean_cdx`, OOV wildcard, `MAX_DURATION`/`start>=MAX_DURATION` gating, the gather
+> + batched-forward driver over `Wav2Vec2Onnx.forward`, the per-segment `emission_post` →
+> `align_assemble` loop, and the sentence-span source — note `align()` still calls **nltk punkt**
+> for `sentence_spans` even though `align_assemble` carries the native splitter, so the port must
+> reconcile that).
 
 ### Context
 Port the output writers and assemble the **full `run_job` parity** path, so a C++
