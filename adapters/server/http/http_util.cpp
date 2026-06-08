@@ -2,8 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstring>
 #include <filesystem>
+
+#include "encoding/url.hpp"
 
 namespace fs = std::filesystem;
 namespace http = oatpp::web::protocol::http;
@@ -13,20 +14,7 @@ namespace whisperx::server::http_util {
 namespace {
 
 std::string url_decode(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '+') {
-            out += ' ';
-        } else if (s[i] == '%' && i + 2 < s.size()) {
-            auto hex = s.substr(i + 1, 2);
-            out += static_cast<char>(std::strtol(hex.c_str(), nullptr, 16));
-            i += 2;
-        } else {
-            out += s[i];
-        }
-    }
-    return out;
+    return encoding::Url::decode(s);
 }
 
 // Streams a file as a chunked download body via a blocking ReadCallback.

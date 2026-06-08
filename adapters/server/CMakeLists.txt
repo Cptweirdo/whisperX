@@ -14,6 +14,7 @@ add_executable(whisperx_server
   jobs/runner.cpp
   models/assets.cpp
   models/model_manager.cpp
+  encoding/url.cpp
   http/http_util.cpp
   http/views.cpp)
 
@@ -38,10 +39,12 @@ if(WHISPERX_CORE_TESTS)
     tests/test_broker.cpp
     tests/test_config.cpp
     tests/test_jobs.cpp
+    tests/test_url.cpp
     sse/broker.cpp
     jobs/jobs.cpp
     log/log.cpp
-    config.cpp)
+    config.cpp
+    encoding/url.cpp)
   target_include_directories(whisperx_server_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(whisperx_server_tests PRIVATE
