@@ -42,6 +42,10 @@ struct Config {
     std::string spa_dir;         // app/static/spa (built SPA); WHISPERX_SPA_DIR override
     std::string static_dir;      // app/static (parent of spa); WHISPERX_STATIC_DIR
     std::string active_model;    // seed (persisted by the store); WHISPERX_MODEL
+    // Cloud backup (port of app/backup/__init__.py::build_service):
+    std::string backup_backend;  // WHISPERX_BACKUP_BACKEND: "gdrive" | "local" | ""
+    std::string backup_dir;      // WHISPERX_BACKUP_DIR (local backend root)
+    long backup_interval = 900;  // WHISPERX_BACKUP_INTERVAL secs (0 = no periodic)
 };
 
 // Build the Config from the (already-loaded) environment.

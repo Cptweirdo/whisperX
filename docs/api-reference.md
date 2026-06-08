@@ -38,7 +38,7 @@
   them.
 - **Status codes:** `200` ok · `201` created · `202` accepted (async) · `400`
   bad input · `404` missing · `409` conflict/busy · `413` upload too large · `500`
-  server/secret-store error · `503` models not ready.
+  server/secret-store error · `501` not implemented (stub) · `503` models not ready.
 
 ---
 
@@ -283,6 +283,28 @@ to mint a new speaker (a fresh key is allocated). Providing both renames+assigns
        | { error: "Unknown turn." }
 409 → { error: "A speaker named '<name>' already exists." }
 404
+```
+
+### `POST /api/sessions/<session_id>/turns/<turn_index>/split` · _stub_
+Reassign a **selected passage** inside a turn to another speaker — the edit-mode
+flow (select text → right-click → *Reassign to speaker*). `start`/`end` are
+character offsets into the turn's word-joined text (`Turn.words` joined by a
+single space); the turn splits in three — the head + tail keep the original
+speaker, the `[start,end)` middle moves to `speaker`/`name` (same target rules as
+`/speaker`: existing key, or a `name` to mint one).
+
+> **Backend is a stub.** The segment-level split is not yet wired into the edits
+> engine, so the endpoint validates the request and returns `501`. The SPA
+> (`session.svelte.ts::splitReassign`) waits for the server response — no
+> optimistic update — and surfaces the error via a toast; once the engine lands
+> this returns the usual `TranscriptPayload` and the transcript updates from it.
+```ts
+{ start: number; end: number; speaker?: string; name?: string }
+501 → { error: "Selection reassignment is not implemented yet." }   // stub
+400 → { error: "Provide a speaker key or a name for a new speaker." }
+       | { error: "Empty or invalid selection." }
+404
+// when implemented: 200 → TranscriptPayload
 ```
 
 ---

@@ -295,6 +295,18 @@ export interface ReassignBody {
   speaker?: string;
   name?: string;
 }
+
+/** Reassign a *selection* inside a turn to another speaker. `start`/`end` are
+ *  character offsets into the turn's word-joined text (`Turn.words` joined by a
+ *  single space); the turn splits in three — head + tail keep the original
+ *  speaker, the `[start,end)` middle moves to `speaker`/`name`. Mirrors
+ *  ReassignBody for the speaker target (existing key, or a `name` to mint one). */
+export interface SplitReassignBody {
+  start: number;
+  end: number;
+  speaker?: string;
+  name?: string;
+}
 export interface OnboardingFinishBody {
   token: string;
   model: string;

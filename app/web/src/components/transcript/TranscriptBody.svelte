@@ -2,6 +2,7 @@
   import { session } from "../../lib/stores/session.svelte";
   import { fmtTs } from "../../lib/format";
   import SpeakerMenu from "./SpeakerMenu.svelte";
+  import ReassignContextMenu from "./ReassignContextMenu.svelte";
 
   let {
     currentTime,
@@ -91,6 +92,35 @@
     const el = e.target as HTMLElement;
     if (openSwap !== null && !el.closest?.(".swap-pick")) openSwap = null;
   }
+
+  // --- edit mode: select a passage → right-click → reassign (3-way split) ----
+  let ctx = $state<{ x: number; y: number; turnIndex: number; text: string; start: number; end: number } | null>(null);
+
+  function onTurnContextMenu(e: MouseEvent, t: { index: number }) {
+    if (!session.editing || editing !== null) return; // outside edit mode: native menu
+    const container = e.currentTarget as HTMLElement;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return; // need a selection
+    const range = sel.getRangeAt(0);
+    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return;
+    const str = range.toString();
+    if (!str.trim()) return;
+    e.preventDefault();
+    // char offset of the selection within the turn's word-joined text
+    const pre = range.cloneRange();
+    pre.selectNodeContents(container);
+    pre.setEnd(range.startContainer, range.startOffset);
+    const start = pre.toString().length;
+    ctx = { x: e.clientX, y: e.clientY, turnIndex: t.index, text: str, start, end: start + str.length };
+  }
+
+  async function pickReassign(target: { speaker?: string; name?: string }) {
+    if (!ctx) return;
+    const { turnIndex, start, end } = ctx;
+    ctx = null;
+    window.getSelection()?.removeAllRanges();
+    await session.splitReassign(turnIndex, { start, end }, target);
+  }
 </script>
 
 <svelte:window onclick={onWindowClick} />
@@ -155,15 +185,20 @@
         ></div>
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="turn__text" ondblclick={() => enterEdit(t)}>
+        <div
+          class="turn__text"
+          class:is-selectable={session.editing}
+          ondblclick={() => enterEdit(t)}
+          oncontextmenu={(e) => onTurnContextMenu(e, t)}
+        >
           {#each t.words as w (w.gi)}<!-- svelte-ignore a11y_no_noninteractive_tabindex --><span
               class={wordClass(w)}
               class:seg--untranslated={w.stale}
-              onclick={() => w.start != null && onseek(w.start + 0.001)}
-              role={w.start != null ? "button" : undefined}
-              tabindex={w.start != null ? 0 : undefined}
+              onclick={() => !session.editing && w.start != null && onseek(w.start + 0.001)}
+              role={!session.editing && w.start != null ? "button" : undefined}
+              tabindex={!session.editing && w.start != null ? 0 : undefined}
               onkeydown={(e) => {
-                if (w.start != null && (e.key === "Enter" || e.key === " ")) {
+                if (!session.editing && w.start != null && (e.key === "Enter" || e.key === " ")) {
                   e.preventDefault();
                   onseek(w.start + 0.001);
                 }
@@ -173,4 +208,14 @@
       {/if}
     </div>
   {/each}
+{/if}
+
+{#if ctx}
+  <ReassignContextMenu
+    x={ctx.x}
+    y={ctx.y}
+    text={ctx.text}
+    onpick={pickReassign}
+    onclose={() => (ctx = null)}
+  />
 {/if}

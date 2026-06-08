@@ -393,6 +393,33 @@ public:
         return jr(Status::CODE_200, transcript_payload(sid));
     }
 
+    // Reassign a *selection* inside a turn to another speaker (the edit-mode
+    // 3-way split: head + tail keep the original speaker, the [start,end) middle
+    // moves to `speaker`/`name`). STUB: validates the request shape, but the
+    // segment-level split is not wired into the edits engine yet, so this returns
+    // 501. The SPA applies the split optimistically meanwhile (see
+    // docs/api-reference.md and web/src/lib/stores/session.svelte.ts).
+    ENDPOINT("POST", "/api/sessions/{id}/turns/{idx}/split", split_reassign_turn,
+             PATH(String, id), PATH(String, idx),
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        std::string sid = id;
+        if (app_.store.get(sid).is_null())
+            return jr(Status::CODE_404, json::object());
+        json body = http_util::parse_body(request);
+        std::string speaker = body.value("speaker", "");
+        std::string name = body.value("name", "");
+        if (speaker.empty() && name.empty())
+            return jr(Status::CODE_400,
+                      {{"error",
+                        "Provide a speaker key or a name for a new speaker."}});
+        const long start = body.value("start", -1L);
+        const long end = body.value("end", -1L);
+        if (start < 0 || end <= start)
+            return jr(Status::CODE_400, {{"error", "Empty or invalid selection."}});
+        return jr(Status::CODE_501,
+                  {{"error", "Selection reassignment is not implemented yet."}});
+    }
+
     // --- Models / device -------------------------------------------------
     ENDPOINT("GET", "/api/models", get_models) {
         return jr(Status::CODE_200, app_.manager.status());
@@ -641,7 +668,8 @@ public:
         return jr(Status::CODE_200, app_.backup.status_json());
     }
 
-    ENDPOINT("POST", "/api/backup/connect", backup_connect) {
+    ENDPOINT("POST", "/api/backup/connect", backup_connect,
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
         if (app_.backup.is_linked())
             return jr(Status::CODE_200, app_.backup.status_json());
         if (!app_.backup.configured())
@@ -649,10 +677,63 @@ public:
                       {{"error",
                         "Cloud backup isn't configured on this server "
                         "(GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET unset)."}});
+        json body = http_util::parse_body(request);
+        std::string folder = body.value("backup_folder", "");
+        if (!folder.empty()) app_.backup.set_folder(folder);
         if (!app_.backup.connect())
             return jr(Status::CODE_409,
                       {{"error", "A link is already in progress."}});
         return jr(Status::CODE_200, {{"connecting", true}});
+    }
+
+    // Trigger a backup now (async); the persistent status stream carries progress.
+    ENDPOINT("POST", "/api/backup/now", backup_now) {
+        if (!app_.backup.start_backup_now())
+            return jr(Status::CODE_409,
+                      {{"error", "Backup backend is not linked."}});
+        return jr(Status::CODE_202, app_.backup.status_json());
+    }
+
+    // Pull the remote mirror down to local (maintenance op).
+    ENDPOINT("POST", "/api/backup/restore", backup_restore) {
+        try {
+            int n = app_.backup.restore();
+            return jr(Status::CODE_200,
+                      {{"restored", n}, {"backup", app_.backup.status_json()}});
+        } catch (const std::exception& e) {
+            return jr(Status::CODE_409, {{"error", e.what()}});
+        }
+    }
+
+    // Bootstrap conflict resolution: adopt the existing remote (restore down).
+    ENDPOINT("POST", "/api/backup/bootstrap/adopt", backup_adopt) {
+        try {
+            int n = app_.backup.adopt();
+            return jr(Status::CODE_200,
+                      {{"restored", n}, {"backup", app_.backup.status_json()}});
+        } catch (const std::exception& e) {
+            return jr(Status::CODE_409, {{"error", e.what()}});
+        }
+    }
+
+    // Bootstrap conflict resolution: overwrite the remote with local (GC old).
+    ENDPOINT("POST", "/api/backup/bootstrap/overwrite", backup_overwrite) {
+        try {
+            json r = app_.backup.overwrite();
+            r["backup"] = app_.backup.status_json();
+            return jr(Status::CODE_200, r);
+        } catch (const std::exception& e) {
+            return jr(Status::CODE_409, {{"error", e.what()}});
+        }
+    }
+
+    // Inspect the remote (size/generation) for the restore/conflict prompts.
+    ENDPOINT("GET", "/api/backup/remote-info", backup_remote_info) {
+        try {
+            return jr(Status::CODE_200, app_.backup.remote_info());
+        } catch (const std::exception& e) {
+            return jr(Status::CODE_409, {{"error", e.what()}});
+        }
     }
 
     ENDPOINT("POST", "/api/backup/disconnect", backup_disconnect) {
@@ -678,17 +759,35 @@ public:
         return resp;
     }
 
-    // Live backup link progress (connecting -> linked/idle). Channel carries the
-    // full status payload; terminal once it leaves "connecting".
+    // One-shot OAuth consent result stream. Payload envelope is
+    // {status: connecting|linked|error, backup: <card>, message?}; terminal once
+    // status leaves "connecting" (mirrors app/server.py /backup/events).
     ENDPOINT("GET", "/backup/events", backup_events) {
         AppState* app = &app_;
         auto initial = [app]() -> std::optional<json> {
-            return app->backup.status_json();
+            json card = app->backup.status_json();
+            std::string st =
+                card.value("linked", false)
+                    ? "linked"
+                    : (card.value("state", "") == "connecting" ? "connecting"
+                                                               : "idle");
+            return json{{"status", st}, {"backup", card}};
         };
         auto terminal = [](const json& e) {
-            return e.contains("state") && e["state"] != "connecting";
+            return e.contains("status") &&
+                   (e["status"] == "linked" || e["status"] == "error");
         };
         return sse::sse_response(app_.broker, kBackupChannel, initial, terminal);
+    }
+
+    // Persistent backup sync-status stream. Payload is {status: <card>} on every
+    // engine state transition (mirrors /backup/status/events).
+    ENDPOINT("GET", "/backup/status/events", backup_status_events) {
+        AppState* app = &app_;
+        auto initial = [app]() -> std::optional<json> {
+            return json{{"status", app->backup.status_json()}};
+        };
+        return sse::sse_response(app_.broker, kBackupStatusChannel, initial);
     }
 
     // --- Translation -----------------------------------------------------

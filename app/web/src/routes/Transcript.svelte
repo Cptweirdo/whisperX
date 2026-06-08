@@ -54,6 +54,21 @@
           >
             <sl-icon slot="prefix" name="arrow-counterclockwise"></sl-icon> Undo
           </sl-button>
+          {#if !session.readonly}
+            <button
+              class="editmode"
+              class:is-on={session.editMode}
+              type="button"
+              onclick={() => session.toggleEditMode()}
+              title="Toggle edit mode"
+            >
+              {#if session.editMode}
+                <span class="editmode__dot"></span> Editing
+              {:else}
+                <sl-icon name="pencil"></sl-icon> Edit transcript
+              {/if}
+            </button>
+          {/if}
         </div>
       </div>
 
@@ -76,6 +91,18 @@
         {#if !row.diarized} · no speaker labels{/if}.
       </p>
       <div class="tr__hr"></div>
+
+      {#if session.editing}
+        <div class="edit-hint">
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 3 4 4-4 4"/><path d="M20 7H4"/><path d="m8 21-4-4 4-4"/><path d="M4 17h16"/></svg>
+          <span>
+            <b>Reassign a passage.</b> Select any span of text inside a turn, then right-click
+            it and choose <b>Reassign to speaker</b>. The turn splits in three — the words
+            before and after stay with the original speaker, the selection moves to whoever
+            you pick.
+          </span>
+        </div>
+      {/if}
 
       {#if session.activeLang}
         <div class="tr__tx-note">

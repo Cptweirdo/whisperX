@@ -126,6 +126,9 @@ Config load_config() {
     // the caller (main) relative to the exe.
     c.spa_dir = env_str("WHISPERX_SPA_DIR", "");
     c.static_dir = env_str("WHISPERX_STATIC_DIR", "");
+    c.backup_backend = env_str("WHISPERX_BACKUP_BACKEND", "");
+    c.backup_dir = env_str("WHISPERX_BACKUP_DIR", "");
+    c.backup_interval = env_long("WHISPERX_BACKUP_INTERVAL", 900);
     return c;
 }
 

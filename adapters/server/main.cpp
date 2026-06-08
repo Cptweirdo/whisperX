@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
         }
     }).detach();
 
-    ws::BackupService backup(cfg, broker);
+    ws::BackupService backup(cfg, broker, store);
     ws::AppState app{store, manager, queue, translate_queue, broker, backup, cfg};
 
     // --- oat++ server -------------------------------------------------------

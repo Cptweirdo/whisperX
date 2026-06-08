@@ -2,11 +2,17 @@
 // reassign, and translation (live SSE). Ports transcript.html's controllers into
 // reactive state. The audio player + word highlight live in components and read
 // the `viewTurns`/`words` derived from here.
-import { api, urls } from "../api";
+import { api, ApiError, urls } from "../api";
 import { openSSE } from "../sse";
 import { notify } from "./toast.svelte";
 import { settings } from "./settings.svelte";
-import type { ReassignBody, SessionDetail, TranscriptPayload, Translations, Turn } from "../types";
+import type {
+  ReassignBody,
+  SessionDetail,
+  TranscriptPayload,
+  Translations,
+  Turn,
+} from "../types";
 
 // Re-exported for the transcript components that render turns.
 export type { Turn, TurnWord } from "../types";
@@ -23,6 +29,8 @@ class SessionStore {
   // Translation view: null = Original, else a language code with its own turns.
   activeLang = $state<string | null>(null);
   translationTurns = $state<Turn[]>([]);
+  // Edit mode: gates the select→right-click→reassign passage flow (Original only).
+  editMode = $state(false);
   #es: EventSource | null = null;
 
   get loaded() {
@@ -33,6 +41,10 @@ class SessionStore {
   }
   get readonly(): boolean {
     return this.activeLang !== null;
+  }
+  // Edit mode is meaningful only on the Original (editable) transcript.
+  get editing(): boolean {
+    return this.editMode && !this.readonly;
   }
   get googleKeySet(): boolean {
     return !!settings.data?.google_key?.key_set;
@@ -94,6 +106,11 @@ class SessionStore {
     this.translationTurns = [];
     this.turns = [];
     this.row = null;
+    this.editMode = false;
+  }
+
+  toggleEditMode() {
+    this.editMode = !this.editMode;
   }
 
   // --- editing -------------------------------------------------------------
@@ -143,6 +160,34 @@ class SessionStore {
     this.canUndo = !!r.can_undo;
     // In a translation view, re-fetch so the new speaker shows with translated text.
     if (this.activeLang) await this.selectTranslation(this.activeLang);
+  }
+
+  /** Reassign a selected passage inside a turn (the edit-mode flow): the turn
+   *  splits in three, the `[start,end)` middle moving to `target`. Waits for the
+   *  server and applies its `TranscriptPayload`; no optimistic update. Failures
+   *  (incl. the current 501 stub) surface as a toast and leave turns unchanged. */
+  async splitReassign(
+    turnIndex: number,
+    sel: { start: number; end: number },
+    target: { speaker?: string; name?: string },
+  ) {
+    if (sel.end <= sel.start) return;
+    try {
+      this.#applyPayload(
+        await api.sessions.splitReassign(this.id, turnIndex, {
+          start: sel.start,
+          end: sel.end,
+          speaker: target.speaker,
+          name: target.name,
+        }),
+      );
+      if (this.activeLang) await this.selectTranslation(this.activeLang);
+    } catch (e) {
+      const msg = e instanceof ApiError && typeof e.body?.error === "string"
+        ? e.body.error
+        : "Could not reassign the selection.";
+      notify(msg, "danger");
+    }
   }
 
   // --- translation ---------------------------------------------------------

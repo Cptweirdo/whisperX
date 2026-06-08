@@ -1,6 +1,9 @@
 #include "oauth/crypto.hpp"
 
+#include <cstdio>
+#include <cstring>
 #include <stdexcept>
+#include <vector>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -37,64 +40,121 @@ const std::uint32_t K[64] = {
 
 }  // namespace
 
-std::array<std::uint8_t, 32> sha256(const std::string& msg) {
-    std::uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-                          0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+Sha256::Sha256()
+    : h_{0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19} {}
 
-    std::string data = msg;
-    const std::uint64_t bitlen = static_cast<std::uint64_t>(msg.size()) * 8;
-    data.push_back(static_cast<char>(0x80));
-    while (data.size() % 64 != 56) data.push_back('\0');
-    for (int i = 7; i >= 0; --i)
-        data.push_back(static_cast<char>((bitlen >> (i * 8)) & 0xff));
-
-    for (std::size_t off = 0; off < data.size(); off += 64) {
-        std::uint32_t w[64];
-        for (int i = 0; i < 16; ++i) {
-            const auto* p =
-                reinterpret_cast<const std::uint8_t*>(data.data() + off + i * 4);
-            w[i] = (static_cast<std::uint32_t>(p[0]) << 24) |
-                   (static_cast<std::uint32_t>(p[1]) << 16) |
-                   (static_cast<std::uint32_t>(p[2]) << 8) |
-                   static_cast<std::uint32_t>(p[3]);
-        }
-        for (int i = 16; i < 64; ++i) {
-            std::uint32_t s0 =
-                rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
-            std::uint32_t s1 =
-                rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-        }
-        std::uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4],
-                      f = h[5], g = h[6], hh = h[7];
-        for (int i = 0; i < 64; ++i) {
-            std::uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-            std::uint32_t ch = (e & f) ^ (~e & g);
-            std::uint32_t t1 = hh + S1 + ch + K[i] + w[i];
-            std::uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-            std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
-            std::uint32_t t2 = S0 + maj;
-            hh = g;
-            g = f;
-            f = e;
-            e = d + t1;
-            d = c;
-            c = b;
-            b = a;
-            a = t1 + t2;
-        }
-        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
-        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+void Sha256::process(const std::uint8_t* block) {
+    std::uint32_t w[64];
+    for (int i = 0; i < 16; ++i)
+        w[i] = (static_cast<std::uint32_t>(block[i * 4]) << 24) |
+               (static_cast<std::uint32_t>(block[i * 4 + 1]) << 16) |
+               (static_cast<std::uint32_t>(block[i * 4 + 2]) << 8) |
+               static_cast<std::uint32_t>(block[i * 4 + 3]);
+    for (int i = 16; i < 64; ++i) {
+        std::uint32_t s0 =
+            rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        std::uint32_t s1 =
+            rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
     }
+    std::uint32_t a = h_[0], b = h_[1], c = h_[2], d = h_[3], e = h_[4],
+                  f = h_[5], g = h_[6], hh = h_[7];
+    for (int i = 0; i < 64; ++i) {
+        std::uint32_t S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        std::uint32_t ch = (e & f) ^ (~e & g);
+        std::uint32_t t1 = hh + S1 + ch + K[i] + w[i];
+        std::uint32_t S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        std::uint32_t t2 = S0 + maj;
+        hh = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+    h_[0] += a; h_[1] += b; h_[2] += c; h_[3] += d;
+    h_[4] += e; h_[5] += f; h_[6] += g; h_[7] += hh;
+}
+
+void Sha256::update(const std::uint8_t* data, std::size_t len) {
+    bitlen_ += static_cast<std::uint64_t>(len) * 8;
+    if (buflen_ > 0) {  // top up a partial block first
+        std::size_t need = 64 - buflen_;
+        std::size_t take = len < need ? len : need;
+        std::memcpy(buf_ + buflen_, data, take);
+        buflen_ += take;
+        data += take;
+        len -= take;
+        if (buflen_ == 64) {
+            process(buf_);
+            buflen_ = 0;
+        }
+    }
+    while (len >= 64) {
+        process(data);
+        data += 64;
+        len -= 64;
+    }
+    if (len > 0) {
+        std::memcpy(buf_, data, len);
+        buflen_ = len;
+    }
+}
+
+std::array<std::uint8_t, 32> Sha256::finish() {
+    const std::uint64_t bitlen = bitlen_;
+    std::uint8_t pad = 0x80;
+    update(&pad, 1);
+    std::uint8_t zero = 0;
+    while (buflen_ != 56) update(&zero, 1);
+    std::uint8_t lenbytes[8];
+    for (int i = 0; i < 8; ++i)
+        lenbytes[i] = static_cast<std::uint8_t>((bitlen >> ((7 - i) * 8)) & 0xff);
+    // update() folds these into the final block; bitlen_ drift is irrelevant now.
+    std::memcpy(buf_ + buflen_, lenbytes, 8);
+    process(buf_);
+    buflen_ = 0;
 
     std::array<std::uint8_t, 32> out{};
     for (int i = 0; i < 8; ++i) {
-        out[i * 4 + 0] = (h[i] >> 24) & 0xff;
-        out[i * 4 + 1] = (h[i] >> 16) & 0xff;
-        out[i * 4 + 2] = (h[i] >> 8) & 0xff;
-        out[i * 4 + 3] = h[i] & 0xff;
+        out[i * 4 + 0] = (h_[i] >> 24) & 0xff;
+        out[i * 4 + 1] = (h_[i] >> 16) & 0xff;
+        out[i * 4 + 2] = (h_[i] >> 8) & 0xff;
+        out[i * 4 + 3] = h_[i] & 0xff;
     }
     return out;
+}
+
+std::array<std::uint8_t, 32> sha256(const std::string& msg) {
+    Sha256 ctx;
+    ctx.update(msg);
+    return ctx.finish();
+}
+
+namespace {
+std::string to_hex(const std::array<std::uint8_t, 32>& d) {
+    static const char* H = "0123456789abcdef";
+    std::string out;
+    out.reserve(64);
+    for (std::uint8_t b : d) {
+        out += H[b >> 4];
+        out += H[b & 0xf];
+    }
+    return out;
+}
+}  // namespace
+
+std::string sha256_hex(const std::string& data) { return to_hex(sha256(data)); }
+
+std::string sha256_hex_file(const std::string& path) {
+    std::FILE* fp = std::fopen(path.c_str(), "rb");
+    if (!fp) throw std::runtime_error("cannot open for hashing: " + path);
+    Sha256 ctx;
+    std::vector<std::uint8_t> buf(1024 * 1024);
+    std::size_t n;
+    while ((n = std::fread(buf.data(), 1, buf.size(), fp)) > 0)
+        ctx.update(buf.data(), n);
+    bool err = std::ferror(fp) != 0;
+    std::fclose(fp);
+    if (err) throw std::runtime_error("read error while hashing: " + path);
+    return to_hex(ctx.finish());
 }
 
 std::string base64url_nopad(const std::uint8_t* data, std::size_t len) {

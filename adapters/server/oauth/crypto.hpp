@@ -13,8 +13,34 @@
 
 namespace whisperx::server::oauth {
 
+// Incremental SHA-256 (FIPS 180-4) so large files hash without loading whole.
+// Feed bytes with update(); finish() returns the 32-byte digest and consumes
+// the context.
+class Sha256 {
+public:
+    Sha256();
+    void update(const std::uint8_t* data, std::size_t len);
+    void update(const std::string& s) {
+        update(reinterpret_cast<const std::uint8_t*>(s.data()), s.size());
+    }
+    std::array<std::uint8_t, 32> finish();
+
+private:
+    void process(const std::uint8_t* block);
+    std::uint32_t h_[8];
+    std::uint64_t bitlen_ = 0;
+    std::uint8_t buf_[64];
+    std::size_t buflen_ = 0;
+};
+
 // SHA-256 of an arbitrary byte string → 32 raw bytes.
 std::array<std::uint8_t, 32> sha256(const std::string& data);
+
+// SHA-256 as lowercase hex — the content-addressed object-store key shape.
+std::string sha256_hex(const std::string& data);
+// Streamed SHA-256 of a file → lowercase hex (1 MiB chunks). Throws
+// std::runtime_error if the file can't be read.
+std::string sha256_hex_file(const std::string& path);
 
 // URL-safe base64 with no '=' padding (RFC 4648 §5) — the PKCE/JWT alphabet.
 std::string base64url_nopad(const std::uint8_t* data, std::size_t len);

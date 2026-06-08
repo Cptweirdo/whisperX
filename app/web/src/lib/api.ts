@@ -26,6 +26,7 @@ import type {
   SessionsList,
   Settings,
   SpeakerEntry,
+  SplitReassignBody,
   TranscriptPayload,
   TranslateStartResult,
   TranslationView,
@@ -129,6 +130,11 @@ class SessionsApi {
   }
   reassign(id: string, turn: number, body: ReassignBody) {
     return request<TranscriptPayload>("POST", `/sessions/${id}/turns/${turn}/speaker`, body);
+  }
+  /** Reassign a selected passage inside a turn to another speaker (3-way split).
+   *  Backend is a stub today (501); the SPA toasts the error and leaves turns as-is. */
+  splitReassign(id: string, turn: number, body: SplitReassignBody) {
+    return request<TranscriptPayload>("POST", `/sessions/${id}/turns/${turn}/split`, body);
   }
   translate(id: string, targetLanguage: string) {
     return request<TranslateStartResult>("POST", `/sessions/${id}/translate`, {

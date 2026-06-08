@@ -24,6 +24,10 @@ add_executable(whisperx_server
   oauth/client.cpp
   oauth/flow.cpp
   oauth/backup_service.cpp
+  backup/manifest.cpp
+  backup/local_backend.cpp
+  backup/gdrive_backend.cpp
+  backup/engine.cpp
   drive/drive_client.cpp
   translate/google.cpp
   translate/overlay.cpp
@@ -61,6 +65,7 @@ if(WHISPERX_CORE_TESTS)
     tests/test_keyring.cpp
     tests/test_oauth.cpp
     tests/test_drive.cpp
+    tests/test_backup.cpp
     tests/test_translate.cpp
     sse/broker.cpp
     jobs/jobs.cpp
@@ -71,6 +76,10 @@ if(WHISPERX_CORE_TESTS)
     oauth/pkce.cpp
     oauth/credentials.cpp
     oauth/client.cpp
+    backup/manifest.cpp
+    backup/local_backend.cpp
+    backup/gdrive_backend.cpp
+    backup/engine.cpp
     drive/drive_client.cpp
     assets/downloader.cpp
     secrets/keyring.cpp

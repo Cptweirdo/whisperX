@@ -56,8 +56,16 @@ public:
     using Transport = std::function<net::Response(
         const std::string& method, const std::string& url,
         const std::vector<std::string>& headers, const std::string& body)>;
+    // (init_url, auth_value, metadata_json, src_path, mime) -> response. Streams
+    // the file body up; defaults to net::upload_file. Injectable for offline
+    // tests of the put wiring (metadata/mime/src-path).
+    using UploadFn = std::function<net::Response(
+        const std::string& init_url, const std::string& auth_value,
+        const std::string& metadata, const std::string& src_path,
+        const std::string& content_mime)>;
 
-    explicit DriveClient(AuthFn auth, Transport transport = {});
+    explicit DriveClient(AuthFn auth, Transport transport = {},
+                         UploadFn upload = {});
 
     // Override the API/upload roots (tests point these at a fake host).
     void set_endpoints(std::string api_base, std::string upload_base);
@@ -89,10 +97,18 @@ public:
                               const std::string& parent_id = "");
 
     // files.create multipart upload (metadata + content). mime_type is the
-    // content type; metadata carries name/parents/etc.
+    // content type; metadata carries name/parents/etc. In-memory — for small
+    // bodies only (folder/manifest metadata); large blobs use upload_resumable.
     File create_file(const json& metadata, const std::string& mime_type,
                      const std::string& content,
                      const std::string& fields = "id");
+
+    // files.create via a streamed resumable upload (uploadType=resumable). The
+    // content is read from src_path on disk, so a 300-400 MB blob never sits in
+    // memory. metadata carries name/parents; mime_type is the content type.
+    File upload_resumable(const json& metadata, const std::string& mime_type,
+                          const std::string& src_path,
+                          const std::string& fields = "id");
 
     // files.update content replace (uploadType=media). Single-request atomic
     // content swap — what the manifest pointer uses.
@@ -121,6 +137,7 @@ private:
 
     AuthFn auth_;
     Transport transport_;
+    UploadFn upload_;
     std::string api_base_ = "https://www.googleapis.com/drive/v3";
     std::string upload_base_ = "https://www.googleapis.com/upload/drive/v3";
 };

@@ -50,6 +50,19 @@ Response request(const std::string& method, const std::string& url,
 long download_to_file(const std::string& url, const std::string& dest,
                       const Options& opts = {});
 
+// Streamed resumable upload (Google "uploadType=resumable"): a single PUT of the
+// whole file, so a 400 MB blob never sits in memory. Two requests:
+//   1. POST `init_url` with the JSON `metadata` body + X-Upload-Content-{Type,
+//      Length} headers; the 200 response's `Location` header is the session URI.
+//   2. PUT the session URI streaming `src_path` from disk (CURLOPT_READFUNCTION);
+//      the 200/201 body is the file-resource JSON.
+// `auth_value` is the Authorization value (e.g. "Bearer xyz"); `content_mime` is
+// the blob's Content-Type. Returns the final {status, body}; status 0 on a
+// transport failure or a missing session Location.
+Response upload_file(const std::string& init_url, const std::string& auth_value,
+                     const std::string& metadata, const std::string& src_path,
+                     const std::string& content_mime);
+
 // "Authorization: Bearer <token>" when a non-empty token is present, else nullopt.
 std::optional<std::string> bearer_header(
     const std::optional<std::string>& token);

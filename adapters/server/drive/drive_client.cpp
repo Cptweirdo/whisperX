@@ -35,8 +35,10 @@ std::string escape_query_value(const std::string& v) {
     return out;
 }
 
-DriveClient::DriveClient(AuthFn auth, Transport transport)
-    : auth_(std::move(auth)), transport_(std::move(transport)) {
+DriveClient::DriveClient(AuthFn auth, Transport transport, UploadFn upload)
+    : auth_(std::move(auth)),
+      transport_(std::move(transport)),
+      upload_(std::move(upload)) {
     if (!transport_)
         transport_ = [](const std::string& method, const std::string& url,
                         const std::vector<std::string>& headers,
@@ -45,6 +47,13 @@ DriveClient::DriveClient(AuthFn auth, Transport transport)
             o.headers = headers;
             if (method == "GET") return net::get(url, o);
             return net::request(method, url, body, o);
+        };
+    if (!upload_)
+        upload_ = [](const std::string& init_url, const std::string& auth_value,
+                     const std::string& metadata, const std::string& src_path,
+                     const std::string& mime) {
+            return net::upload_file(init_url, auth_value, metadata, src_path,
+                                    mime);
         };
 }
 
@@ -158,6 +167,27 @@ File DriveClient::create_file(const json& metadata, const std::string& mime_type
         upload_base_ + "/files?uploadType=multipart&fields=" + enc(fields);
     return parse_file(call_json(
         "POST", url, "multipart/related; boundary=" + boundary, body));
+}
+
+File DriveClient::upload_resumable(const json& metadata,
+                                  const std::string& mime_type,
+                                  const std::string& src_path,
+                                  const std::string& fields) {
+    std::string url =
+        upload_base_ + "/files?uploadType=resumable&fields=" + enc(fields);
+    net::Response r =
+        upload_(url, bearer(), metadata.dump(), src_path, mime_type);
+    if (r.status == 0)
+        throw DriveError(0, "Couldn't reach Google Drive (upload).");
+    if (r.status < 200 || r.status >= 300)
+        throw DriveError(r.status, "Drive upload failed: HTTP " +
+                                       std::to_string(r.status) + " " + r.body);
+    if (r.body.empty()) return File{};
+    try {
+        return parse_file(json::parse(r.body));
+    } catch (...) {
+        throw DriveError(r.status, "Drive returned malformed JSON (upload).");
+    }
 }
 
 File DriveClient::update_content(const std::string& file_id,

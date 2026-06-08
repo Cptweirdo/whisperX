@@ -13,8 +13,24 @@
 - **Acceleration:** CPU-only v1 — sherpa-onnx/ORT on CPU. faster-whisper, torch
   wav2vec2, pyannote, mlx, whisper.cpp/Metal are gone with Python. GPU (ORT CUDA EP)
   and Metal/GGML are explicit later passes.
-- **Scope:** Core MVP + translation. Backup (Google Drive OAuth + Drive REST) is
-  **deferred** (the server returns SPA-compatible stub shapes so the UI degrades).
+- **Scope:** Core MVP + translation + the Google Drive **auth link and Drive REST
+  client** — all built. The remaining backup **engine** (manifest pointer +
+  content-addressed object store + GC + restore) is the one piece still deferred
+  (status/connect/disconnect already report real link state).
+- **Backup auth:** a **hand-rolled OAuth2 (auth-code + PKCE/S256) lib** over the
+  existing libcurl client — NOT `google_auth_oauthlib`/google-cloud-cpp. Provider
+  config is injectable (Google wired now); credentials persist in the OS keyring
+  under `google_drive_creds`, **byte-compatible with the Python host's entry** so a
+  link made by either host is interchangeable. PKCE crypto is dependency-free
+  (self-contained SHA-256 + base64url + OS CSPRNG — no OpenSSL coupling, since
+  libcurl's TLS backend is platform-chosen). Loopback redirect reuses the running
+  oat++ server (`/oauth/callback`); consent runs on a dedicated thread (never the
+  transcription worker) and reports progress over SSE. PKCE is an intentional
+  improvement on the Python oracle, which used the bare auth-code flow.
+- **Drive client:** `drive::DriveClient` wraps Drive v3 `files.*` (list/get/
+  download/create/update/delete + `find_child`/`ensure_folder`) over libcurl —
+  the native analog of `app/backup/gdrive.py`'s googleapiclient calls. Auth +
+  HTTP transport are injectable, so request shaping is unit-tested offline.
 - **Translation:** Google Cloud Translation **v2 REST (API key)** — **built**. Ported
   `app/translation/google.py` 1:1 over the existing libcurl client (NOT google-cloud-cpp,
   which is v3/gRPC + service-account auth — it would break the API-key UI/keyring contract
@@ -49,12 +65,14 @@ New adapter `adapters/server/`, a CMake target (`whisperx_server`) gated behind
 | Job queue | `jobs/jobs.{hpp,cpp}` | port of `app/jobs.py` (single worker, cancel-at-stage-boundary, terminal-publish-after-store) |
 | Pipeline runner | `jobs/runner.{hpp,cpp}` | ports the pybind `run_job` Steps wiring (decode→silero VAD→merge→sherpa Whisper→align→diarize→assign) + native writers + `mark_done` |
 | Models | `models/model_manager.{hpp,cpp}`, `models/assets.{hpp,cpp}` | CPU/sherpa-only resident-engine manager + `ModelStatus` shape; local-dir asset resolver → mirror/downloader fallback |
-| Downloader | `assets/downloader.{hpp,cpp}`, `http/curl_client.{hpp,cpp}` | libcurl HF-mirror fetch + cache + libarchive `.tar.bz2` extract (port of `asr_sherpa`/`diarize_sherpa`/`export_align_onnx` resolvers) |
+| Downloader | `assets/downloader.{hpp,cpp}`, `http/curl_client.{hpp,cpp}` | libcurl HF-mirror fetch + cache + libarchive `.tar.bz2` extract (port of `asr_sherpa`/`diarize_sherpa`/`export_align_onnx` resolvers). `curl_client` also grew `post`/`request` (PATCH/DELETE via CUSTOMREQUEST)/`form_encode` for the OAuth + Drive calls |
 | Secrets | `secrets/keyring.{hpp,cpp}`, `secrets/hf_verify.{hpp,cpp}` | hrantzsch/keychain wrapper (port of `secret_store.py`) + live HF token verify (whoami + gated-model check) |
-| Translation | `translate/google.{hpp,cpp}`, `translate/overlay.{hpp,cpp}`, `translate/queue.{hpp,cpp}` | Google v2 REST backend + key verify (port of `translation/google.py`) + structure-locked overlay (`translation_overlay.py`) + single-worker network executor (`translate_job.py`) |
+| Backup auth (OAuth) | `oauth/{crypto,pkce,credentials,client,flow,backup_service}.{hpp,cpp}`, `oauth/{provider,token_store}.hpp` | hand-rolled auth-code+PKCE/S256 lib (port of `app/backup/oauth.py`): dep-free crypto, Python-compatible creds JSON in keyring, `OAuthClient` (authorize/exchange/refresh/access-token), `LinkFlow` (consent thread + `/oauth/callback` promise + SSE), `BackupService` facade |
+| Drive client | `drive/drive_client.{hpp,cpp}` | Drive v3 `files.*` REST wrapper (port of `app/backup/gdrive.py`): list/get/download/create(+multipart upload)/update/delete + `find_child`/`ensure_folder`; injectable auth + transport |
+| Translation | `translate/google.{hpp,cpp}`, `translate/overlay.{hpp,cpp}`, `translate/queue.{hpp,cpp}` | Cloud Translation **v2 REST (API key)** over the libcurl client + `verify_api_key`, with request batching (100 seg / 25k char caps) — 1:1 port of `translation/google.py`; structure-locked overlay (`start_key`/`build_entries`/`apply_overlay`, v2 + legacy-v1, stale fallback — port of `translation_overlay.py`); single-worker network executor with durable status + `translate:<id>` SSE (port of `translate_job.py`) |
 | Routes | `http/api_controller.hpp`, `http/spa_controller.hpp`, `http/views.{hpp,cpp}`, `http/http_util.{hpp,cpp}`, `http/app_state.hpp` | all MVP endpoints + SPA catch-all + response shaping (`_card`/`_build_turns`/`_models_event`/`render_markdown` ports) |
 | Entry | `main.cpp` | wires collaborators, `reconcile_startup` requeue, background model warm, oat++ server |
-| Tests | `tests/test_broker.cpp`, `tests/test_jobs.cpp`, `tests/test_config.cpp` | Catch2 + CTest under ASan/UBSan |
+| Tests | `tests/test_{broker,jobs,config,url,downloader,keyring,translate,oauth,drive}.cpp` | Catch2 + CTest under ASan/UBSan (61 cases) |
 
 **Routes implemented** (route-for-route per `api-reference.md`): `GET /healthz`;
 sessions `GET/POST /api/sessions` (multipart upload → temp spool → duration probe →
@@ -64,14 +82,24 @@ enqueue), `GET /api/sessions/{id}`, `rename`, `delete`; transcript `turns/{i}`,
 `GET/POST /api/onboarding`, `verify`; binary `audio`, `download/{fmt}`, `export.md`;
 translation `POST /api/sessions/{id}/translate`, `GET /api/sessions/{id}/translation/{lang}`,
 `GET /sessions/{id}/translation/{lang}/download/{fmt}`; settings `POST /api/settings/google-key`
-+ `/clear`, `POST /api/settings/translation-service`; SSE `sessions/{id}/events`,
-`sessions/{id}/translate/events`, `models/events`; SPA catch-all + `/static/*`.
++ `/clear`, `POST /api/settings/translation-service`; backup `GET /api/backup/status`
+(real link state), `POST /api/backup/connect` (starts the consent flow),
+`POST /api/backup/disconnect`, `GET /oauth/callback` (loopback redirect target +
+success/error page); SSE `sessions/{id}/events`, `sessions/{id}/translate/events`,
+`models/events`, `backup/events` (connecting→linked/idle); SPA catch-all + `/static/*`.
 
 ### Verification done
 - `whisperx_server` + `whisperx_server_tests` build clean (`WHISPERX_BUILD_SERVER=ON`).
-- **49 Catch2 cases green** under ASan/UBSan (broker + jobs + config + url + oauth +
+- **61 Catch2 cases green** under ASan/UBSan (broker + jobs + config + url +
   downloader URL/map/cache-hit + keyring env-override/roundtrip + translate
-  overlay/v1-legacy/stale + key-verify/translate guards).
+  overlay/v1-legacy/stale + key-verify/translate guards + **oauth** PKCE-RFC7636-vector/
+  creds-roundtrip/authorize-url/refresh-token-retention/form-encode + **drive**
+  query-encoding/multipart-body/pagination/`q`-escaping/ensure-folder/error-mapping).
+- Backup-auth live smoke (no real Google): unconfigured → `/api/backup/status`
+  `configured:false`, `connect` → 400; with dummy creds → `connecting:true`, status
+  flips to `connecting`, `/oauth/callback` fulfils the flow and the **CSRF state
+  check rejects a mismatched `state`**, success/error HTML served. The real consent
+  (real Desktop-app creds + a human in the browser) is the one manual step.
 - Live smoke test: `/healthz`, `/api/models` (correct `ModelStatus`, device `cpu`),
   `/api/sessions`, `/api/settings`, SPA catch-all (500 "not built"), reserved-root
   404 — all correct; model-warm failure with no local assets is logged, not fatal.
@@ -90,8 +118,14 @@ translation `POST /api/sessions/{id}/translate`, `GET /api/sessions/{id}/transla
 - **Task 8 — full e2e parity gate.** The transcribe→edit→export flow + SPA e2e
   (Flask vs oat++) on a seeded clip + a no-Python-on-PATH runtime proof. The downloader
   now resolves align/diarize assets, so a clean clip can run without pre-fetched dirs.
-- **Backup / restore** (Google Drive OAuth + Drive REST + local backend) — stubbed:
-  `/api/backup/status` returns an idle/unlinked `BackupStatus`.
+- **Backup engine / restore.** The OAuth link (PKCE) + the Drive `files.*` client
+  are **built** (above); what's left is the engine on top — the `manifest.json`
+  pointer, content-addressed `objects/<sha256>` store (`put/has/get/list/
+  delete_object`), GC, and restore (port of `app/backup/{backend,manifest}.py` +
+  the sync loop). `BackupService::drive()` hands the engine a token-bound
+  `DriveClient`. Note: `create_file`/`update_content` send **in-memory** bodies —
+  large object blobs will want streaming/resumable uploads. A local-filesystem
+  backend is also not yet ported.
 - **GPU / Metal** — CPU-only; ORT CUDA EP and whisper.cpp/GGML are later passes.
 - **Packaging** — lean binary + SPA assets; Tauri/macOS packager repoint to the C++
   server port. Not started.
@@ -102,7 +136,7 @@ translation `POST /api/sessions/{id}/translate`, `GET /api/sessions/{id}/transla
 # build (sherpa-onnx is already vendored under build/ from the engine-core work)
 cmake -S . -B build -G Ninja -DWHISPERX_CORE_AUDIO=ON -DWHISPERX_BUILD_SERVER=ON
 cmake --build build --target whisperx_server whisperx_server_tests
-./build/adapters/server/whisperx_server_tests        # 21 cases, ASan/UBSan
+./build/adapters/server/whisperx_server_tests        # 61 cases, ASan/UBSan
 
 # run — assets now lazy-download from the public mirrors (no env vars required);
 # the WHISPERX_*_DIR vars below are optional and only override the downloader for dev.
