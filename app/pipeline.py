@@ -664,6 +664,12 @@ def run_job(
         if native is not None:
             result, duration = native
             _warn_if_long(duration)
+            removed = result.pop("blank_audio_removed", 0)
+            if removed:
+                logger.warning(
+                    "Stripped %d [BLANK_AUDIO] marker(s) the sherpa Whisper "
+                    "backend emitted for silent audio (no no_speech filter in "
+                    "the native path).", removed)
             result["duration"] = duration
             result["num_segments"] = len(result.get("segments", []))
             artifacts = {}
@@ -688,6 +694,16 @@ def run_job(
     _stage("transcribing")
     logger.info("Transcribing (batch_size=%d)", BATCH_SIZE)
     result = bundle.asr.transcribe(audio, batch_size=BATCH_SIZE, language=language)
+
+    # Best-effort: the native sherpa ASR strips "[BLANK_AUDIO]" markers and tags
+    # each segment with the count; warn once if the facade propagated it (the text
+    # is already clean regardless, so this is informational only).
+    removed = sum(int(seg.get("blank_audio_removed", 0))
+                  for seg in result.get("segments", []))
+    if removed:
+        logger.warning(
+            "Stripped %d [BLANK_AUDIO] marker(s) the sherpa Whisper backend "
+            "emitted for silent audio (no no_speech filter).", removed)
 
     lang = result["language"]
     _stage("loading_align")  # bundle.align_model may download/load a ~1.26 GB model

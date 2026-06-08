@@ -751,6 +751,7 @@ void bind_audio(py::module_& m) {
                     py::dict d;
                     d["text"] = c.text;
                     d["avg_logprob"] = c.avg_logprob;
+                    d["blank_audio_removed"] = c.blank_audio_removed;
                     out.append(std::move(d));
                 }
                 return out;
@@ -873,6 +874,11 @@ void bind_audio(py::module_& m) {
                 bool batchable = false;
             } align_handle;
 
+            // Aggregate "[BLANK_AUDIO]" markers stripped across all spans (summed
+            // in the transcribe step, surfaced on the result for a one-time host
+            // warning).
+            int blank_audio_removed = 0;
+
             Steps steps;
 
             steps.decode = [&] { return wa::load_audio(audio_path); };
@@ -896,6 +902,7 @@ void bind_audio(py::module_& m) {
                 auto chunks = asr.transcribe(buf, spans, lang, task);
                 json out = json::array();
                 for (std::size_t i = 0; i < spans.size(); ++i) {
+                    blank_audio_removed += chunks[i].blank_audio_removed;
                     json seg;
                     seg["text"] = strip_ws(chunks[i].text);
                     seg["start"] = round3(spans[i].first);
@@ -957,6 +964,7 @@ void bind_audio(py::module_& m) {
                 py::gil_scoped_release rel;
                 out = whisperx::orchestrate::run_job(steps, stage, on_duration);
             }
+            out["blank_audio_removed"] = blank_audio_removed;
             return json_to_py(out);
         },
         py::arg("audio_path"), py::arg("asr"), py::arg("silero_model_path"),

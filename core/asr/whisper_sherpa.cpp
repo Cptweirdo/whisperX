@@ -102,6 +102,10 @@ struct WhisperSherpa::Impl {
         if (r) {
             out.text = r->text ? r->text : "";
             out.avg_logprob = mean_logprob(r);
+            // Strip the "[BLANK_AUDIO]" text Whisper emits for silent input
+            // before it reaches downstream alignment (where the marker would be
+            // force-aligned into a bogus timestamped word).
+            out.blank_audio_removed = strip_blank_audio(out.text);
         }
         SherpaOnnxDestroyOfflineRecognizerResult(r);
         SherpaOnnxDestroyOfflineStream(stream);
@@ -123,6 +127,10 @@ struct WhisperSherpa::Impl {
             const std::size_t len = std::min(kMaxDecodeSamples, n - off);
             AsrChunk c =
                 decode(samples + off, static_cast<int32_t>(len), lang, tsk);
+            // decode() already stripped any markers from c.text; just accumulate
+            // the per-sub-window count (a window that was only a marker is now
+            // empty and skipped, so no stray separator is appended).
+            merged.blank_audio_removed += c.blank_audio_removed;
             if (!c.text.empty()) {
                 if (!merged.text.empty()) merged.text += ' ';
                 merged.text += c.text;

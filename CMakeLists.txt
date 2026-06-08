@@ -106,6 +106,7 @@ add_library(whisperx_core_lib STATIC
   core/diarize/assign_speakers.cpp
   core/writers/writers.cpp
   core/orchestrate/orchestrate.cpp
+  core/asr/blank_audio.cpp
   core/build_info.cpp)
 target_include_directories(whisperx_core_lib PUBLIC core ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(whisperx_core_lib PUBLIC
@@ -258,7 +259,8 @@ if(WHISPERX_CORE_TESTS)
     core/tests/test_char_clean.cpp
     core/tests/test_assign_speakers.cpp
     core/tests/test_writers.cpp
-    core/tests/test_orchestrate.cpp)
+    core/tests/test_orchestrate.cpp
+    core/tests/test_blank_audio.cpp)
   target_link_libraries(whisperx_core_tests
     PRIVATE whisperx_core_lib Catch2::Catch2WithMain)
 

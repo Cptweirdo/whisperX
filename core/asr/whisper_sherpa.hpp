@@ -25,10 +25,20 @@ namespace whisperx::asr {
 
 // One transcribed VAD chunk — the text + a best-effort mean token log-prob (the
 // field whisperx/asr.py populates per segment; never load-bearing downstream).
+// blank_audio_removed counts the "[BLANK_AUDIO]" markers stripped from `text`
+// (see strip_blank_audio) so the host can warn once per job.
 struct AsrChunk {
     std::string text;
     float avg_logprob = 0.0f;
+    int blank_audio_removed = 0;
 };
+
+// Remove every "[BLANK_AUDIO]" marker (case-insensitive, tolerating inner
+// whitespace e.g. "[ BLANK_AUDIO ]") from `text`, collapse the double space that
+// removal leaves behind, and trim. Returns the count removed. sherpa-onnx Whisper
+// emits this literal text on silent input (the Python faster-whisper path dropped
+// such segments via no_speech_threshold, which sherpa's C-API does not expose).
+int strip_blank_audio(std::string& text);
 
 class WhisperSherpa {
  public:
