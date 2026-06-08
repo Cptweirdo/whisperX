@@ -1204,6 +1204,16 @@ This is where the strangler flag can flip fully on. Source: `utils.py:443`
 
 ## Phase 6 — timing gates in CI
 
+> **LANDED.** `bench/bench_run_job.cpp` times the real `orchestrate::run_job` end-to-end
+> (per-stage median ms + RTF, JSON), built dep-light (`std::chrono`, no Google Benchmark)
+> like `bench_audio`. The `audio-stage` CI lane fetches the en align ONNX and runs it
+> against `bench/budget.json` (generous absolute ceilings; `bench/check_budget.py`), plus
+> an RSS-over-N-jobs tail-slope guard under jemalloc. `STAGE_RTF`/`eta_seconds` now use the
+> measured CPU medians (the old guesses overestimated diarize ~5×). The native-vs-Python
+> A/B (`bench/ab_native_vs_python.py`, local) is the decode-once/data-stays-native proof.
+> **The conditional `std::pmr` arena is resolved by the flat RSS tail → dropped.** See the
+> handoff "Phase 6 — timing gates landed" section for the measured numbers and verdicts.
+
 ### Context
 Replace the **guessed RTF constants** (`pipeline.py:184-202`,
 `STAGE_RTF = {transcribing: 0.22, aligning: 0.19, diarizing: 0.51}`,
@@ -1218,10 +1228,13 @@ streamlining claims are now **directly measurable** by benching `run_job`-on vs
 `run_job`-off (the Python staged path that still marshals the waveform across the seam
 ~5×) on the same clip — that A/B *is* the decode-3×→1× / data-stays-native proof, not an
 assertion. The existing `bench/bench_audio` (decode + VAD RTF) extends to a full
-end-to-end native bench through `run_job`. This is also where the **deferred per-job
-`std::pmr` arena** (the "Already decided" memory plan; the orchestrator owns the job
-lifetime) gets wired + measured — the bench decides whether the alloc-churn win justifies
-it before it lands.
+end-to-end native bench through `run_job`. This is also where the **conditional per-job
+`std::pmr` arena** is *decided* (not merely scheduled): an **RSS-over-N-sequential-jobs**
+bench (jemalloc linked) is the load-bearing measurement. Default expectation is a **flat RSS
+slope ⇒ no arena** (RAII + jemalloc + LSan already cover the stated long-uptime creep risk —
+see the memory-management decision); the arena lands **only if** the bench shows creep, and
+then only scoped to the offending (non-ORT) allocations. The arena is the weakest of the four
+memory tools and `monotonic_buffer_resource` can *raise* peak RSS, so it is not wired blind.
 
 ### Goals
 - A **`bench/` target** (Google Benchmark or nanobench) timing each stage with
@@ -1232,6 +1245,10 @@ it before it lands.
 - Feed **measured RTF** back into `eta_seconds` (replace the hardcoded constants).
 - Quantified before/after for the streamlining wins (decode 3×→1×; batched vs
   per-segment alignment; resident vs reload).
+- An **RSS-over-N-sequential-jobs** bench (N ≈ 50, jemalloc linked), RSS emitted
+  machine-readable per job; **assert the RSS slope is flat** — the leak/fragmentation guard
+  and the gate that decides whether the conditional `std::pmr` arena is needed at all (pairs
+  with the `run_job`-on-vs-off A/B above).
 
 ### Validation
 - Benchmarks run green in CI and emit per-stage RTF across the clip set.
@@ -1239,6 +1256,9 @@ it before it lands.
   flakiness**.
 - Documented decode-once and batched-alignment improvements vs the Python baseline.
 - `eta_seconds` uses measured constants; UI ETAs track reality.
+- RSS-over-N-jobs slope is **flat** with jemalloc linked; the per-job `std::pmr` arena is
+  landed **only if** this bench shows creep that profiling traces to our (non-ORT) transient
+  allocations — otherwise it is dropped from scope.
 
 ### Unknowns / open questions
 - **CI timing noise** — shared runners are noisy; how do we gate without flaky
@@ -1357,9 +1377,14 @@ Consequences that justify "simple":
 
 - **`mmap` model weights** — keep the big bytes file-backed and OS-reclaimable, not
   on our heap. (Default in ORT/ggml; just don't fight it.)
-- **`std::pmr::monotonic_buffer_resource` per job, reset at job end** — one reusable
+- **`std::pmr::monotonic_buffer_resource` per job, reset at job end** *(conditional —
+  gated on Phase 6 evidence; the other three tools are unconditional)* — one reusable
   arena sized to the largest expected job; all working buffers allocate from it; the
-  orchestrator resets it after writing outputs. No accumulation across jobs.
+  orchestrator resets it after writing outputs. No accumulation across jobs. **Note:** the
+  Phase 5 native chain is already RAII-scoped per stage with no cross-job accumulation, so
+  this arena is **only landed if the Phase 6 RSS-over-N-jobs bench shows creep** that RAII +
+  jemalloc + LSan don't catch; `monotonic_buffer_resource` (no reclaim until reset) can also
+  *raise* peak RSS, so it is not a free win.
 - **mimalloc or jemalloc** (link-time swap) — for everything outside the arena, to
   resist the RSS-creep glibc `malloc` shows over long uptime.
 - **AddressSanitizer + LeakSanitizer in CI** (Phase 0 onward) — over high uptime,
@@ -1389,10 +1414,13 @@ at the C-ABI layer (mobile), which is out of scope here.
   batched-alignment emission buffers come from the arena; use **ORT IO binding** so
   emissions land in our buffer (zero-copy), not an ORT-internal copy we then copy
   again.
-- **Phase 5** — the orchestrator **resets the arena at job end**, after writers
-  flush. Progress callbacks crossing pybind follow the FFI ownership rule.
-- **Phase 6** — benchmarks should also watch **RSS over many sequential jobs** (a
-  leak/fragmentation guard), not just per-stage latency.
+- **Phase 5** — *if* an arena lands (conditional on Phase 6, below), the orchestrator
+  resets it at job end, after writers flush; otherwise RAII + jemalloc carry it (the
+  landed slice wires none). Progress callbacks crossing pybind follow the FFI ownership rule.
+- **Phase 6** — benchmarks **watch RSS over N (~50) sequential jobs** (jemalloc linked) as
+  the leak/fragmentation guard, not just per-stage latency. **Decision rule:** flat slope ⇒
+  drop the arena (RAII + jemalloc suffice); creep ⇒ profile, then scope a `std::pmr` arena to
+  the offending (non-ORT) allocations only.
 
 ### Explicitly out of scope (deliberate simplifications)
 

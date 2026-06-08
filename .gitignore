@@ -218,3 +218,10 @@ packaging/macos/tauri/dist/*
 app/web/test-results/
 app/web/playwright-report/
 app/web/.playwright/
+
+# C++ core bench / CI model caches — fetched at runtime (sherpa Whisper + diarize
+# ONNX releases, the wav2vec2 align mirror), never committed. See bench/ + the
+# cpp-core.yml audio-stage steps that download them.
+/whisper-tiny/
+/diarize-onnx/
+/align-onnx/

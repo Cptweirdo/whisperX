@@ -213,3 +213,43 @@ jobs:
           assert n_spk >= 2, n_spk
           assert m.embedding_dim() > 0
           PY
+
+      # Phase 6: timing gate. The whisper-tiny + diarize-onnx dirs are already
+      # populated above; fetch the one en align ONNX (mirror), then run the native
+      # run_job bench and check per-stage RTF against the committed budget, plus an
+      # RSS-over-N-jobs tail-slope guard (the std::pmr arena decision) under jemalloc.
+      - name: Cache align ONNX (en)
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: align-onnx
+          key: wav2vec2-align-onnx-en-v1
+      - name: Phase 6 bench (run_job RTF + RSS)
+        run: |
+          sudo apt-get install -y libjemalloc2
+          AL=align-onnx/WAV2VEC2_ASR_BASE_960H
+          if [ ! -f "$AL/model.onnx" ]; then
+            mkdir -p "$AL"
+            base=https://huggingface.co/KonstantK/wav2vec2-align-onnx/resolve/main/WAV2VEC2_ASR_BASE_960H
+            curl -fsSL -o "$AL/model.onnx" "$base/model.onnx"
+            curl -fsSL -o "$AL/meta.json"  "$base/meta.json"
+          fi
+          WD=whisper-tiny/sherpa-onnx-whisper-tiny
+          DS=diarize-onnx/sherpa-onnx-pyannote-segmentation-3-0/model.onnx
+          DE=diarize-onnx/wespeaker_en_voxceleb_CAM++.onnx
+          # Per-stage timing on the 60 s dialog (full chain — the budgeted path).
+          ./build/bench_run_job --mode timing --runs 3 --warmup 1 \
+            --json build/stage_rtf.json --clip golden/clips/en_dialog.wav \
+            --silero models/silero_vad.onnx --whisper-dir "$WD" --align-dir "$AL" \
+            --diarize-seg "$DS" --diarize-embed "$DE" --lang en
+          # RSS over many jobs on the short clip (decode+VAD+ASR+align) — the
+          # leak/fragmentation guard; short + diarizer-free so it stays fast/robust.
+          LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 \
+            ./build/bench_run_job --mode rss --runs 40 \
+            --json build/rss.json --clip golden/clips/en_libri.wav \
+            --silero models/silero_vad.onnx --whisper-dir "$WD" --align-dir "$AL" --lang en
+          {
+            echo '### Phase 6 bench'; echo '```json';
+            cat build/stage_rtf.json; cat build/rss.json; echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 bench/check_budget.py build/stage_rtf.json bench/budget.json
+          python3 bench/check_budget.py --rss build/rss.json

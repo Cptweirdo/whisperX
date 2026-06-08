@@ -30,7 +30,7 @@ engine — not a rewrite of the app.
 - **Validation (decoupled goldens):** Whisper text isn't byte-stable across engines → test align/diarize/writers against a **fixed transcript input**; judge ASR by **WER/CER**. "Byte-identical" only ever means *given identical input*.
 - **Audio:** **ffmpeg libraries linked in-process** (Option B), no subprocess, all formats.
 - **Store:** **replace** `app/store.py` with a C++ `SessionStore` (SQLiteCpp) — full API parity, honoring the §2 compatibility contract byte-for-byte. Scope is the **whole** store: the SQLite layer (token `db`) **and** the file-backed sidecars + the `app/edits.py` turn algorithms (token `edits`); both **landed** in Phase 1 (composable `WHISPERX_CORE_STAGES` tokens).
-- **Memory:** jobs **run to completion** (no mid-job cancel); mmap model weights + a per-job `std::pmr` arena reset at job end + mimalloc/jemalloc + **ASan/LSan in CI**.
+- **Memory:** jobs **run to completion** (no mid-job cancel); mmap model weights + mimalloc/jemalloc + **ASan/LSan in CI** are the unconditional defenses. A per-job `std::pmr` arena reset at job end is **conditional on the Phase 6 RSS-over-N-jobs measurement** — landed only if that bench shows creep the other three don't catch (see Phase 6 / the Phase 5 closing note).
 - **Build:** **CMake + Ninja + vcpkg**, CTest, Catch2 (tests) + Google Benchmark (bench).
 - **Dataset:** English + German + Russian, from **Common Voice Spontaneous Speech** (CC0) + LibriSpeech (EN). Two committed scripts in `golden/`: `fetch_datasets.py` pulls single-speaker ASR/align clips (`en_libri`; `ru_cv_*` for HF align loader + Cyrillic) + one m4a for ffmpeg decode; `synthesize_dialog.py` concats distinct speakers into **4-speaker synthetic dialogs** (`en/de/ru_dialog`, seed-pinned, byte-identical) with ground-truth RTTM for diarization. Pin lib + model revisions; diarization parity goldens from the **vendored** `app/models/speaker-diarization-community-1.3533c8cf/` checkpoint (no HF token). *Gap:* no real-overlap diarization (synthetic dialogs are sequential, no overlap) — add AMI later if needed.
 
@@ -403,8 +403,8 @@ Phase 5 ports the output writers and a native end-to-end orchestrator. Per the
 prior-phase pattern the **pure dep-free writer IP ships first** behind a new composable
 **`writers`** token; the **`align_driver`** then **`orchestrate`** slices follow (both
 **landed** — see below). With `orchestrate` in, Phase 5 is complete bar the e2e
-Playwright host-integration gate (deferred to the host swap) and the per-job `std::pmr`
-arena (a separable perf/memory follow-on — see the closing note).
+Playwright host-integration gate (deferred to the host swap); the per-job `std::pmr`
+arena is **conditional on Phase 6 RSS evidence — not an owed gap** (see the closing note).
 
 - **Native writers (`writers` token).** `core/writers/writers.{hpp,cpp}` (verbatim port of
   `whisperx/utils.py`'s `ResultWriter` family + `SubtitlesWriter.iterate_result`) live in the
@@ -535,11 +535,78 @@ over one `AudioBuffer`.
   SPA-rendered turns/timings/exports match. Carried to the **host-swap** work — the point where
   the strangler flag flips fully on for the host (the brief's integration gate on top of the
   per-stage goldens).
-- **Per-job `std::pmr` arena** — the "Already decided" memory plan (+ the Phase 5 brief) puts the
-  **arena reset at job end** *in the orchestrator*, but the landed slice is pure sequencing and
-  does **not** yet wire one (the native engines still allocate via the default resource). It's a
-  separable perf/memory follow-on now that the orchestrator owns the job lifetime; **fold it in
-  with Phase 6** (the bench will quantify whether it's worth it) or alongside the host swap.
+- **Per-job `std::pmr` arena — deliberately *not* wired (conditional, not a gap).** The "Already
+  decided" memory plan (+ the Phase 5 brief) put the **arena reset at job end** *in the
+  orchestrator*; the landed slice is pure sequencing and wires none, and that is **arguably
+  correct**. The arena's stated target is long-uptime RSS-creep, but it is the **weakest of the
+  four** committed memory tools for it: the decode-once `AudioBuffer` is one big RAII `vector`
+  (single alloc); the Viterbi trellis / CTC emissions are freed *inside* `align_run` (tighter
+  than job scope); the ORT activation arena is ORT-owned (un-pmr-able); the only real churn —
+  json intermediates — won't pmr-back without switching nlohmann to `basic_json<custom-alloc>`
+  (invasive). The native chain is already RAII-scoped with no cross-job accumulation, and
+  `monotonic_buffer_resource` (no reclaim until reset) can *raise* peak RSS. **RAII + jemalloc +
+  LSan already cover the RSS-creep risk.** Its fate is decided by the **Phase 6 RSS-over-N-jobs
+  bench**: flat slope ⇒ drop it; creep ⇒ profile, then scope pmr to the offending (non-ORT)
+  allocations only.
+
+## Phase 6 — timing gates landed (measured per-stage RTF + RSS guard + eta calibration)
+
+Phase 6 replaces the **guessed** `STAGE_RTF` ETA constants with **measured** per-stage
+wall-clock from a native-`run_job` bench, gates regressions in CI against a generous absolute
+budget, and settles the conditional `std::pmr` arena with data. No new build dependency.
+
+- **`bench/bench_run_job.cpp` — times the real `orchestrate::run_job`.** Pure C++ (links
+  `whisperx_core_audio`), it builds the `Steps` closures over the native engines — decode-once
+  `AudioBuffer` → silero VAD → `merge_chunks` → `WhisperSherpa` → `align_run` → `SherpaDiarizer`
+  + `assign_word_speakers` — and drives the **same** `whisperx::orchestrate::run_job` the pybind
+  binding uses, so the numbers are the production path, not a copy. `resolve_align` is a local
+  lambda reading the mirror's `meta.json` off disk (no Python/HF). Models are built **once** and
+  reused across runs (the resident-models proof). Two modes: `--mode timing` (median per-stage
+  ms + RTF over N runs, first `--warmup` discarded) and `--mode rss` (RSS sampled from
+  `/proc/self/statm` after each of N jobs). Same dep-light `std::chrono` style as `bench_audio`.
+
+- **Gate = generous absolute budget (`bench/budget.json` + `bench/check_budget.py`).**
+  `check_budget.py` (stdlib) fails only if a gated stage's median RTF exceeds its ceiling
+  (~4–5× the observed CPU median — headroom for a slower 2-core runner + regression margin, so
+  shared-runner noise never flakes it). `decoding`/`loading_align` aren't gated (trivially fast /
+  ~0 resident). The **measured CPU medians** (sherpa Whisper tiny, `en_dialog` 60.8 s):
+
+  | stage | RTF | note |
+  |---|---|---|
+  | decoding | 0.0015 | in-process libav* decode |
+  | transcribing | 0.078 | silero VAD + merge + Whisper tiny |
+  | loading_align | ~0 | resident model, no load |
+  | aligning | 0.116 | wav2vec2 ONNX forced align |
+  | diarizing | 0.107 | sherpa pyannote-seg + CAM++ + assign |
+
+- **`STAGE_RTF` calibrated (`app/pipeline.py`).** The `eta_seconds` constants are now the measured
+  medians rounded up for headroom (`transcribing 0.10`, `aligning 0.15`, `diarizing 0.15`) — the
+  old guesses overestimated diarize ~5×. Still loose CPU upper bounds (GPU far faster); the comment
+  cites the bench.
+
+- **CI gate (`.github/workflows/cpp-core.yml`, `audio-stage`).** Reuses the cached whisper-tiny +
+  diarize ONNX, fetches the one en align model (mirror), then: timing bench on `en_dialog` →
+  `check_budget` (budget); RSS bench on the short `en_libri` (decode+VAD+ASR+align, 40 jobs) under
+  `LD_PRELOAD=libjemalloc.so.2` → `check_budget --rss` (tail-slope); both JSONs echoed to
+  `$GITHUB_STEP_SUMMARY` for trend visibility.
+
+- **`std::pmr` arena — RESOLVED: dropped.** RSS over 50 sequential full-chain jobs ramps during
+  warmup (ORT arenas fill) then **plateaus**: the tail (jobs 10–50) slope is **8.3 KB/job**
+  (threshold 64), the last-10 mean steady at ~3.35 GB (resident models + ORT). Measured under
+  **glibc `malloc`** — the *worst* case the brief feared; jemalloc (CI) is at least as flat. So the
+  conditional arena from the Phase 5 closing note is **not needed** — RAII holds RSS steady across
+  jobs with no leak/fragmentation. The arena stays unimplemented; the memory decision is now backed
+  by measurement, not assertion.
+
+- **Native-vs-Python A/B (local, `bench/ab_native_vs_python.py`).** Native `run_job` vs the
+  Python-staged path (identical native engines; staged marshals the waveform across the pybind
+  seam each stage), `en_dialog` 60.8 s, median of 5: **native RTF 0.320 vs staged 0.342 —
+  staged/native = 1.07× (~7% faster)**. Honest and modest: both paths already decode once and ORT
+  inference dominates wall time, so the seam marshaling the orchestrator removes is ~7% here. The
+  ratio is the *floor* of the win — it grows with clip length / sample count per stage, and the
+  structural payoff (data never leaves C++) is what enables the **host swap**, where the Python
+  host disappears entirely. CI stays native-only — the torch/pyannote stack is exactly what the
+  migration removes, so there's no reason to install it in CI (this is the documented local proof).
 
 ## Where to start
 

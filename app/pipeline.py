@@ -182,15 +182,17 @@ OUTPUT_FORMATS = ("srt", "vtt", "txt", "json")
 WRITER_OPTIONS = {"max_line_width": None, "max_line_count": None, "highlight_words": False}
 
 # Rough per-stage wall-time ≈ RTF × audio seconds, used only for a UI ETA hint.
-# Calibrated on a CPU run of the 'small' model over a 191 s clip (transcribe 42 s,
-# align 36 s, diarize ~97 s net of the one-time model download). GPU runs are far
+# Measured (not guessed) from `bench/bench_run_job --mode timing` on the native
+# sherpa run_job — CPU medians on en_dialog (60.8 s): transcribing 0.078,
+# aligning 0.116, diarizing 0.107 (Whisper tiny). Rounded up for headroom so a
+# larger CPU model / slower box still lands under the estimate; GPU runs are far
 # faster, so treat these as loose upper bounds, not promises. Stages without an
-# entry (decoding, loading_align) are skipped: too fast or download-dominated to
-# estimate meaningfully.
+# entry (decoding ≈ RTF 0.0015, loading_align ≈ 0 with resident models) are
+# skipped: too fast to estimate meaningfully. Bench gate: bench/budget.json.
 STAGE_RTF = {
-    "transcribing": 0.22,
-    "aligning": 0.19,
-    "diarizing": 0.51,
+    "transcribing": 0.10,
+    "aligning": 0.15,
+    "diarizing": 0.15,
 }
 
 
