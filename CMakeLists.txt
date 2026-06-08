@@ -321,6 +321,24 @@ if(WHISPERX_BUILD_SERVER)
     FIND_PACKAGE_ARGS NAMES oatpp)
   FetchContent_MakeAvailable(oatpp)
 
+  # libcurl — HTTPS for the HF-mirror model downloader + HF token verify. System
+  # lib (ubiquitous on Linux/macOS); vcpkg supplies it for the prod toolchain.
+  find_package(CURL REQUIRED)
+
+  # libarchive — extracts sherpa-onnx's .tar.bz2 release tarballs so every Whisper
+  # model lazy-downloads (the mirror only publishes a subset). System lib.
+  find_package(LibArchive REQUIRED)
+
+  # keychain — OS secret store (macOS Keychain / Windows Cred / Linux libsecret),
+  # CMake-native so it slots into the same FetchContent pattern. Stores the HF token.
+  set(BUILD_TESTS OFF CACHE BOOL "" FORCE)  # keychain's test toggle
+  FetchContent_Declare(
+    keychain
+    GIT_REPOSITORY https://github.com/hrantzsch/keychain
+    GIT_TAG v1.3.1
+    FIND_PACKAGE_ARGS NAMES keychain)
+  FetchContent_MakeAvailable(keychain)
+
   add_subdirectory(adapters/server)
 endif()
 

@@ -15,9 +15,16 @@
   and Metal/GGML are explicit later passes.
 - **Scope:** Core MVP. Backup (Google Drive OAuth + Drive REST) and translation are
   **deferred** (the server returns SPA-compatible stub shapes so the UI degrades).
-- **Model assets:** a libcurl HF-mirror downloader is the plan; **not yet built** —
-  v1 resolves models from local directories via env vars (below).
-- **Secrets:** native OS keyring is the plan; **not yet built**.
+- **Model assets:** a libcurl HF-mirror downloader + libarchive `.tar.bz2` fallback —
+  **built** (task 7). Models lazy-download from the public sha-pinned mirrors
+  (`KonstantK/whisper-onnx-sherpa` / `wav2vec2-align-onnx` / `diarize-onnx-sherpa`),
+  falling back to sherpa-onnx's release tarballs for un-mirrored Whisper models; cached
+  under `WHISPERX_SHERPA_CACHE` (default `~/.cache/whisperx-sherpa`). Local-dir env vars
+  (below) still win for dev/CI.
+- **Secrets:** native OS keyring via **hrantzsch/keychain** — **built** (task 7). The HF
+  token is stored/verified on onboarding (`HF_TOKEN` env wins); no functional runtime
+  consumer in CPU-sherpa (mirrors are public, diarizer is token-free) — kept for
+  onboarding UX parity + as the gdrive/translate-secret foundation.
 - **URL decoding:** kept a small local `url_decode` (oatpp 1.3.0 ships no URL
   percent-decoder; it exists only on unreleased oatpp master, which also removed
   `core/` and relocated `ObjectMapper` — not worth the churn for a rare form-body
@@ -37,7 +44,9 @@ New adapter `adapters/server/`, a CMake target (`whisperx_server`) gated behind
 | SSE | `sse/broker.{hpp,cpp}`, `sse/sse_response.{hpp,cpp}` | port of `app/sse.py` (bounded queue, drop-on-full, keepalive, initial/terminal/pending) + an oat++ streaming body |
 | Job queue | `jobs/jobs.{hpp,cpp}` | port of `app/jobs.py` (single worker, cancel-at-stage-boundary, terminal-publish-after-store) |
 | Pipeline runner | `jobs/runner.{hpp,cpp}` | ports the pybind `run_job` Steps wiring (decode→silero VAD→merge→sherpa Whisper→align→diarize→assign) + native writers + `mark_done` |
-| Models | `models/model_manager.{hpp,cpp}`, `models/assets.{hpp,cpp}` | CPU/sherpa-only resident-engine manager + `ModelStatus` shape; local-dir asset resolver |
+| Models | `models/model_manager.{hpp,cpp}`, `models/assets.{hpp,cpp}` | CPU/sherpa-only resident-engine manager + `ModelStatus` shape; local-dir asset resolver → mirror/downloader fallback |
+| Downloader | `assets/downloader.{hpp,cpp}`, `http/curl_client.{hpp,cpp}` | libcurl HF-mirror fetch + cache + libarchive `.tar.bz2` extract (port of `asr_sherpa`/`diarize_sherpa`/`export_align_onnx` resolvers) |
+| Secrets | `secrets/keyring.{hpp,cpp}`, `secrets/hf_verify.{hpp,cpp}` | hrantzsch/keychain wrapper (port of `secret_store.py`) + live HF token verify (whoami + gated-model check) |
 | Routes | `http/api_controller.hpp`, `http/spa_controller.hpp`, `http/views.{hpp,cpp}`, `http/http_util.{hpp,cpp}`, `http/app_state.hpp` | all MVP endpoints + SPA catch-all + response shaping (`_card`/`_build_turns`/`_models_event`/`render_markdown` ports) |
 | Entry | `main.cpp` | wires collaborators, `reconcile_startup` requeue, background model warm, oat++ server |
 | Tests | `tests/test_broker.cpp`, `tests/test_jobs.cpp`, `tests/test_config.cpp` | Catch2 + CTest under ASan/UBSan |
@@ -52,21 +61,17 @@ SSE `sessions/{id}/events`, `models/events`; SPA catch-all + `/static/*`.
 
 ### Verification done
 - `whisperx_server` + `whisperx_server_tests` build clean (`WHISPERX_BUILD_SERVER=ON`).
-- **21 Catch2 cases green** under ASan/UBSan (broker 7 + jobs 4 + config 10).
+- **33 Catch2 cases green** under ASan/UBSan (broker + jobs + config + url + downloader
+  URL/map/cache-hit + keyring env-override/roundtrip).
 - Live smoke test: `/healthz`, `/api/models` (correct `ModelStatus`, device `cpu`),
   `/api/sessions`, `/api/settings`, SPA catch-all (500 "not built"), reserved-root
   404 — all correct; model-warm failure with no local assets is logged, not fatal.
 
 ## Deferred / not yet done
 
-- **Task 7 — OS keyring + libcurl HF downloader.** Secret storage (HF token / Google
-  key / gdrive creds) and lazy model download are stubbed. Onboarding `verify` and
-  `hf-token` storage return clear "not available in this build" notices; model assets
-  load from local dirs only (env vars below).
 - **Task 8 — full e2e parity gate.** The transcribe→edit→export flow + SPA e2e
-  (Flask vs oat++) on a seeded clip. Needs the align ONNX model present locally
-  (`whisper-tiny/` is cached at the repo root; align/diarize need the downloader or
-  pre-fetched dirs).
+  (Flask vs oat++) on a seeded clip + a no-Python-on-PATH runtime proof. The downloader
+  now resolves align/diarize assets, so a clean clip can run without pre-fetched dirs.
 - **Translation** (Google Translate v2 + overlay) — stubbed: `/api/.../translate`
   returns 400 "not available"; settings expose empty translation services/languages.
 - **Backup / restore** (Google Drive OAuth + Drive REST + local backend) — stubbed:
@@ -83,15 +88,15 @@ cmake -S . -B build -G Ninja -DWHISPERX_CORE_AUDIO=ON -DWHISPERX_BUILD_SERVER=ON
 cmake --build build --target whisperx_server whisperx_server_tests
 ./build/adapters/server/whisperx_server_tests        # 21 cases, ASan/UBSan
 
-# run (point the asset env vars at local model dirs until the downloader lands)
+# run — assets now lazy-download from the public mirrors (no env vars required);
+# the WHISPERX_*_DIR vars below are optional and only override the downloader for dev.
 export LD_LIBRARY_PATH="build/lib:build/_deps/oatpp-build/src:\
 $(dirname $(find build/_deps -name libonnxruntime.so | head -1)):$LD_LIBRARY_PATH"
 export WHISPERX_DATA_DIR=/tmp/whisperx
-export WHISPERX_SHERPA_WHISPER_DIR=whisper-tiny/sherpa-onnx-whisper-tiny   # cached
-export WHISPERX_DIARIZE_ONNX_DIR=diarize-onnx                              # cached
-export WHISPERX_ALIGN_ONNX_DIR=<dir with model.onnx + meta.json>           # needs fetch
-export WHISPERX_SILERO_ONNX=models/silero_vad.onnx
 export WHISPERX_MODEL=tiny WHISPERX_PORT=8000
+# optional overrides (skip to let the downloader fetch into WHISPERX_SHERPA_CACHE):
+#   WHISPERX_SHERPA_WHISPER_DIR / WHISPERX_ALIGN_ONNX_DIR / WHISPERX_DIARIZE_ONNX_DIR
+export WHISPERX_SILERO_ONNX=models/silero_vad.onnx
 ./build/whisperx_server
 ```
 

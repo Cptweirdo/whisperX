@@ -8,6 +8,8 @@
 #include <string>
 #include <thread>
 
+#include <curl/curl.h>
+
 #include "oatpp/network/Server.hpp"
 #include "oatpp/network/tcp/server/ConnectionProvider.hpp"
 #include "oatpp/parser/json/mapping/ObjectMapper.hpp"
@@ -68,6 +70,9 @@ int main(int argc, char** argv) {
     logger->info("WhisperX native server starting (data_dir={}, spa={})",
                  cfg.data_dir, cfg.spa_dir);
 
+    // libcurl global init — the HF-mirror downloader + token verifier use it.
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
     // --- engine collaborators (the app/server.py module globals) ------------
     ws::sse::Broker broker;
     whisperx::db::SessionStore store(cfg.data_dir);
@@ -127,5 +132,6 @@ int main(int argc, char** argv) {
 
     queue.shutdown();
     store.close();
+    curl_global_cleanup();
     return 0;
 }

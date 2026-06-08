@@ -30,6 +30,8 @@
 #include "jobs/jobs.hpp"
 #include "log/log.hpp"
 #include "models/model_manager.hpp"
+#include "secrets/hf_verify.hpp"
+#include "secrets/keyring.hpp"
 #include "sse/broker.hpp"
 #include "sse/sse_response.hpp"
 
@@ -419,11 +421,13 @@ public:
             {"translation_service", "google"},
             {"translation_services", json::array()},  // deferred
             {"translation_languages", json::array()},
-            {"google_key", {{"key_set", false}}},
+            {"google_key",
+             {{"key_set",
+               secrets::resolve_google_api_key().has_value()}}},
             {"diarize",
              {{"version", nullptr},
               {"model_name", "pyannote/speaker-diarization-community-1"},
-              {"token_set", false}}},
+              {"token_set", secrets::resolve_hf_token().has_value()}}},
             {"backup", backup_stub()},
             {"onboarded",
              app_.store.get_setting("onboarded", "").value_or("") == "1"},
@@ -443,6 +447,37 @@ public:
                   {{"ok", true}, {"default_language", lang}});
     }
 
+    // Set the HF token: verify live, then store in the OS keyring. Shapes per
+    // api-reference.md:392 — 200 ok, 400 failed verify, 500 keyring unavailable.
+    ENDPOINT("POST", "/api/settings/hf-token", post_hf_token,
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        json body = http_util::parse_body(request);
+        std::string token = body.value("hf_token", "");
+        auto [ok, detail] = secrets::verify_token(token);
+        if (!ok)
+            return jr(Status::CODE_400,
+                      {{"token_set", secrets::resolve_hf_token().has_value()},
+                       {"notice", detail},
+                       {"notice_ok", false}});
+        try {
+            secrets::set(secrets::keys::HF_TOKEN, token);
+        } catch (const secrets::SecretStoreUnavailable& e) {
+            return jr(Status::CODE_500, {{"token_set", false},
+                                         {"notice", std::string(e.what())},
+                                         {"notice_ok", false}});
+        }
+        return jr(Status::CODE_200,
+                  {{"token_set", true}, {"notice", detail}, {"notice_ok", true}});
+    }
+
+    ENDPOINT("POST", "/api/settings/hf-token/clear", clear_hf_token) {
+        secrets::erase(secrets::keys::HF_TOKEN);
+        return jr(Status::CODE_200,
+                  {{"token_set", secrets::resolve_hf_token().has_value()},
+                   {"notice", "Token cleared."},
+                   {"notice_ok", true}});
+    }
+
     ENDPOINT("GET", "/api/onboarding", get_onboarding) {
         json status = app_.manager.status();
         return jr(Status::CODE_200,
@@ -457,13 +492,9 @@ public:
 
     ENDPOINT("POST", "/api/onboarding/verify", onboarding_verify,
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
-        // Token verification needs network + keyring (task 7). Diarization works
-        // token-free from the public mirror, so onboarding can proceed without one.
-        return jr(Status::CODE_200,
-                  {{"ok", false},
-                   {"detail",
-                    "HF token verification is not available in this build; "
-                    "diarization works without a token."}});
+        json body = http_util::parse_body(request);
+        auto [ok, detail] = secrets::verify_token(body.value("token", ""));
+        return jr(Status::CODE_200, {{"ok", ok}, {"detail", detail}});
     }
 
     ENDPOINT("POST", "/api/onboarding", onboarding_finish,
@@ -477,16 +508,31 @@ public:
         if (device != "cpu")
             return jr(Status::CODE_400,
                       {{"error", "Unknown device: " + device}});
-        if (!token.empty())
-            return jr(Status::CODE_500,
-                      {{"store_error",
-                        "Secret storage (OS keyring) is not wired in this build "
-                        "yet — diarization works without a token."}});
+        // A supplied token is verified then stored in the OS keyring. A keyring
+        // failure is non-fatal — diarization works token-free — so we surface a
+        // store_error but still finish onboarding (matches server.py's contract).
+        if (!token.empty()) {
+            auto [ok, detail] = secrets::verify_token(token);
+            if (!ok) return jr(Status::CODE_400, {{"error", detail}});
+            try {
+                secrets::set(secrets::keys::HF_TOKEN, token);
+            } catch (const secrets::SecretStoreUnavailable& e) {
+                json out = finish_onboarding(model);
+                out["store_error"] = e.what();
+                return jr(Status::CODE_200, out);
+            }
+        }
+        return jr(Status::CODE_200, finish_onboarding(model));
+    }
+
+    // Persist the chosen model/device + mark onboarded (shared by the keyring-ok
+    // and keyring-unavailable paths). Returns the {ok:true} payload.
+    json finish_onboarding(const std::string& model) {
         app_.store.set_setting("active_model", model);
         app_.store.set_setting("device", "cpu");
         app_.manager.set_active(model);
         app_.store.set_setting("onboarded", "1");
-        return jr(Status::CODE_200, {{"ok", true}});
+        return json{{"ok", true}};
     }
 
     // --- SSE -------------------------------------------------------------

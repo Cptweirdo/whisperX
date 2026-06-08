@@ -11,6 +11,8 @@
     "eigen3",
     "sqlitecpp",
     "onnxruntime",
+    "curl",
+    "libarchive",
     {
       "name": "ffmpeg",
       "default-features": false,

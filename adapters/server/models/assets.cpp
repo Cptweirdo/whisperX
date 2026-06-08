@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "assets/downloader.hpp"
+
 namespace fs = std::filesystem;
 using nlohmann::json;
 
@@ -54,6 +56,26 @@ std::optional<WhisperAssets> from_whisper_dir(const fs::path& dir) {
     return WhisperAssets{*enc, *dec, *tok, 80};
 }
 
+// Parse an align dir holding model.onnx + meta.json{dictionary,batchable,language}.
+std::optional<AlignAssets> from_align_dir(const fs::path& dir,
+                                          const std::string& language) {
+    std::error_code ec;
+    fs::path onnx = dir / "model.onnx";
+    fs::path meta = dir / "meta.json";
+    if (!fs::exists(onnx, ec) || !fs::exists(meta, ec)) return std::nullopt;
+    AlignAssets out;
+    out.onnx_path = onnx.string();
+    try {
+        json m = json::parse(std::ifstream(meta));
+        out.dictionary = m.at("dictionary").get<std::map<std::string, int>>();
+        out.batchable = m.value("batchable", false);
+        out.language = m.value("language", language);
+    } catch (...) {
+        return std::nullopt;
+    }
+    return out;
+}
+
 }  // namespace
 
 int feature_dim_for(const std::string& model_name) {
@@ -72,35 +94,27 @@ std::optional<WhisperAssets> resolve_whisper(const std::string& model_name) {
         if (auto dir = env("WHISPERX_SHERPA_WHISPER_DIR"))
             a = from_whisper_dir(fs::path(*dir));
     }
+    // 3. lazy-download from the HF mirror / sherpa release into the cache
+    if (!a) {
+        if (auto dir = whisperx::server::assets::ensure_whisper_dir(model_name))
+            a = from_whisper_dir(*dir);
+    }
     if (a) a->feature_dim = feature_dim_for(model_name);
     return a;
 }
 
 std::optional<AlignAssets> resolve_align(const std::string& language) {
-    fs::path dir;
-    if (auto root = env("WHISPERX_ALIGN_ONNX_ROOT"))
-        dir = fs::path(*root) / language;
-    else if (auto single = env("WHISPERX_ALIGN_ONNX_DIR"))
-        dir = fs::path(*single);
-    else
-        return std::nullopt;
-
-    std::error_code ec;
-    fs::path onnx = dir / "model.onnx";
-    fs::path meta = dir / "meta.json";
-    if (!fs::exists(onnx, ec) || !fs::exists(meta, ec)) return std::nullopt;
-
-    AlignAssets out;
-    out.onnx_path = onnx.string();
-    try {
-        json m = json::parse(std::ifstream(meta));
-        out.dictionary = m.at("dictionary").get<std::map<std::string, int>>();
-        out.batchable = m.value("batchable", false);
-        out.language = m.value("language", language);
-    } catch (...) {
-        return std::nullopt;
+    // 1. a local dir (env): a per-language root, or a single explicit dir.
+    if (auto root = env("WHISPERX_ALIGN_ONNX_ROOT")) {
+        if (auto a = from_align_dir(fs::path(*root) / language, language))
+            return a;
+    } else if (auto single = env("WHISPERX_ALIGN_ONNX_DIR")) {
+        if (auto a = from_align_dir(fs::path(*single), language)) return a;
     }
-    return out;
+    // 2. lazy-download from the HF mirror (align is mirror-only).
+    if (auto dir = whisperx::server::assets::ensure_align_dir(language))
+        return from_align_dir(*dir, language);
+    return std::nullopt;
 }
 
 std::optional<DiarizeAssets> resolve_diarize() {
@@ -130,7 +144,8 @@ std::optional<DiarizeAssets> resolve_diarize() {
         }
         if (seg_p && emb_p) return DiarizeAssets{*seg_p, *emb_p};
     }
-    return std::nullopt;
+    // lazy-download from the HF mirror / sherpa release into the cache
+    return whisperx::server::assets::ensure_diarize();
 }
 
 std::string silero_path() {
