@@ -1,5 +1,6 @@
 #include "asr/whisper_sherpa.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
@@ -8,6 +9,15 @@
 namespace whisperx::asr {
 
 namespace {
+
+// sherpa-onnx's offline Whisper silently truncates any wave reaching
+// max_num_frames-50 = 2950 feature frames (~29.5 s) and warns "Only waves less
+// than 30 seconds are supported" (offline-recognizer-whisper-impl.h DecodeStream).
+// Cap each decode below that; longer spans are split into consecutive sub-windows
+// and re-joined so the tail past ~29.5 s is transcribed, not dropped. 2900 frames
+// keeps a 0.5 s margin for feature-extraction edge effects.
+constexpr std::size_t kMaxDecodeSamples = static_cast<std::size_t>(
+    (whisperx::audio::kNFrames - 100) * whisperx::audio::kHopLength);
 
 // Strip Whisper's "<|en|>" language label down to the bare code "en". sherpa
 // returns the raw token in result->lang; faster-whisper's detect_language does
@@ -98,6 +108,33 @@ struct WhisperSherpa::Impl {
         return out;
     }
 
+    // decode() but split waves longer than the sherpa frame limit into consecutive
+    // sub-windows, re-joined into one chunk (text concatenated, avg_logprob
+    // sample-weighted) so nothing past ~29.5 s is discarded. One chunk per span is
+    // load-bearing: orchestrate/align map spans<->chunks by index.
+    AsrChunk decode_capped(const float* samples, std::size_t n,
+                           const std::string& lang, const std::string& tsk) {
+        if (n <= kMaxDecodeSamples)
+            return decode(samples, static_cast<int32_t>(n), lang, tsk);
+        AsrChunk merged;
+        double lp = 0.0;
+        std::size_t covered = 0;
+        for (std::size_t off = 0; off < n; off += kMaxDecodeSamples) {
+            const std::size_t len = std::min(kMaxDecodeSamples, n - off);
+            AsrChunk c =
+                decode(samples + off, static_cast<int32_t>(len), lang, tsk);
+            if (!c.text.empty()) {
+                if (!merged.text.empty()) merged.text += ' ';
+                merged.text += c.text;
+            }
+            lp += static_cast<double>(c.avg_logprob) * static_cast<double>(len);
+            covered += len;
+        }
+        merged.avg_logprob =
+            covered ? static_cast<float>(lp / static_cast<double>(covered)) : 0.0f;
+        return merged;
+    }
+
     std::string detect(const float* samples, int32_t n) {
         const SherpaOnnxOfflineStream* stream =
             SherpaOnnxCreateOfflineStream(recognizer);
@@ -136,8 +173,7 @@ std::vector<AsrChunk> WhisperSherpa::transcribe(
         const auto f0 = static_cast<std::size_t>(start_s * sr);
         const auto f1 = static_cast<std::size_t>(end_s * sr);
         std::span<const float> s = audio.slice(f0, f1);
-        out.push_back(impl_->decode(s.data(), static_cast<int32_t>(s.size()),
-                                    language, task));
+        out.push_back(impl_->decode_capped(s.data(), s.size(), language, task));
     }
     return out;
 }
