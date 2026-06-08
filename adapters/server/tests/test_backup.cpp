@@ -54,6 +54,8 @@ void seed_session(SessionStore& store, const std::string& data_dir,
                   const std::string& id, const std::string& audio) {
     store.create(id, id + ".wav", "audio.wav", nlohmann::json::object(),
                  std::optional<std::string>("tiny"));
+    // Mark terminal so has_active_jobs() is false (restore refuses otherwise).
+    store.mark_done(id, std::optional<std::string>("en"), false, "tiny", 1, 1.0);
     write_file((fs::path(data_dir) / "sessions" / id / "audio.wav").string(),
                audio);
 }
