@@ -24,4 +24,9 @@ public:
 // to `sr` Hz + convert to s16, returning float32 samples / 32768.0.
 AudioBuffer load_audio(const std::string& path, int sr = kSampleRate);
 
+// Container duration in seconds from the header only — opens + probes stream info,
+// no decode. Returns < 0 when the container reports no usable duration (caller then
+// skips any duration check). Throws DecodeError if the file can't be opened.
+double probe_duration(const std::string& path);
+
 }  // namespace whisperx::audio

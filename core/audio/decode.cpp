@@ -46,6 +46,29 @@ struct Frame {
 
 }  // namespace
 
+// Header-only duration probe — open + find_stream_info, read the duration, no
+// decode loop. Prefer the container duration; fall back to the audio stream's own
+// duration (some containers leave format duration unset). Returns < 0 if neither is
+// available.
+double probe_duration(const std::string& path) {
+    FormatCtx fmt;
+    int ret = avformat_open_input(&fmt.p, path.c_str(), nullptr, nullptr);
+    if (ret < 0) throw DecodeError(av_err(ret));
+    ret = avformat_find_stream_info(fmt.p, nullptr);
+    if (ret < 0) throw DecodeError(av_err(ret));
+
+    if (fmt.p->duration > 0)
+        return static_cast<double>(fmt.p->duration) / AV_TIME_BASE;
+
+    int idx = av_find_best_stream(fmt.p, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (idx >= 0) {
+        const AVStream* st = fmt.p->streams[idx];
+        if (st->duration > 0 && st->time_base.den > 0)
+            return static_cast<double>(st->duration) * av_q2d(st->time_base);
+    }
+    return -1.0;
+}
+
 // Mirrors the subprocess in whisperx/audio.py:44 — one universal libav path:
 // demux best audio stream, decode, then libswresample downmix->mono /
 // resample-> sr / convert-> s16 (swresample defaults: SWR engine, no dither,

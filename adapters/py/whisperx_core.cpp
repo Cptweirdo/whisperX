@@ -614,6 +614,11 @@ void bind_audio(py::module_& m) {
         "Decode an audio file in-process (libav*) to mono float32 PCM at sr Hz "
         "in [-1, 1) — sample-for-sample equivalent to whisperx.load_audio.");
 
+    m.def(
+        "probe_duration", &audio::probe_duration, py::arg("path"),
+        "Container duration in seconds from the header (libav*, no decode). "
+        "Returns < 0 when the container reports no usable duration.");
+
     using SegOut = std::tuple<double, double, std::string>;
     m.def(
         "silero_segments",
