@@ -29,11 +29,11 @@
     { id: "whispercpp", label: "whisper.cpp (Metal)" },
   ];
   function deviceAvailable(id: string): boolean {
-    const m = models.status ?? {};
+    const m = models.status;
     if (id === "cpu") return true;
-    if (id === "cuda") return !!m.cuda_available;
-    if (id === "mlx") return !!m.mlx_available;
-    if (id === "whispercpp") return !!m.whispercpp_available;
+    if (id === "cuda") return !!m?.cuda_available;
+    if (id === "mlx") return !!m?.mlx_available;
+    if (id === "whispercpp") return !!m?.whispercpp_available;
     return false;
   }
 

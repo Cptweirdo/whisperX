@@ -1,10 +1,13 @@
 #include "http/curl_client.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <system_error>
 
 #include <curl/curl.h>
+
+#include "encoding/url.hpp"
 
 namespace fs = std::filesystem;
 
@@ -53,6 +56,51 @@ Response get(const std::string& url, const Options& opts) {
     if (list) curl_slist_free_all(list);
     curl_easy_cleanup(h);
     return r;
+}
+
+Response post(const std::string& url, const std::string& body,
+              const Options& opts) {
+    Response r;
+    CURL* h = curl_easy_init();
+    if (!h) return r;
+    // Default the content type unless the caller already set one.
+    Options o = opts;
+    bool has_ct = false;
+    for (const auto& hdr : o.headers) {
+        std::string lower = hdr.substr(0, hdr.find(':'));
+        for (char& ch : lower) ch = static_cast<char>(std::tolower((unsigned char)ch));
+        if (lower == "content-type") { has_ct = true; break; }
+    }
+    if (!has_ct)
+        o.headers.push_back("Content-Type: application/x-www-form-urlencoded");
+
+    curl_easy_setopt(h, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(h, CURLOPT_POST, 1L);
+    curl_easy_setopt(h, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(h, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, write_to_string);
+    curl_easy_setopt(h, CURLOPT_WRITEDATA, &r.body);
+    curl_slist* list = apply_common(h, o);
+    CURLcode rc = curl_easy_perform(h);
+    if (rc == CURLE_OK)
+        curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &r.status);
+    if (list) curl_slist_free_all(list);
+    curl_easy_cleanup(h);
+    return r;
+}
+
+std::string form_encode(
+    const std::vector<std::pair<std::string, std::string>>& fields) {
+    encoding::Url::Config cfg;
+    cfg.spaceToPlus = true;
+    std::string out;
+    for (const auto& [k, v] : fields) {
+        if (!out.empty()) out += '&';
+        out += encoding::Url::encode(k, cfg);
+        out += '=';
+        out += encoding::Url::encode(v, cfg);
+    }
+    return out;
 }
 
 long download_to_file(const std::string& url, const std::string& dest,

@@ -2,27 +2,14 @@
 // job SSE streams (replacing index.html's location.reload() on completion).
 import { api, urls } from "../api";
 import { openSSE } from "../sse";
+import type { SessionCard, Summary } from "../types";
 
-export interface SessionCard {
-  id: string;
-  name: string;
-  status: string;
-  stage: string | null;
-  chip_label: string;
-  chip_class: string;
-  viewable: boolean;
-  dur: string;
-  date: string;
-  sub: string;
-  language: string | null;
-  num_segments: number;
-  error: string | null;
-  [k: string]: any;
-}
+// Re-exported for the dashboard components that render cards.
+export type { SessionCard } from "../types";
 
 class SessionsStore {
   list = $state<SessionCard[]>([]);
-  summary = $state<any>({ count: 0, transcribed: "0m", total_audio: "0m", pct: 0 });
+  summary = $state<Summary>({ count: 0, transcribed: "0m", total_audio: "0m", pct: 0 });
   loaded = $state(false);
   #streams = new Map<string, EventSource>();
 
@@ -40,7 +27,7 @@ class SessionsStore {
   }
 
   async load() {
-    const data = await api.get("/sessions");
+    const data = await api.sessions.list();
     this.list = data.sessions;
     this.summary = data.summary;
     this.loaded = true;
@@ -48,14 +35,14 @@ class SessionsStore {
   }
 
   async rename(id: string, name: string) {
-    const res = await api.post(`/sessions/${id}/rename`, { name });
+    const res = await api.sessions.rename(id, name);
     const row = this.list.find((c) => c.id === id);
     if (row) row.name = res.filename;
     return res.filename;
   }
 
   async remove(id: string) {
-    await api.post(`/sessions/${id}/delete`);
+    await api.sessions.remove(id);
     this.#closeStream(id);
     // Reload so a deleted featured card promotes the next + summary shifts.
     await this.load();
@@ -63,7 +50,7 @@ class SessionsStore {
 
   /** Upload a new recording; resolves with the new session id. */
   async create(form: FormData, onProgress?: (f: number) => void): Promise<string> {
-    const res = await api.upload("/sessions", form, onProgress);
+    const res = await api.sessions.create(form, onProgress);
     await this.load();
     return res.id;
   }

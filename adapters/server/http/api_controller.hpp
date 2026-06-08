@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -30,10 +31,16 @@
 #include "jobs/jobs.hpp"
 #include "log/log.hpp"
 #include "models/model_manager.hpp"
+#include "oauth/backup_service.hpp"
+#include "oauth/flow.hpp"
 #include "secrets/hf_verify.hpp"
 #include "secrets/keyring.hpp"
 #include "sse/broker.hpp"
 #include "sse/sse_response.hpp"
+#include "translate/google.hpp"
+#include "translate/overlay.hpp"
+#include "translate/queue.hpp"
+#include "writers/writers.hpp"
 
 namespace whisperx::server {
 
@@ -82,6 +89,20 @@ private:
         for (const auto& m : st.value("models", json::array()))
             if (m.value("name", "") == active) return m.value("loaded", false);
         return false;
+    }
+
+    // A safe BCP-47-ish language tag (also guards translation file paths) —
+    // server.py::_valid_lang.
+    static bool valid_lang(const std::string& lang) {
+        static const std::regex re(R"(^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$)");
+        return std::regex_match(lang, re);
+    }
+
+    static std::string trim(const std::string& s) {
+        auto b = s.find_first_not_of(" \t\r\n");
+        return b == std::string::npos
+                   ? ""
+                   : s.substr(b, s.find_last_not_of(" \t\r\n") - b + 1);
     }
 
 public:
@@ -418,9 +439,11 @@ public:
                                      .value_or("")},
             {"languages", transcribe_languages()},
             {"models", app_.manager.status()},
-            {"translation_service", "google"},
-            {"translation_services", json::array()},  // deferred
-            {"translation_languages", json::array()},
+            {"translation_service",
+             app_.store.get_setting("translation_service", "google")
+                 .value_or("google")},
+            {"translation_services", translation_services()},
+            {"translation_languages", translation_languages()},
             {"google_key",
              {{"key_set",
                secrets::resolve_google_api_key().has_value()}}},
@@ -428,7 +451,7 @@ public:
              {{"version", nullptr},
               {"model_name", "pyannote/speaker-diarization-community-1"},
               {"token_set", secrets::resolve_hf_token().has_value()}}},
-            {"backup", backup_stub()},
+            {"backup", app_.backup.status_json()},
             {"onboarded",
              app_.store.get_setting("onboarded", "").value_or("") == "1"},
         };
@@ -487,7 +510,7 @@ public:
                    {"models", status},
                    {"diarize_model",
                     "pyannote/speaker-diarization-community-1"},
-                   {"backup", backup_stub()}});
+                   {"backup", app_.backup.status_json()}});
     }
 
     ENDPOINT("POST", "/api/onboarding/verify", onboarding_verify,
@@ -613,28 +636,231 @@ public:
         return resp;
     }
 
-    // --- Deferred features (translation + backup): SPA-friendly shapes ----
-    json backup_stub() {
-        return {{"state", "idle"},      {"linked", false},
-                {"backend", nullptr},   {"dirty", nullptr},
-                {"last_root", nullptr}, {"last_backup_at", nullptr},
-                {"last_error", nullptr},{"interval", nullptr},
-                {"provider_label", "Cloud backup"},
-                {"last_human", nullptr},{"folder", nullptr},
-                {"remote", nullptr}};
-    }
-
+    // --- Cloud backup: Google Drive OAuth link (token lifecycle only) -----
     ENDPOINT("GET", "/api/backup/status", backup_status) {
-        return jr(Status::CODE_200, backup_stub());
+        return jr(Status::CODE_200, app_.backup.status_json());
     }
 
+    ENDPOINT("POST", "/api/backup/connect", backup_connect) {
+        if (app_.backup.is_linked())
+            return jr(Status::CODE_200, app_.backup.status_json());
+        if (!app_.backup.configured())
+            return jr(Status::CODE_400,
+                      {{"error",
+                        "Cloud backup isn't configured on this server "
+                        "(GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET unset)."}});
+        if (!app_.backup.connect())
+            return jr(Status::CODE_409,
+                      {{"error", "A link is already in progress."}});
+        return jr(Status::CODE_200, {{"connecting", true}});
+    }
+
+    ENDPOINT("POST", "/api/backup/disconnect", backup_disconnect) {
+        app_.backup.disconnect();
+        return jr(Status::CODE_200, app_.backup.status_json());
+    }
+
+    // Loopback OAuth redirect target — fulfils the pending consent flow and
+    // serves a human-facing success/error page. Reserved root "oauth" keeps the
+    // SPA catch-all from shadowing this.
+    ENDPOINT("GET", "/oauth/callback", oauth_callback,
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        auto qp = [&](const char* k) -> std::string {
+            auto v = request->getQueryParameter(k);
+            return v ? std::string(v) : std::string();
+        };
+        std::string error = qp("error");
+        app_.backup.handle_callback(qp("code"), qp("state"), error);
+        const char* html = error.empty() ? oauth::LinkFlow::success_html()
+                                          : oauth::LinkFlow::error_html();
+        auto resp = createResponse(Status::CODE_200, oatpp::String(html));
+        resp->putHeader("Content-Type", "text/html; charset=utf-8");
+        return resp;
+    }
+
+    // Live backup link progress (connecting -> linked/idle). Channel carries the
+    // full status payload; terminal once it leaves "connecting".
+    ENDPOINT("GET", "/backup/events", backup_events) {
+        AppState* app = &app_;
+        auto initial = [app]() -> std::optional<json> {
+            return app->backup.status_json();
+        };
+        auto terminal = [](const json& e) {
+            return e.contains("state") && e["state"] != "connecting";
+        };
+        return sse::sse_response(app_.broker, kBackupChannel, initial, terminal);
+    }
+
+    // --- Translation -----------------------------------------------------
     ENDPOINT("POST", "/api/sessions/{id}/translate", translate_session,
+             PATH(String, id),
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        std::string sid = id;
+        json row = app_.store.get(sid);
+        if (row.is_null()) return jr(Status::CODE_404, json::object());
+        if (row.value("status", "") != "done")
+            return jr(Status::CODE_409,
+                      {{"error", "Transcript is not ready to translate."}});
+        json body = http_util::parse_body(request);
+        std::string target = trim(body.value("target_language", ""));
+        if (!valid_lang(target))
+            return jr(Status::CODE_400, {{"error", "Invalid target language."}});
+        if (!secrets::resolve_google_api_key().has_value())
+            return jr(Status::CODE_400,
+                      {{"error",
+                        "Add a Google Translation API key in Settings first."}});
+        std::string service =
+            app_.store.get_setting("translation_service", "google")
+                .value_or("google");
+        if (service != "google") service = "google";
+        app_.translate_queue.submit(sid, target, service);
+        return jr(Status::CODE_200,
+                  {{"lang", target}, {"status", "running"}, {"service", service}});
+    }
+
+    ENDPOINT("GET", "/api/sessions/{id}/translation/{lang}", view_translation,
+             PATH(String, id), PATH(String, lang)) {
+        std::string sid = id, l = lang;
+        if (app_.store.get(sid).is_null() || !valid_lang(l))
+            return jr(Status::CODE_404, json::object());
+        json overlay = app_.store.load_translation(sid, l);
+        if (overlay.is_null()) return jr(Status::CODE_404, json::object());
+        json segs = translate::apply_overlay(current_segments(sid), overlay);
+        json names = app_.store.get_speaker_names(sid);
+        return jr(Status::CODE_200,
+                  {{"target_language", l},
+                   {"turns", views::build_turns(segs, names)},
+                   {"segments", segs}});
+    }
+
+    // Live per-language translation progress. Emits the durable status map on
+    // connect, then deltas; closes on a terminal done/error (translate_job.py).
+    ENDPOINT("GET", "/sessions/{id}/translate/events", translate_events,
              PATH(String, id)) {
-        return jr(Status::CODE_400,
-                  {{"error", "Translation is not available in this build."}});
+        std::string sid = id;
+        if (app_.store.get(sid).is_null())
+            return jr(Status::CODE_404, json::object());
+        AppState* app = &app_;
+        auto initial = [app, sid]() -> std::optional<json> {
+            return json{{"translations", app->store.get_translations(sid)}};
+        };
+        auto terminal = [](const json& e) {
+            return e.contains("status") &&
+                   (e["status"] == "done" || e["status"] == "error");
+        };
+        return sse::sse_response(app_.broker, translate::channel(sid), initial,
+                                 terminal);
+    }
+
+    // Generate the translation export on demand from the joined segments, so it
+    // reflects current speakers + the original-text fallback for edited segments.
+    ENDPOINT("GET", "/sessions/{id}/translation/{lang}/download/{fmt}",
+             translation_download, PATH(String, id), PATH(String, lang),
+             PATH(String, fmt)) {
+        std::string sid = id, l = lang, f = fmt;
+        if ((f != "srt" && f != "vtt" && f != "txt" && f != "json") ||
+            !valid_lang(l))
+            return jr(Status::CODE_404, json::object());
+        json overlay = app_.store.load_translation(sid, l);
+        if (overlay.is_null()) return jr(Status::CODE_404, json::object());
+        json segs = translate::apply_overlay(current_segments(sid), overlay);
+
+        std::string body;
+        if (f == "json") {
+            body = json{{"target_language", l}, {"segments", segs}}.dump();
+        } else {
+            const json wopts = {{"max_line_width", nullptr},
+                                {"max_line_count", nullptr},
+                                {"highlight_words", false}};
+            json result = {{"segments", segs}, {"language", l}};
+            if (f == "srt")
+                body = whisperx::writers::write_srt(result, wopts);
+            else if (f == "vtt")
+                body = whisperx::writers::write_vtt(result, wopts);
+            else
+                body = whisperx::writers::write_txt(result, wopts);
+        }
+        std::string name = "transcript.translation." + l + "." + f;
+        auto resp = createResponse(Status::CODE_200, oatpp::String(body));
+        resp->putHeader("Content-Type", "application/octet-stream");
+        resp->putHeader("Content-Disposition",
+                        "attachment; filename=\"" + name + "\"");
+        return resp;
+    }
+
+    // --- Translation settings (key storage + service preference) ---------
+    ENDPOINT("POST", "/api/settings/google-key", post_google_key,
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        json body = http_util::parse_body(request);
+        std::string key = trim(body.value("google_key", ""));
+        auto [ok, detail] = translate::verify_api_key(key);
+        if (!ok) return jr(Status::CODE_400, google_key_payload(detail, false));
+        try {
+            secrets::set(secrets::keys::GOOGLE_TRANSLATE, key);
+        } catch (const secrets::SecretStoreUnavailable& e) {
+            return jr(Status::CODE_500, google_key_payload(e.what(), false));
+        }
+        return jr(Status::CODE_200,
+                  google_key_payload("Key saved and verified.", true));
+    }
+
+    ENDPOINT("POST", "/api/settings/google-key/clear", clear_google_key) {
+        secrets::erase(secrets::keys::GOOGLE_TRANSLATE);
+        bool set = secrets::resolve_google_api_key().has_value();
+        std::string notice =
+            set ? "Cleared the stored key, but GOOGLE_TRANSLATE_API_KEY is still "
+                  "set in the environment."
+                : "Key cleared. Translation is now disabled.";
+        return jr(Status::CODE_200, google_key_payload(notice, true));
+    }
+
+    ENDPOINT("POST", "/api/settings/translation-service", set_translation_service,
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        json body = http_util::parse_body(request);
+        std::string service = trim(body.value("translation_service", ""));
+        if (service != "google")  // only "google" is registered
+            return jr(Status::CODE_400,
+                      {{"error", "Unknown translation service."}});
+        app_.store.set_setting("translation_service", service);
+        return jr(Status::CODE_200, {{"ok", true}});
     }
 
 private:
+    // server.py::_google_key_payload — current key_set + a user-facing notice.
+    json google_key_payload(const std::string& notice, bool notice_ok) {
+        return {{"key_set", secrets::resolve_google_api_key().has_value()},
+                {"notice", notice},
+                {"notice_ok", notice_ok}};
+    }
+
+    // server.py SERVICES registry — only Google is wired (the v2 REST backend).
+    static const json& translation_services() {
+        static const json v =
+            json::array({{{"id", "google"}, {"label", "Google Translate"}}});
+        return v;
+    }
+
+    // server.py TRANSLATION_LANGUAGES — the curated target-language picker.
+    static const json& translation_languages() {
+        static const json v = json::array(
+            {{{"code", "en"}, {"name", "English"}, {"native", "English"}},
+             {{"code", "es"}, {"name", "Spanish"}, {"native", "Español"}},
+             {{"code", "fr"}, {"name", "French"}, {"native", "Français"}},
+             {{"code", "de"}, {"name", "German"}, {"native", "Deutsch"}},
+             {{"code", "it"}, {"name", "Italian"}, {"native", "Italiano"}},
+             {{"code", "pt"}, {"name", "Portuguese"}, {"native", "Português"}},
+             {{"code", "pt-BR"}, {"name", "Portuguese (Brazil)"},
+              {"native", "Português (BR)"}},
+             {{"code", "nl"}, {"name", "Dutch"}, {"native", "Nederlands"}},
+             {{"code", "ru"}, {"name", "Russian"}, {"native", "Русский"}},
+             {{"code", "ja"}, {"name", "Japanese"}, {"native", "日本語"}},
+             {{"code", "ko"}, {"name", "Korean"}, {"native", "한국어"}},
+             {{"code", "zh"}, {"name", "Chinese"}, {"native", "中文"}},
+             {{"code", "ar"}, {"name", "Arabic"}, {"native", "العربية"}},
+             {{"code", "hi"}, {"name", "Hindi"}, {"native", "हिन्दी"}}});
+        return v;
+    }
+
     // Constant tables (server.py) as lazy statics.
     static const json& transcribe_languages() {
         static const json v = json::array(

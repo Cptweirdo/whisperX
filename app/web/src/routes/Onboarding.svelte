@@ -6,8 +6,9 @@
   import { models } from "../lib/stores/models.svelte";
   import { notify } from "../lib/stores/toast.svelte";
   import BackupCard from "../components/settings/BackupCard.svelte";
+  import type { OnboardingData } from "../lib/types";
 
-  let data = $state<any>(null);
+  let data = $state<OnboardingData | null>(null);
   let step = $state(0);
   let token = $state("");
   let model = $state("");
@@ -30,11 +31,11 @@
     ["whispercpp", "whisper.cpp", "whisper.cpp via pywhispercpp. Metal on Apple Silicon, CPU elsewhere. Fastest on Mac for large models.", "Metal · CPU"],
   ];
   function available(id: string): boolean {
-    const m = data?.models ?? {};
+    const m = data?.models;
     if (id === "cpu") return true;
-    if (id === "cuda") return !!m.cuda_available;
-    if (id === "mlx") return !!m.mlx_available;
-    if (id === "whispercpp") return !!m.whispercpp_available;
+    if (id === "cuda") return !!m?.cuda_available;
+    if (id === "mlx") return !!m?.mlx_available;
+    if (id === "whispercpp") return !!m?.whispercpp_available;
     return false;
   }
 
@@ -44,7 +45,7 @@
   const backendName = $derived(BACKENDS.find((b) => b[0] === device)?.[1] ?? device);
 
   onMount(async () => {
-    data = await api.get("/onboarding");
+    data = await api.onboarding.get();
     token = data.token ?? "";
     model = data.selected_size ?? "";
     device = data.models?.device ?? "cpu";
@@ -58,7 +59,7 @@
     verifying = true;
     verify = { ok: null, text: "Verifying…" };
     try {
-      const r = await api.post("/onboarding/verify", { token: token.trim() });
+      const r = await api.onboarding.verify(token.trim());
       verify = { ok: r.ok, text: r.detail };
       if (r.ok) step = 2;
     } catch {
@@ -71,7 +72,7 @@
   async function finish() {
     finishing = true;
     try {
-      const r = await api.post("/onboarding", { token: token.trim(), model, device });
+      const r = await api.onboarding.finish({ token: token.trim(), model, device });
       if (r.ok) {
         await Promise.all([settings.load(), models.load()]);
         router.navigate("/", { replace: true });

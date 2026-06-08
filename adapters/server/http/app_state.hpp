@@ -15,8 +15,15 @@ class ModelManager;
 namespace whisperx::server::jobs {
 class JobQueue;
 }
+namespace whisperx::server::translate {
+class TranslationQueue;
+}
 namespace whisperx::server::sse {
 class Broker;
+}
+
+namespace whisperx::server {
+class BackupService;
 }
 
 namespace whisperx::server {
@@ -28,7 +35,9 @@ struct AppState {
     whisperx::db::SessionStore& store;
     whisperx::server::models::ModelManager& manager;
     whisperx::server::jobs::JobQueue& queue;
+    whisperx::server::translate::TranslationQueue& translate_queue;
     whisperx::server::sse::Broker& broker;
+    whisperx::server::BackupService& backup;
     Config cfg;
 };
 

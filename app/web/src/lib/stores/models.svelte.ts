@@ -6,16 +6,10 @@ import { api, urls } from "../api";
 import { openSSE } from "../sse";
 import { notify } from "./toast.svelte";
 import { DEVICE_LABELS } from "../constants";
-
-interface ModelMeta {
-  name: string;
-  loaded: boolean;
-  loading: boolean;
-  error: string | null;
-}
+import type { ModelMeta, ModelStatus } from "../types";
 
 class ModelsStore {
-  status = $state<any>(null);
+  status = $state<ModelStatus | null>(null);
   modelsReady = $state(false);
   #es: EventSource | null = null;
   #loadingToast: HTMLElement | null = null;
@@ -41,12 +35,12 @@ class ModelsStore {
   }
 
   async load() {
-    this.status = await api.get("/models");
+    this.status = await api.models.status();
     this.modelsReady = this.#isReady();
   }
 
   /** Replace the full status (e.g. after a device switch returns it). */
-  setStatus(status: any) {
+  setStatus(status: ModelStatus) {
     this.status = status;
     this.modelsReady = this.#isReady();
   }
@@ -57,12 +51,12 @@ class ModelsStore {
   }
 
   async switchActive(model: string) {
-    this.setStatus(await api.post("/models/active", { model }));
+    this.setStatus(await api.models.setActive(model));
   }
 
   /** Switch device; throws ApiError (409 body carries `error:"busy"` + status). */
   async switchDevice(device: string) {
-    this.setStatus(await api.post("/device", { device }));
+    this.setStatus(await api.models.setDevice(device));
   }
 
   start() {
@@ -78,7 +72,7 @@ class ModelsStore {
       active: d.active,
       diarize_available: d.diarize_available,
       diarize_error: d.diarize_error,
-    };
+    } as ModelStatus;
     this.modelsReady = !!d.models_ready;
 
     if (d.bundle_error) return; // surfaced via its own dashboard toast

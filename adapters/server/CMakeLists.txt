@@ -18,6 +18,15 @@ add_executable(whisperx_server
   secrets/keyring.cpp
   secrets/hf_verify.cpp
   encoding/url.cpp
+  oauth/crypto.cpp
+  oauth/pkce.cpp
+  oauth/credentials.cpp
+  oauth/client.cpp
+  oauth/flow.cpp
+  oauth/backup_service.cpp
+  translate/google.cpp
+  translate/overlay.cpp
+  translate/queue.cpp
   http/curl_client.cpp
   http/http_util.cpp
   http/views.cpp)
@@ -49,13 +58,21 @@ if(WHISPERX_CORE_TESTS)
     tests/test_url.cpp
     tests/test_downloader.cpp
     tests/test_keyring.cpp
+    tests/test_oauth.cpp
+    tests/test_translate.cpp
     sse/broker.cpp
     jobs/jobs.cpp
     log/log.cpp
     config.cpp
     encoding/url.cpp
+    oauth/crypto.cpp
+    oauth/pkce.cpp
+    oauth/credentials.cpp
+    oauth/client.cpp
     assets/downloader.cpp
     secrets/keyring.cpp
+    translate/google.cpp
+    translate/overlay.cpp
     http/curl_client.cpp)
   target_include_directories(whisperx_server_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})

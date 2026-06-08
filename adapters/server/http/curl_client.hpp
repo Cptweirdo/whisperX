@@ -6,6 +6,7 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace whisperx::server::net {
@@ -24,6 +25,17 @@ struct Options {
 
 // GET the URL into memory. status == 0 means the request never completed.
 Response get(const std::string& url, const Options& opts = {});
+
+// POST `body` into memory. Defaults the Content-Type to
+// application/x-www-form-urlencoded when the caller didn't set one in
+// opts.headers. status == 0 means the request never completed.
+Response post(const std::string& url, const std::string& body,
+              const Options& opts = {});
+
+// application/x-www-form-urlencoded body from key/value pairs (percent-encoded,
+// space -> '+'), reusing the RFC-3986 codec in encoding/url.
+std::string form_encode(const std::vector<std::pair<std::string, std::string>>&
+                            fields);
 
 // GET the URL streamed to `dest` (written to dest + ".part", then atomically
 // renamed on a 2xx). Creates parent dirs. Returns the HTTP status (0 on a

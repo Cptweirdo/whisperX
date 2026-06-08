@@ -13,8 +13,12 @@
 - **Acceleration:** CPU-only v1 — sherpa-onnx/ORT on CPU. faster-whisper, torch
   wav2vec2, pyannote, mlx, whisper.cpp/Metal are gone with Python. GPU (ORT CUDA EP)
   and Metal/GGML are explicit later passes.
-- **Scope:** Core MVP. Backup (Google Drive OAuth + Drive REST) and translation are
+- **Scope:** Core MVP + translation. Backup (Google Drive OAuth + Drive REST) is
   **deferred** (the server returns SPA-compatible stub shapes so the UI degrades).
+- **Translation:** Google Cloud Translation **v2 REST (API key)** — **built**. Ported
+  `app/translation/google.py` 1:1 over the existing libcurl client (NOT google-cloud-cpp,
+  which is v3/gRPC + service-account auth — it would break the API-key UI/keyring contract
+  and balloon the build). Structure-locked overlay + on-demand exports match the oracle.
 - **Model assets:** a libcurl HF-mirror downloader + libarchive `.tar.bz2` fallback —
   **built** (task 7). Models lazy-download from the public sha-pinned mirrors
   (`KonstantK/whisper-onnx-sherpa` / `wav2vec2-align-onnx` / `diarize-onnx-sherpa`),
@@ -47,6 +51,7 @@ New adapter `adapters/server/`, a CMake target (`whisperx_server`) gated behind
 | Models | `models/model_manager.{hpp,cpp}`, `models/assets.{hpp,cpp}` | CPU/sherpa-only resident-engine manager + `ModelStatus` shape; local-dir asset resolver → mirror/downloader fallback |
 | Downloader | `assets/downloader.{hpp,cpp}`, `http/curl_client.{hpp,cpp}` | libcurl HF-mirror fetch + cache + libarchive `.tar.bz2` extract (port of `asr_sherpa`/`diarize_sherpa`/`export_align_onnx` resolvers) |
 | Secrets | `secrets/keyring.{hpp,cpp}`, `secrets/hf_verify.{hpp,cpp}` | hrantzsch/keychain wrapper (port of `secret_store.py`) + live HF token verify (whoami + gated-model check) |
+| Translation | `translate/google.{hpp,cpp}`, `translate/overlay.{hpp,cpp}`, `translate/queue.{hpp,cpp}` | Google v2 REST backend + key verify (port of `translation/google.py`) + structure-locked overlay (`translation_overlay.py`) + single-worker network executor (`translate_job.py`) |
 | Routes | `http/api_controller.hpp`, `http/spa_controller.hpp`, `http/views.{hpp,cpp}`, `http/http_util.{hpp,cpp}`, `http/app_state.hpp` | all MVP endpoints + SPA catch-all + response shaping (`_card`/`_build_turns`/`_models_event`/`render_markdown` ports) |
 | Entry | `main.cpp` | wires collaborators, `reconcile_startup` requeue, background model warm, oat++ server |
 | Tests | `tests/test_broker.cpp`, `tests/test_jobs.cpp`, `tests/test_config.cpp` | Catch2 + CTest under ASan/UBSan |
@@ -57,23 +62,34 @@ enqueue), `GET /api/sessions/{id}`, `rename`, `delete`; transcript `turns/{i}`,
 `undo`; speakers `GET/POST speakers`, `turns/{i}/speaker`; `GET /api/models`,
 `POST /api/models/active`, `POST /api/device` (cpu-only); `GET/POST /api/settings`,
 `GET/POST /api/onboarding`, `verify`; binary `audio`, `download/{fmt}`, `export.md`;
-SSE `sessions/{id}/events`, `models/events`; SPA catch-all + `/static/*`.
+translation `POST /api/sessions/{id}/translate`, `GET /api/sessions/{id}/translation/{lang}`,
+`GET /sessions/{id}/translation/{lang}/download/{fmt}`; settings `POST /api/settings/google-key`
++ `/clear`, `POST /api/settings/translation-service`; SSE `sessions/{id}/events`,
+`sessions/{id}/translate/events`, `models/events`; SPA catch-all + `/static/*`.
 
 ### Verification done
 - `whisperx_server` + `whisperx_server_tests` build clean (`WHISPERX_BUILD_SERVER=ON`).
-- **33 Catch2 cases green** under ASan/UBSan (broker + jobs + config + url + downloader
-  URL/map/cache-hit + keyring env-override/roundtrip).
+- **49 Catch2 cases green** under ASan/UBSan (broker + jobs + config + url + oauth +
+  downloader URL/map/cache-hit + keyring env-override/roundtrip + translate
+  overlay/v1-legacy/stale + key-verify/translate guards).
 - Live smoke test: `/healthz`, `/api/models` (correct `ModelStatus`, device `cpu`),
   `/api/sessions`, `/api/settings`, SPA catch-all (500 "not built"), reserved-root
   404 — all correct; model-warm failure with no local assets is logged, not fatal.
+- Translation live smoke (seeded done-session + es overlay, no real Google call):
+  `settings` exposes the google service + 14 languages + `google_key.key_set`;
+  `translation-service` rejects non-google (400) / accepts google; `google-key`
+  set rejects empty (400) + clear; `view_translation` joins turns/segments with the
+  translated text (speakers preserved); `download/{srt,vtt,txt,json}` render via the
+  native writers; editing a turn flips that segment to `stale` with the source
+  fallback; missing session/lang/fmt → 404; `translate` with no key → 400; the
+  `translate/events` SSE emits the durable `{translations:{}}` map on connect. The
+  live Google API call (real key + network) is the one manual step, as in the oracle.
 
 ## Deferred / not yet done
 
 - **Task 8 — full e2e parity gate.** The transcribe→edit→export flow + SPA e2e
   (Flask vs oat++) on a seeded clip + a no-Python-on-PATH runtime proof. The downloader
   now resolves align/diarize assets, so a clean clip can run without pre-fetched dirs.
-- **Translation** (Google Translate v2 + overlay) — stubbed: `/api/.../translate`
-  returns 400 "not available"; settings expose empty translation services/languages.
 - **Backup / restore** (Google Drive OAuth + Drive REST + local backend) — stubbed:
   `/api/backup/status` returns an idle/unlinked `BackupStatus`.
 - **GPU / Metal** — CPU-only; ORT CUDA EP and whisper.cpp/GGML are later passes.

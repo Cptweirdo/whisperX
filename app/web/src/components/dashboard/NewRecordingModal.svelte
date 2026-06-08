@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, urls } from "../../lib/api";
   import { openSSE } from "../../lib/sse";
+  import type { SessionDetail } from "../../lib/types";
   import { router } from "../../lib/router.svelte";
   import { sessions } from "../../lib/stores/sessions.svelte";
   import { settings } from "../../lib/stores/settings.svelte";
@@ -23,7 +24,7 @@
   let stageText = $state("Queued…");
   let errorMsg = $state("");
   let sessionId = $state("");
-  let preview = $state<any>(null);
+  let preview = $state<SessionDetail | null>(null);
   let dragOver = $state(false);
   let es: EventSource | null = null;
   let elapsed = $state(0);
@@ -116,7 +117,7 @@
         src.close();
         es = null;
         stopTimer();
-        preview = await api.get(`/sessions/${id}`).catch(() => null);
+        preview = await api.sessions.get(id).catch(() => null);
         mode = "done";
         return;
       }
@@ -144,7 +145,7 @@
 
   async function cancelClose() {
     if (mode === "processing" && sessionId) {
-      await api.post(`/sessions/${sessionId}/delete`).catch(() => {});
+      await api.sessions.remove(sessionId).catch(() => {});
       await sessions.load();
     }
     dialog?.hide();

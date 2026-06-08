@@ -26,7 +26,9 @@
 #include "jobs/runner.hpp"
 #include "log/log.hpp"
 #include "models/model_manager.hpp"
+#include "oauth/backup_service.hpp"
 #include "sse/broker.hpp"
+#include "translate/queue.hpp"
 
 namespace fs = std::filesystem;
 namespace ws = whisperx::server;
@@ -86,6 +88,10 @@ int main(int argc, char** argv) {
     auto run_session = ws::jobs::make_run_session(store, manager, broker, cfg);
     ws::jobs::JobQueue queue(store, run_session, &broker);
 
+    // Network-bound translation runs on its own single-worker executor so it
+    // never blocks the CPU transcription queue (app/translate_job.py).
+    ws::translate::TranslationQueue translate_queue(store, &broker);
+
     // Requeue sessions that were mid-flight before a restart.
     for (const auto& sid : store.reconcile_startup()) {
         logger->info("Requeuing session {} from before restart", sid);
@@ -104,7 +110,8 @@ int main(int argc, char** argv) {
         }
     }).detach();
 
-    ws::AppState app{store, manager, queue, broker, cfg};
+    ws::BackupService backup(cfg, broker);
+    ws::AppState app{store, manager, queue, translate_queue, broker, backup, cfg};
 
     // --- oat++ server -------------------------------------------------------
     oatpp::base::Environment::init();
@@ -131,6 +138,7 @@ int main(int argc, char** argv) {
     oatpp::base::Environment::destroy();
 
     queue.shutdown();
+    translate_queue.shutdown();
     store.close();
     curl_global_cleanup();
     return 0;
