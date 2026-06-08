@@ -79,11 +79,12 @@ New adapter `adapters/server/`, a CMake target (`whisperx_server`) gated behind
 | Downloader | `assets/downloader.{hpp,cpp}`, `http/curl_client.{hpp,cpp}` | libcurl HF-mirror fetch + cache + libarchive `.tar.bz2` extract (port of `asr_sherpa`/`diarize_sherpa`/`export_align_onnx` resolvers). `curl_client` also grew `post`/`request` (PATCH/DELETE via CUSTOMREQUEST)/`form_encode` for the OAuth + Drive calls, plus `upload_file` (streamed resumable PUT, `Location` capture via HEADERFUNCTION) for large object uploads |
 | Secrets | `secrets/keyring.{hpp,cpp}`, `secrets/hf_verify.{hpp,cpp}` | hrantzsch/keychain wrapper (port of `secret_store.py`) + live HF token verify (whoami + gated-model check) |
 | Backup auth (OAuth) | `oauth/{crypto,pkce,credentials,client,flow,backup_service}.{hpp,cpp}`, `oauth/{provider,token_store}.hpp` | hand-rolled auth-code+PKCE/S256 lib (port of `app/backup/oauth.py`): dep-free crypto, Python-compatible creds JSON in keyring, `OAuthClient` (authorize/exchange/refresh/access-token), `LinkFlow` (consent thread + `/oauth/callback` promise + SSE), `BackupService` facade |
-| Drive client | `drive/drive_client.{hpp,cpp}` | Drive v3 `files.*` REST wrapper (port of `app/backup/gdrive.py`): list/get/download/create(+multipart upload)/update/delete + `find_child`/`ensure_folder`; injectable auth + transport |
+| Drive client | `drive/drive_client.{hpp,cpp}` | Drive v3 `files.*` REST wrapper (port of `app/backup/gdrive.py`): list/get/download(+`download_to_file`)/create(+multipart)/`upload_resumable`(streamed)/update/delete + `find_child`/`ensure_folder`; injectable auth/transport/upload |
+| Backup engine | `backup/{manifest,backend,local_backend,gdrive_backend,engine}.{hpp,cpp}` | port of `app/backup/{manifest,backend,local,gdrive,service}.py`: content-addressed object store + atomic manifest pointer, `backup_now`+GC, streamed `restore`+prune, bootstrap/`assess_link`, adopt/overwrite, periodic loop, `.backup/state.json` sidecar; `StorageBackend` = GDrive (streamed) or local-fs; cross-host-compatible manifest JSON |
 | Translation | `translate/google.{hpp,cpp}`, `translate/overlay.{hpp,cpp}`, `translate/queue.{hpp,cpp}` | Cloud Translation **v2 REST (API key)** over the libcurl client + `verify_api_key`, with request batching (100 seg / 25k char caps) — 1:1 port of `translation/google.py`; structure-locked overlay (`start_key`/`build_entries`/`apply_overlay`, v2 + legacy-v1, stale fallback — port of `translation_overlay.py`); single-worker network executor with durable status + `translate:<id>` SSE (port of `translate_job.py`) |
 | Routes | `http/api_controller.hpp`, `http/spa_controller.hpp`, `http/views.{hpp,cpp}`, `http/http_util.{hpp,cpp}`, `http/app_state.hpp` | all MVP endpoints + SPA catch-all + response shaping (`_card`/`_build_turns`/`_models_event`/`render_markdown` ports) |
 | Entry | `main.cpp` | wires collaborators, `reconcile_startup` requeue, background model warm, oat++ server |
-| Tests | `tests/test_{broker,jobs,config,url,downloader,keyring,translate,oauth,drive}.cpp` | Catch2 + CTest under ASan/UBSan (61 cases) |
+| Tests | `tests/test_{broker,jobs,config,url,downloader,keyring,translate,oauth,drive,backup}.cpp` | Catch2 + CTest under ASan/UBSan (68 cases) |
 
 **Routes implemented** (route-for-route per `api-reference.md`): `GET /healthz`;
 sessions `GET/POST /api/sessions` (multipart upload → temp spool → duration probe →
@@ -94,18 +95,31 @@ enqueue), `GET /api/sessions/{id}`, `rename`, `delete`; transcript `turns/{i}`,
 translation `POST /api/sessions/{id}/translate`, `GET /api/sessions/{id}/translation/{lang}`,
 `GET /sessions/{id}/translation/{lang}/download/{fmt}`; settings `POST /api/settings/google-key`
 + `/clear`, `POST /api/settings/translation-service`; backup `GET /api/backup/status`
-(real link state), `POST /api/backup/connect` (starts the consent flow),
-`POST /api/backup/disconnect`, `GET /oauth/callback` (loopback redirect target +
-success/error page); SSE `sessions/{id}/events`, `sessions/{id}/translate/events`,
-`models/events`, `backup/events` (connecting→linked/idle); SPA catch-all + `/static/*`.
+(real engine+link state), `POST /api/backup/connect` (optional `backup_folder`;
+starts the consent flow), `POST /api/backup/disconnect`, `POST /api/backup/now`
+(202, async push), `POST /api/backup/restore`, `POST /api/backup/bootstrap/{adopt,
+overwrite}`, `GET /api/backup/remote-info`, `GET /oauth/callback` (loopback
+redirect target + success/error page); SSE `sessions/{id}/events`,
+`sessions/{id}/translate/events`, `models/events`, `backup/events` (one-shot
+connect: `{status,backup}`), `backup/status/events` (persistent sync status:
+`{status:<card>}`); SPA catch-all + `/static/*`.
 
 ### Verification done
 - `whisperx_server` + `whisperx_server_tests` build clean (`WHISPERX_BUILD_SERVER=ON`).
-- **61 Catch2 cases green** under ASan/UBSan (broker + jobs + config + url +
+- **68 Catch2 cases green** under ASan/UBSan (broker + jobs + config + url +
   downloader URL/map/cache-hit + keyring env-override/roundtrip + translate
   overlay/v1-legacy/stale + key-verify/translate guards + **oauth** PKCE-RFC7636-vector/
   creds-roundtrip/authorize-url/refresh-token-retention/form-encode + **drive**
-  query-encoding/multipart-body/pagination/`q`-escaping/ensure-folder/error-mapping).
+  query-encoding/multipart-body/pagination/`q`-escaping/ensure-folder/error-mapping +
+  **backup** manifest-roundtrip/merkle-stability/changed-paths + `backup_now`
+  upload/skip/GC + streamed restore+prune + `assess_link` fresh/remote-only/in-sync/
+  diverged + `upload_resumable` request shaping).
+- **Backup engine live smoke** (local backend, no Google): `WHISPERX_BACKUP_BACKEND=local`
+  → `/api/backup/status` `state:dirty` → `POST /api/backup/now` 202 writes
+  `manifest.json` + `objects/<sha256>` and flips to `state:idle` with `last_root`/
+  `last_backup_at` set; `/backup/status/events` emits a `{status:<card>}` frame;
+  `/api/backup/restore` returns `{restored,backup}`; `/api/backup/remote-info`
+  reports `{exists,generation,entries,total_size}`.
 - Backup-auth live smoke (no real Google): unconfigured → `/api/backup/status`
   `configured:false`, `connect` → 400; with dummy creds → `connecting:true`, status
   flips to `connecting`, `/oauth/callback` fulfils the flow and the **CSRF state
@@ -129,14 +143,14 @@ success/error page); SSE `sessions/{id}/events`, `sessions/{id}/translate/events
 - **Task 8 — full e2e parity gate.** The transcribe→edit→export flow + SPA e2e
   (Flask vs oat++) on a seeded clip + a no-Python-on-PATH runtime proof. The downloader
   now resolves align/diarize assets, so a clean clip can run without pre-fetched dirs.
-- **Backup engine / restore.** The OAuth link (PKCE) + the Drive `files.*` client
-  are **built** (above); what's left is the engine on top — the `manifest.json`
-  pointer, content-addressed `objects/<sha256>` store (`put/has/get/list/
-  delete_object`), GC, and restore (port of `app/backup/{backend,manifest}.py` +
-  the sync loop). `BackupService::drive()` hands the engine a token-bound
-  `DriveClient`. Note: `create_file`/`update_content` send **in-memory** bodies —
-  large object blobs will want streaming/resumable uploads. A local-filesystem
-  backend is also not yet ported.
+- **Backup upload hardening + alternate backends.** The engine, GDrive + local-fs
+  backends, streamed uploads/downloads, GC, restore, bootstrap and the periodic
+  loop are **built** (above). Remaining: chunk-resume uploads (the current path is
+  a single streamed PUT — retry-whole on a mid-upload drop; the resumable session
+  URI makes upgrading a localized `net::upload_file` change), plus S3/WebDAV
+  backends and any multi-device merge (single-device mirror by design). The
+  manifest's small in-memory `create_file`/`update_content` path is intentional
+  (manifest + folder metadata only; object blobs stream).
 - **GPU / Metal** — CPU-only; ORT CUDA EP and whisper.cpp/GGML are later passes.
 - **Packaging** — lean binary + SPA assets; Tauri/macOS packager repoint to the C++
   server port. Not started.
@@ -147,7 +161,7 @@ success/error page); SSE `sessions/{id}/events`, `sessions/{id}/translate/events
 # build (sherpa-onnx is already vendored under build/ from the engine-core work)
 cmake -S . -B build -G Ninja -DWHISPERX_CORE_AUDIO=ON -DWHISPERX_BUILD_SERVER=ON
 cmake --build build --target whisperx_server whisperx_server_tests
-./build/adapters/server/whisperx_server_tests        # 61 cases, ASan/UBSan
+./build/adapters/server/whisperx_server_tests        # 68 cases, ASan/UBSan
 
 # run — assets now lazy-download from the public mirrors (no env vars required);
 # the WHISPERX_*_DIR vars below are optional and only override the downloader for dev.
@@ -163,7 +177,10 @@ export WHISPERX_SILERO_ONNX=models/silero_vad.onnx
 
 Relevant env: `WHISPERX_DATA_DIR`, `WHISPERX_PORT`/`WHISPERX_HOST`,
 `WHISPERX_LOG_LEVEL`, `WHISPERX_MAX_UPLOAD_MB`, `WHISPERX_MAX_AUDIO_HOURS`,
-`WHISPERX_MODEL`, `WHISPERX_SPA_DIR`/`WHISPERX_STATIC_DIR`, and the asset-dir vars
+`WHISPERX_MODEL`, `WHISPERX_SPA_DIR`/`WHISPERX_STATIC_DIR`, the backup vars
+(`WHISPERX_BACKUP_BACKEND` `gdrive`|`local`, `WHISPERX_BACKUP_DIR`,
+`WHISPERX_BACKUP_INTERVAL` secs / `0` off) + `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`
+for the Drive link, and the asset-dir vars
 (`WHISPERX_SHERPA_MODELS_ROOT`/`WHISPERX_SHERPA_WHISPER_DIR`,
 `WHISPERX_ALIGN_ONNX_ROOT`/`WHISPERX_ALIGN_ONNX_DIR`, `WHISPERX_DIARIZE_ONNX_DIR`,
 `WHISPERX_SILERO_ONNX`).
