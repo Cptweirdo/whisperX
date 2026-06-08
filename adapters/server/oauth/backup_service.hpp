@@ -18,6 +18,7 @@
 #include <nlohmann/json.hpp>
 
 #include "config.hpp"
+#include "drive/drive_client.hpp"
 #include "oauth/client.hpp"
 #include "oauth/flow.hpp"
 #include "oauth/token_store.hpp"
@@ -50,8 +51,13 @@ public:
     void handle_callback(const std::string& code, const std::string& state,
                          const std::string& error);
 
-    // A live bearer header for outbound Drive calls (future), or nullopt.
+    // A live bearer header for outbound Drive calls, or nullopt.
     std::optional<std::string> bearer_header();
+
+    // A Drive files.* client bound to this link's live token, or nullopt when
+    // backup isn't configured. The returned client refreshes the token lazily
+    // via bearer_header() on each call.
+    std::optional<drive::DriveClient> drive();
 
 private:
     void publish_status();

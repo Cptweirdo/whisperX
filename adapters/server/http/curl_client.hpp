@@ -37,6 +37,13 @@ Response post(const std::string& url, const std::string& body,
 std::string form_encode(const std::vector<std::pair<std::string, std::string>>&
                             fields);
 
+// Generic request with an arbitrary verb (PATCH, DELETE, PUT, GET, POST) via
+// CURLOPT_CUSTOMREQUEST — the body is sent for non-GET methods. Unlike post() no
+// Content-Type is added; the caller sets it in opts.headers when there's a body.
+// Used by the Drive client (PATCH content, DELETE files).
+Response request(const std::string& method, const std::string& url,
+                 const std::string& body, const Options& opts = {});
+
 // GET the URL streamed to `dest` (written to dest + ".part", then atomically
 // renamed on a 2xx). Creates parent dirs. Returns the HTTP status (0 on a
 // transport failure); the partial file is removed unless the status was 2xx.

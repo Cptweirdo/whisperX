@@ -33,6 +33,11 @@ std::optional<std::string> BackupService::bearer_header() {
     return client_->bearer_header();
 }
 
+std::optional<drive::DriveClient> BackupService::drive() {
+    if (!client_) return std::nullopt;
+    return drive::DriveClient([this] { return bearer_header(); });
+}
+
 json BackupService::status_json() {
     bool linked = is_linked();
     bool connecting = flow_ && flow_->in_progress();
