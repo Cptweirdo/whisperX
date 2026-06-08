@@ -54,6 +54,22 @@ FetchContent_Declare(
   FIND_PACKAGE_ARGS NAMES SQLiteCpp)
 FetchContent_MakeAvailable(SQLiteCpp)
 
+# utf8proc — simple 1:1 Unicode lowercase (utf8proc_tolower) for the native align
+# char-cleaner (core/align/char_clean.cpp), replacing Python str.lower() on arbitrary
+# script. Small, MIT, established (Julia/Neovim); the heavy ICU dep is rejected (as
+# for the sentence splitter). PIC so it links into the shared pybind module.
+set(UTF8PROC_INSTALL OFF CACHE BOOL "" FORCE)
+set(UTF8PROC_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  utf8proc
+  GIT_REPOSITORY https://github.com/JuliaStrings/utf8proc
+  GIT_TAG v2.9.0
+  FIND_PACKAGE_ARGS NAMES utf8proc)
+FetchContent_MakeAvailable(utf8proc)
+if(TARGET utf8proc)
+  set_target_properties(utf8proc PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # --- generated: embed the vendored Moses non-breaking-prefix lists -----------
 # The native sentence splitter (core/text/sentence_split.cpp, replacing nltk
 # punkt) needs the per-language abbreviation lists at runtime; embed them as
@@ -84,6 +100,7 @@ add_library(whisperx_core_lib STATIC
   core/vad/merge_chunks.cpp
   core/align/trellis.cpp
   core/align/align.cpp
+  core/align/char_clean.cpp
   core/align/emission_post.cpp
   core/diarize/interval_tree.cpp
   core/diarize/assign_speakers.cpp
@@ -91,7 +108,7 @@ add_library(whisperx_core_lib STATIC
   core/build_info.cpp)
 target_include_directories(whisperx_core_lib PUBLIC core ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(whisperx_core_lib PUBLIC
-  nlohmann_json::nlohmann_json SQLiteCpp)
+  nlohmann_json::nlohmann_json SQLiteCpp utf8proc)
 target_compile_options(whisperx_core_lib PRIVATE -Wall -Wextra)
 set_target_properties(whisperx_core_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -174,6 +191,7 @@ if(WHISPERX_CORE_AUDIO)
     core/audio/decode.cpp
     core/audio/vad_silero.cpp
     core/align/wav2vec2_onnx.cpp
+    core/align/align_driver.cpp
     core/asr/whisper_sherpa.cpp
     core/diarize/diarize_sherpa.cpp)
   target_include_directories(whisperx_core_audio PUBLIC core)
@@ -229,6 +247,7 @@ if(WHISPERX_CORE_TESTS)
     core/tests/test_trellis.cpp
     core/tests/test_sentence_split.cpp
     core/tests/test_emission_post.cpp
+    core/tests/test_char_clean.cpp
     core/tests/test_assign_speakers.cpp
     core/tests/test_writers.cpp)
   target_link_libraries(whisperx_core_tests

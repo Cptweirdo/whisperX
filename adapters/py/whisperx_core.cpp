@@ -10,6 +10,7 @@
 #include <pybind11/stl.h>
 
 #include <cstring>
+#include <functional>
 #include <map>
 #include <optional>
 #include <span>
@@ -20,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include "align/align.hpp"
+#include "align/char_clean.hpp"
 #include "align/emission_post.hpp"
 #include "align/trellis.hpp"
 #include "audio/audio_constants.hpp"
@@ -34,6 +36,7 @@
 #include "writers/writers.hpp"
 
 #ifdef WHISPERX_CORE_AUDIO
+#include "align/align_driver.hpp"
 #include "align/wav2vec2_onnx.hpp"
 #include "asr/whisper_sherpa.hpp"
 #include "audio/decode.hpp"
@@ -489,6 +492,21 @@ void bind_align(py::module_& m) {
         py::arg("dictionary"),
         "Raw CTC logits (T,V) -> (log_softmax'd, wildcard-extended emission (T,V'), "
         "token ids) — the torch-free post-forward step for the align_onnx path.");
+
+    // Per-segment char-cleaning (alignment.py:252-280): the `align_driver`
+    // preprocessing pass, exposed for the dep-free parity test. Returns
+    // (clean_char, clean_cdx) — the cleaned string + the kept codepoint indices.
+    m.def(
+        "clean_segment",
+        [](const std::string& text, const std::string& language,
+           const std::map<std::string, int>& dictionary) {
+            auto r = al::clean_segment(text, language, dictionary);
+            return py::make_tuple(r.clean_char, r.clean_cdx);
+        },
+        py::arg("text"), py::arg("language"), py::arg("dictionary"),
+        "Char-clean one transcript segment -> (clean_char, clean_cdx): lowercase "
+        "(utf8proc), ' '->'|', drop leading/trailing whitespace, keep dict-key or "
+        "non-space (OOV-wildcard) codepoints. Codepoint indexing == Python str.");
 }
 
 // whisperx/diarize.py speaker-assignment glue (`assign` token, Phase 4): the
@@ -632,6 +650,46 @@ void bind_audio(py::module_& m) {
             "Run the wav2vec2 forward over a list of 1-D float32 waveforms -> list "
             "of (T_i, V) raw-logit arrays. batched=True packs padded+masked batches "
             "(layer_norm models only); False runs each segment alone.");
+
+    // Native align driver (`align_driver` token, Phase 5). Owns the whole align()
+    // body for ONNX models: char-clean -> gather+forward -> emission_post ->
+    // align_assemble -> word_segments. Releases the GIL for the native compute and
+    // re-acquires it per progress callback (fired after each aligned segment).
+    m.def(
+        "align_run",
+        [](const py::handle& transcript, whisperx::align::Wav2Vec2Onnx& model,
+           const std::map<std::string, int>& dictionary,
+           const py::array_t<float, py::array::c_style | py::array::forcecast>&
+               audio,
+           const std::string& language, bool batchable,
+           const std::string& interpolate_method, bool return_char_alignments,
+           const py::object& progress) {
+            if (audio.ndim() != 1)
+                throw std::invalid_argument("audio must be a 1-D float32 array");
+            std::span<const float> aspan(
+                audio.data(), static_cast<std::size_t>(audio.size()));
+            json tr = py_to_json(transcript);
+            std::function<void(double)> prog;
+            if (!progress.is_none())
+                prog = [&progress](double p) {
+                    py::gil_scoped_acquire gil;
+                    progress(p);
+                };
+            json out;
+            {
+                py::gil_scoped_release rel;
+                out = whisperx::align::align_run(
+                    tr, model, dictionary, aspan, language, batchable,
+                    interpolate_method, return_char_alignments, prog);
+            }
+            return json_to_py(out);
+        },
+        py::arg("transcript"), py::arg("model"), py::arg("dictionary"),
+        py::arg("audio"), py::arg("language"), py::arg("batchable") = false,
+        py::arg("interpolate_method") = "nearest",
+        py::arg("return_char_alignments") = false, py::arg("progress") = py::none(),
+        "Native align() for ONNX models: transcript dict + Wav2Vec2Onnx model + "
+        "dictionary + 16 kHz mono f32 audio -> {segments, word_segments}.");
 
     // Native Whisper ASR backend under ORT (Phase 4 / 4a). Wraps sherpa-onnx's
     // OfflineRecognizer; the Python asr_sherpa facade hands it the VAD spans +

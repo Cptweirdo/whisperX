@@ -77,6 +77,26 @@ def _core_align_onnx_enabled() -> bool:
         hasattr(whisperx_core, "align_emission_post")
 
 
+def _core_align_driver_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` runs the **whole** ``align()`` body (Phase 5).
+
+    Gated on the ``align_driver`` token in ``WHISPERX_CORE_STAGES``. When on, and the
+    loaded model is the native ``Wav2Vec2Onnx`` (an ``align_onnx``-resolved mirror
+    model), ``align()`` delegates char-cleaning + the gather/forward loop +
+    ``emission_post``/``align_assemble`` to ``whisperx_core.align_run`` in one call —
+    no Python re-entry (the prerequisite for the native orchestrator). Torch models
+    keep the Python body. ``hasattr``-guarded; needs the audio-stage module.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "align_driver" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "align_run")
+
+
 def _load_align_onnx(language_code: str, model_name: Optional[str]):
     """Try to load the native ORT align model from the mirror for this language.
 
@@ -231,6 +251,19 @@ def align(
     model_lang = align_model_metadata["language"]
     model_type = align_model_metadata["type"]
     use_onnx = model_type == "onnx"  # Phase 3B: native ORT forward
+
+    # Phase 5: when the `align_driver` token is on and the model is the native ONNX
+    # aligner, hand the *whole* body to C++ — char-cleaning + gather/forward +
+    # emission_post + assembly, no Python re-entry. Torch models fall through to the
+    # Python body below (their forward can't run under ORT).
+    if use_onnx and _core_align_driver_enabled():
+        import whisperx_core
+        audio_np = np.ascontiguousarray(audio[0].cpu().numpy(), dtype=np.float32)
+        return whisperx_core.align_run(
+            list(transcript), model, model_dictionary, audio_np, model_lang,
+            bool(align_model_metadata.get("batchable", False)),
+            interpolate_method, return_char_alignments, progress_callback,
+        )
 
     # blank/pad id — model-constant, used by every segment (alignment.py:289-292).
     blank_id = 0

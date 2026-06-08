@@ -1084,19 +1084,32 @@ lazy-download on first run is the **Phase-5 packaging policy** (the *mechanism* 
 > CTest, the contract writer byte-goldens green under `writers`, pytest 226 green across
 > `{unset, writers}`, dep-free build unaffected.
 >
-> **Slice `orchestrate` DEFERRED — next up: the align driver.** A fully-native `run_job` needs a
-> native align *driver*, but `alignment.py::align`'s preprocessing
-> (char-clean/`clean_cdx`/OOV-wildcard/gather/sentence-spans) is still Python — only
-> `Wav2Vec2Onnx.forward`/`emission_post`/`align_assemble` are native, and they take
-> already-preprocessed inputs. **Decided direction: port the align driver first** (an
-> `align_driver` sub-slice making `align()` a true native entrypoint), *then* the 100%-native
-> orchestrator — **not** the hybrid Python-callback shape. See the Phase 3 brief for the
-> driver's scope (the `align()` Phase-1 loop: per-language char normalization →
-> `clean_char`/`clean_cdx`, OOV wildcard, `MAX_DURATION`/`start>=MAX_DURATION` gating, the gather
-> + batched-forward driver over `Wav2Vec2Onnx.forward`, the per-segment `emission_post` →
-> `align_assemble` loop, and the sentence-span source — note `align()` still calls **nltk punkt**
-> for `sentence_spans` even though `align_assemble` carries the native splitter, so the port must
-> reconcile that).
+> **Slice `align_driver` LANDED — `align()` is now a native entrypoint.** The native align
+> *driver* (the prerequisite for a no-Python-re-entry orchestrator) is ported behind a new
+> composable `align_driver` token. `core/align/char_clean.{hpp,cpp}` (in `whisperx_core_lib`)
+> ports the `alignment.py:252-280` char-cleaning — per-codepoint lowercase via **utf8proc**
+> (`utf8proc_tolower`; MIT FetchContent, the established lightweight Unicode lib — ICU rejected
+> as for `sentence_split`), `' '`→`'|'`, leading/trailing skip, dict-key/OOV-wildcard keep +
+> `clean_cdx`. `core/align/align_driver.{hpp,cpp}` (in `whisperx_core_audio`) `align_run` owns
+> the whole `align()` body for ONNX models: char-clean → gather (clean-non-empty &&
+> `start<MAX_DURATION`) → one batched `Wav2Vec2Onnx::forward` → per-segment `emission_post` →
+> `align_assemble` → flat `word_segments`, same stub-on-failure flow. `alignment.py::align`
+> delegates under `_core_align_driver_enabled()` + `use_onnx`; torch models keep the Python body.
+> **The punkt reconciliation dissolved**: `align_assemble` already recomputes sentence spans
+> natively and the punkt result was never passed to it, so the driver just drops it. GIL released
+> for compute, re-acquired per progress callback (fired per *input segment* that aligns; stubs
+> don't fire — Python parity). **Gates met:** `clean_segment` byte-exact vs the committed
+> `*.align.json` goldens (`test_char_clean_parity.py`, 18 cases, torch-free); `align_run`
+> reproduces `words.json` exactly (en+ru) + flatten/chars/stubs/progress
+> (`test_align_driver_parity.py`, `RUN_MIRROR=1`, 6 cases); Catch2 `test_char_clean.cpp`
+> (8 cases) → 92/92 CTest; full pytest green (226) across `WHISPERX_CORE_STAGES` ∈ {unset,
+> `align_onnx,align_driver`, full native set}; `import whisperx` + dep-free `AUDIO=OFF` build
+> unaffected.
+>
+> **Slice `orchestrate` — now unblocked.** With `align()` native, the 100%-native `run_job`
+> (decode → silero VAD → `merge_chunks` → sherpa ASR → `align_run` → sherpa diarize →
+> `assign_word_speakers` → writers, no Python re-entry) builds directly on `align_run`. Live
+> end-to-end stays per-stage + A/B (sherpa engines), never end-to-end text byte-equality.
 
 ### Context
 Port the output writers and assemble the **full `run_job` parity** path, so a C++
