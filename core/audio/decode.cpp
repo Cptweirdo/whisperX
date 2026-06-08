@@ -86,6 +86,16 @@ AudioBuffer load_audio(const std::string& path, int sr) {
     out.sample_rate = sr;
     bool swr_ready = false;
 
+    // Reserve the whole output up front from the container duration so the per-frame
+    // appends never reallocate. The old per-frame reserve(size()+got) grew capacity
+    // by exactly `got` each frame (libstdc++ reserve allocates no headroom), so every
+    // frame reallocated + copied the entire buffer — O(n^2) in length. Measured: 16x
+    // the audio took 150x the decode time; a ~100 MB wav spent minutes here.
+    if (fmt.p->duration > 0) {
+        const double secs = static_cast<double>(fmt.p->duration) / AV_TIME_BASE;
+        out.samples.reserve(static_cast<std::size_t>(secs * sr) + sr);  // +1 s margin
+    }
+
     auto convert_frame = [&](const AVFrame* fr) {
         if (!swr_ready) {
             ret = swr_alloc_set_opts2(
@@ -112,7 +122,8 @@ AudioBuffer load_audio(const std::string& path, int sr) {
             av_freep(&buf);
             throw DecodeError(av_err(got));
         }
-        out.samples.reserve(out.samples.size() + got);
+        // No per-frame reserve: the up-front reserve covers the whole stream, and
+        // push_back's geometric growth absorbs any duration under-estimate in O(n).
         for (int i = 0; i < got; ++i)
             out.samples.push_back(static_cast<float>(buf[i]) / 32768.0f);
         av_freep(&buf);
