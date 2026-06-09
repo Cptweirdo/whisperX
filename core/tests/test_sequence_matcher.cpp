@@ -4,6 +4,7 @@
 // and the tie-break in isolation under ASan/UBSan.
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <string>
 #include <vector>
 

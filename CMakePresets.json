@@ -88,13 +88,13 @@
     { "name": "dev",          "configurePreset": "dev" },
     { "name": "audio",        "configurePreset": "audio" },
     { "name": "server",       "configurePreset": "server",
-      "targets": ["whisperx_server", "whisperx_server_tests"] },
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
     { "name": "server-vcpkg", "configurePreset": "server-vcpkg",
-      "targets": ["whisperx_server", "whisperx_server_tests"] },
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
     { "name": "server-cuda", "configurePreset": "server-cuda",
-      "targets": ["whisperx_server", "whisperx_server_tests"] },
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
     { "name": "server-vcpkg-cuda", "configurePreset": "server-vcpkg-cuda",
-      "targets": ["whisperx_server", "whisperx_server_tests"] }
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] }
   ],
   "testPresets": [
     { "name": "dev",    "configurePreset": "dev",

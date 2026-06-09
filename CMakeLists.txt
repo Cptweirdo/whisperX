@@ -53,6 +53,13 @@ if(WHISPERX_ENABLE_GPU AND NOT WHISPERX_CORE_AUDIO)
                       "provider only matters for the ASR/align/diarize compute chain).")
 endif()
 
+# sherpa-onnx FORCE-writes BUILD_SHARED_LIBS=ON into the CMake *cache* (its own
+# CMakeLists), which would silently flip the early deps below (utf8proc) to
+# shared on every configure after the first. Pin the default with a normal
+# directory-scoped variable — it shadows the cache entry; the audio block flips
+# it ON for sherpa only and the server block sets it back OFF.
+set(BUILD_SHARED_LIBS OFF)
+
 include(FetchContent)
 FetchContent_Declare(
   nlohmann_json

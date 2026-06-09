@@ -26,21 +26,31 @@ using whisperx::server::jobs::JobQueue;
 using whisperx::server::sse::Broker;
 
 namespace {
-fs::path temp_data_dir() {
-    auto dir = fs::temp_directory_path() /
+// A unique temp data_dir per test; removed on destruction. Declared before the
+// store/queue so cleanup runs after their destructors close the SQLite handle —
+// Windows can't delete files that are still open.
+struct TempDir {
+    fs::path path;
+    TempDir() {
+        path = fs::temp_directory_path() /
                ("wxjobs-" + std::to_string(::getpid()) + "-" +
                 std::to_string(std::chrono::steady_clock::now()
                                    .time_since_epoch()
                                    .count()));
-    fs::create_directories(dir);
-    return dir;
-}
+        fs::create_directories(path);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+    }
+    std::string str() const { return path.string(); }
+};
 }  // namespace
 
 TEST_CASE("a completed job marks done and publishes done after the store update",
           "[jobs]") {
-    auto dir = temp_data_dir();
-    SessionStore store(dir.string());
+    TempDir dir;
+    SessionStore store(dir.str());
     store.create("s1", "clip.mp3", "audio.mp3", json::object(),
                  std::optional<std::string>("tiny"));
     Broker broker;
@@ -62,12 +72,11 @@ TEST_CASE("a completed job marks done and publishes done after the store update"
     REQUIRE((*ev)["status"] == "done");
     // The event fired after mark_done, so the row is already terminal.
     REQUIRE(store.get("s1")["status"] == "done");
-    fs::remove_all(dir);
 }
 
 TEST_CASE("a throwing job marks error and publishes error", "[jobs]") {
-    auto dir = temp_data_dir();
-    SessionStore store(dir.string());
+    TempDir dir;
+    SessionStore store(dir.str());
     store.create("s1", "clip.mp3", "audio.mp3", json::object(),
                  std::optional<std::string>("tiny"));
     Broker broker;
@@ -87,13 +96,12 @@ TEST_CASE("a throwing job marks error and publishes error", "[jobs]") {
     auto row = store.get("s1");
     REQUIRE(row["status"] == "error");
     REQUIRE(row["error"] == "boom");
-    fs::remove_all(dir);
 }
 
 TEST_CASE("a cancelled job publishes nothing and is not marked error",
           "[jobs]") {
-    auto dir = temp_data_dir();
-    SessionStore store(dir.string());
+    TempDir dir;
+    SessionStore store(dir.str());
     store.create("s1", "clip.mp3", "audio.mp3", json::object(),
                  std::optional<std::string>("tiny"));
     Broker broker;
@@ -115,12 +123,11 @@ TEST_CASE("a cancelled job publishes nothing and is not marked error",
 
     REQUIRE_FALSE(sub->pop(500ms).has_value());  // no terminal event
     REQUIRE(store.get("s1")["status"] != "error");
-    fs::remove_all(dir);
 }
 
 TEST_CASE("jobs run serially (one worker)", "[jobs]") {
-    auto dir = temp_data_dir();
-    SessionStore store(dir.string());
+    TempDir dir;
+    SessionStore store(dir.str());
     for (auto id : {"a", "b", "c"})
         store.create(id, "clip.mp3", "audio.mp3", json::object(),
                      std::optional<std::string>("tiny"));
@@ -151,5 +158,4 @@ TEST_CASE("jobs run serially (one worker)", "[jobs]") {
         std::this_thread::sleep_for(20ms);
     REQUIRE(done.load() == 3);
     REQUIRE(max_concurrent.load() == 1);
-    fs::remove_all(dir);
 }

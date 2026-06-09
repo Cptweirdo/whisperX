@@ -76,7 +76,13 @@ TEST_CASE("load_dotenv parses KEY=VALUE, strips quotes/comments, trims",
     CHECK(env_or("WXT_INLINE", "<unset>") == "value");
     CHECK(env_or("WXT_HASH_IN_QUOTES", "<unset>") == "keep # this");
     CHECK(env_or("WXT_NO_EQ_LINE", "<unset>") == "<unset>");  // skipped, no '='
+#if defined(_WIN32)
+    // The Windows environment cannot hold an empty-valued variable (setting
+    // one to "" removes it), so an empty .env value reads back as unset.
+    CHECK(env_or("WXT_EMPTY", "<unset>") == "<unset>");
+#else
     CHECK(env_or("WXT_EMPTY", "<unset>") == "");
+#endif
     CHECK(env_or("WXT_EQ_IN_VAL", "<unset>") == "a=b=c");  // only first '='
 
     fs::remove_all(dir);
