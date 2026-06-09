@@ -114,7 +114,7 @@ public:
 
     // --- Sessions --------------------------------------------------------
     ENDPOINT("GET", "/api/sessions", list_sessions) {
-        json rows = app_.store.list();
+        const auto rows = app_.store.list();
         json cards = json::array();
         for (const auto& r : rows) cards.push_back(views::card(r));
         return jr(Status::CODE_200,
@@ -230,10 +230,10 @@ public:
 
     ENDPOINT("GET", "/api/sessions/{id}", get_session, PATH(String, id)) {
         std::string sid = id;
-        json row = app_.store.get(sid);
-        if (row.is_null()) return jr(Status::CODE_404, json::object());
+        const auto row = app_.store.get(sid);
+        if (!row) return jr(Status::CODE_404, json::object());
         json names = app_.store.get_speaker_names(sid);
-        json card = views::card(row);
+        json card = views::card(*row);
         json result = app_.store.load_result(sid);
         if (result.is_object()) {
             json orig = result.contains("segments") ? result["segments"]
@@ -245,11 +245,10 @@ public:
         card["result"] = result.is_null() ? json(nullptr) : result;
         card["speaker_names"] = names;
         card["can_undo"] = app_.store.edit_history_len(sid) > 0;
-        card["created_at"] = row.value("created_at", json(nullptr));
-        card["updated_at"] = row.value("updated_at", json(nullptr));
-        card["options"] = (row.contains("options") && row["options"].is_object())
-                              ? row["options"]
-                              : json::object();
+        card["created_at"] = row->created_at;
+        card["updated_at"] = row->updated_at;
+        card["options"] =
+            row->options.is_object() ? row->options : json::object();
         json formats = json::array();
         for (const char* fmt : {"srt", "vtt", "txt", "json"}) {
             std::error_code ec;
@@ -266,7 +265,7 @@ public:
              PATH(String, id),
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
         std::string sid = id;
-        if (app_.store.get(sid).is_null())
+        if (!app_.store.get(sid))
             return jr(Status::CODE_404, json::object());
         json body = http_util::parse_body(request);
         std::string name = body.value("name", "");
@@ -294,7 +293,7 @@ public:
              PATH(String, id), PATH(String, idx),
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
         std::string sid = id;
-        if (app_.store.get(sid).is_null())
+        if (!app_.store.get(sid))
             return jr(Status::CODE_404, json::object());
         json body = http_util::parse_body(request);
         std::string text = body.value("text", "");
@@ -308,7 +307,7 @@ public:
 
     ENDPOINT("POST", "/api/sessions/{id}/undo", undo_edit, PATH(String, id)) {
         std::string sid = id;
-        if (app_.store.get(sid).is_null())
+        if (!app_.store.get(sid))
             return jr(Status::CODE_404, json::object());
         app_.store.undo_turn_edit(sid);
         return jr(Status::CODE_200, transcript_payload(sid));
@@ -318,7 +317,7 @@ public:
     ENDPOINT("GET", "/api/sessions/{id}/speakers", list_speakers,
              PATH(String, id)) {
         std::string sid = id;
-        if (app_.store.get(sid).is_null())
+        if (!app_.store.get(sid))
             return jr(Status::CODE_404, json::object());
         json segs = current_segments(sid);
         json names = app_.store.get_speaker_names(sid);
@@ -333,7 +332,7 @@ public:
              PATH(String, id),
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
         std::string sid = id;
-        if (app_.store.get(sid).is_null())
+        if (!app_.store.get(sid))
             return jr(Status::CODE_404, json::object());
         json body = http_util::parse_body(request);
         std::string speaker = body.value("speaker", "");
@@ -351,7 +350,7 @@ public:
              PATH(String, id), PATH(String, idx),
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
         std::string sid = id;
-        if (app_.store.get(sid).is_null())
+        if (!app_.store.get(sid))
             return jr(Status::CODE_404, json::object());
         json body = http_util::parse_body(request);
         std::string speaker = body.value("speaker", "");
@@ -402,7 +401,7 @@ public:
              PATH(String, id), PATH(String, idx),
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
         std::string sid = id;
-        if (app_.store.get(sid).is_null())
+        if (!app_.store.get(sid))
             return jr(Status::CODE_404, json::object());
         json body = http_util::parse_body(request);
         std::string speaker = body.value("speaker", "");
@@ -642,20 +641,18 @@ public:
     // --- SSE -------------------------------------------------------------
     ENDPOINT("GET", "/sessions/{id}/events", session_events, PATH(String, id)) {
         std::string sid = id;
-        if (app_.store.get(sid).is_null())
+        if (!app_.store.get(sid))
             return jr(Status::CODE_404, json::object());
         AppState* app = &app_;
         auto initial = [app, sid]() -> std::optional<json> {
-            json row = app->store.get(sid);
-            if (row.is_null()) return json{{"status", "queued"}};
-            std::string status = row.value("status", "");
-            if (status == "done" || status == "error")
-                return json{{"status", status}};
-            if (row.contains("stage") && row["stage"].is_string()) {
-                json ev = {{"stage", row["stage"]}};
-                return ev;
-            }
-            return json{{"status", status.empty() ? "queued" : status}};
+            const auto row = app->store.get(sid);
+            if (!row) return json{{"status", "queued"}};
+            if (row->status == db::Status::Done ||
+                row->status == db::Status::Error)
+                return json{{"status", db::to_string(row->status)}};
+            if (row->stage.has_value())
+                return json{{"stage", db::to_string(*row->stage)}};
+            return json{{"status", db::to_string(row->status)}};
         };
         auto terminal = [](const json& e) {
             return e.contains("status") &&
@@ -675,9 +672,9 @@ public:
     // --- Binary downloads ------------------------------------------------
     ENDPOINT("GET", "/sessions/{id}/audio", session_audio, PATH(String, id)) {
         std::string sid = id;
-        json row = app_.store.get(sid);
-        if (row.is_null()) return jr(Status::CODE_404, json::object());
-        std::string fn = row.value("audio_filename", "");
+        const auto row = app_.store.get(sid);
+        if (!row) return jr(Status::CODE_404, json::object());
+        std::string fn = row->audio_filename.value_or("");
         if (fn.empty()) return jr(Status::CODE_404, json::object());
         std::string path =
             (fs::path(app_.cfg.data_dir) / "sessions" / sid / fn).string();
@@ -697,15 +694,15 @@ public:
 
     ENDPOINT("GET", "/sessions/{id}/export.md", export_md, PATH(String, id)) {
         std::string sid = id;
-        json row = app_.store.get(sid);
-        if (row.is_null()) return jr(Status::CODE_404, json::object());
+        const auto row = app_.store.get(sid);
+        if (!row) return jr(Status::CODE_404, json::object());
         json result = app_.store.load_result(sid);
         if (!result.is_object()) result = json::object();
         json orig = result.contains("segments") ? result["segments"]
                                                  : json::array();
         json segs = app_.store.current_segments(sid, orig);
         result["segments"] = segs;
-        std::string title = row.value("filename", "Transcript");
+        std::string title = row->filename.value_or("Transcript");
         std::string md = views::render_markdown(
             result, app_.store.get_speaker_names(sid), title);
         std::string fname = http_util::secure_filename(title);
@@ -849,9 +846,9 @@ public:
              PATH(String, id),
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
         std::string sid = id;
-        json row = app_.store.get(sid);
-        if (row.is_null()) return jr(Status::CODE_404, json::object());
-        if (row.value("status", "") != "done")
+        const auto row = app_.store.get(sid);
+        if (!row) return jr(Status::CODE_404, json::object());
+        if (row->status != db::Status::Done)
             return jr(Status::CODE_409,
                       {{"error", "Transcript is not ready to translate."}});
         json body = http_util::parse_body(request);
@@ -874,7 +871,7 @@ public:
     ENDPOINT("GET", "/api/sessions/{id}/translation/{lang}", view_translation,
              PATH(String, id), PATH(String, lang)) {
         std::string sid = id, l = lang;
-        if (app_.store.get(sid).is_null() || !valid_lang(l))
+        if (!app_.store.get(sid) || !valid_lang(l))
             return jr(Status::CODE_404, json::object());
         json overlay = app_.store.load_translation(sid, l);
         if (overlay.is_null()) return jr(Status::CODE_404, json::object());
@@ -891,11 +888,12 @@ public:
     ENDPOINT("GET", "/sessions/{id}/translate/events", translate_events,
              PATH(String, id)) {
         std::string sid = id;
-        if (app_.store.get(sid).is_null())
+        if (!app_.store.get(sid))
             return jr(Status::CODE_404, json::object());
         AppState* app = &app_;
         auto initial = [app, sid]() -> std::optional<json> {
-            return json{{"translations", app->store.get_translations(sid)}};
+            return json{{"translations", db::translations_to_json(
+                                             app->store.get_translations(sid))}};
         };
         auto terminal = [](const json& e) {
             return e.contains("status") &&

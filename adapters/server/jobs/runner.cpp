@@ -90,14 +90,13 @@ RunSession make_run_session(whisperx::db::SessionStore& store,
     return [&store, &manager, &broker, data_dir](const std::string& session_id,
                                                  const CancelFlag& cancel) {
         auto logger = whisperx::server::log::get("runner");
-        json row = store.get(session_id);
-        if (row.is_null())
+        const auto row = store.get(session_id);
+        if (!row)
             throw std::runtime_error("session " + session_id + " disappeared");
 
-        json opts = row.contains("options") ? row["options"] : json::object();
-        std::string model = opt_str(row, "model").value_or(manager.active());
-        std::string audio_filename =
-            opt_str(row, "audio_filename").value_or("");
+        json opts = row->options.is_object() ? row->options : json::object();
+        std::string model = row->model.value_or(manager.active());
+        std::string audio_filename = row->audio_filename.value_or("");
         fs::path session_dir =
             fs::path(data_dir) / "sessions" / session_id;
         std::string audio_path = (session_dir / audio_filename).string();
@@ -122,12 +121,9 @@ RunSession make_run_session(whisperx::db::SessionStore& store,
         // --- progress (durable mark_stage + SSE delta), stage-boundary cancel -
         auto stage = [&](const std::string& s) {
             if (cancel->load()) throw Cancelled();
-            store.mark_stage(session_id, s);
-            json row2 = store.get(session_id);
-            double dur = (row2.is_object() && row2.contains("duration") &&
-                          row2["duration"].is_number())
-                             ? row2["duration"].get<double>()
-                             : 0.0;
+            store.mark_stage(session_id, whisperx::db::parse_stage(s));
+            const auto row2 = store.get(session_id);
+            double dur = row2 ? row2->duration.value_or(0.0) : 0.0;
             json ev = {{"stage", s}};
             double rtf = stage_rtf(s);
             if (rtf > 0.0 && dur > 0.0)
