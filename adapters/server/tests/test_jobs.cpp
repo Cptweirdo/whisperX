@@ -2,6 +2,8 @@
 // SessionStore — serialization, terminal-publish-after-store, cancellation.
 #include <catch2/catch_test_macros.hpp>
 
+#include "posix_compat.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <filesystem>

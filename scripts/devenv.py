@@ -200,7 +200,7 @@ def cmd_deps(args) -> int:
         if vcpkg and vcpkg.exists():
             print(head("Installing C/C++ libs via vcpkg (vcpkg.json manifest)…"))
             rc |= run([str(vcpkg), "install",
-                       "--triple", "x64-windows"], cwd=ROOT)
+                       "--triplet", "x64-windows"], cwd=ROOT)
         else:
             print(warn("VCPKG_ROOT unset or vcpkg.exe missing — clone & bootstrap "
                        "vcpkg, set VCPKG_ROOT, then re-run `deps` to fetch "

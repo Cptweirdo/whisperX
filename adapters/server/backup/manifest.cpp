@@ -3,11 +3,12 @@
 #include <sys/stat.h>
 
 #include <algorithm>
-#include <ctime>
+#include <chrono>
 #include <filesystem>
 #include <utility>
 
 #include "oauth/crypto.hpp"
+#include "time_iso.hpp"
 
 namespace fs = std::filesystem;
 
@@ -27,6 +28,24 @@ struct StatInfo {
 
 StatInfo stat_info(const std::string& path) {
     StatInfo s;
+#if defined(_WIN32)
+    // No st_mtim on Windows; std::filesystem keeps the sub-second precision
+    // (FILETIME is 100 ns) that Python's os.stat reports there.
+    std::error_code ec;
+    fs::path p(path);
+    auto size = fs::file_size(p, ec);
+    if (ec) return s;
+    auto ftime = fs::last_write_time(p, ec);
+    if (ec) return s;
+    auto sys = std::chrono::clock_cast<std::chrono::system_clock>(ftime);
+    long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       sys.time_since_epoch())
+                       .count();
+    s.ok = true;
+    s.size = static_cast<long long>(size);
+    s.mtime = static_cast<double>(ns) / 1e9;
+    s.mtime_ns = ns;
+#else
     struct stat st {};
     if (::stat(path.c_str(), &st) != 0) return s;
     s.ok = true;
@@ -38,16 +57,8 @@ StatInfo stat_info(const std::string& path) {
 #endif
     s.mtime = static_cast<double>(sec) + static_cast<double>(nsec) / 1e9;
     s.mtime_ns = sec * 1000000000LL + nsec;
+#endif
     return s;
-}
-
-std::string now_iso_utc() {
-    std::time_t t = std::time(nullptr);
-    std::tm tm {};
-    gmtime_r(&t, &tm);
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+00:00", &tm);
-    return buf;
 }
 
 // "<data_dir>/sessions/<...>" relative files, yielding (abs, logical) with a
@@ -120,7 +131,7 @@ Manifest build_local_manifest(const std::string& db_snapshot_path,
     Manifest m;
     m.version = kManifestVersion;
     m.generation = generation;
-    m.created_at = now_iso_utc();
+    m.created_at = whisperx::now_iso();
 
     StatInfo dbs = stat_info(db_snapshot_path);
     m.entries["sessions.db"] =

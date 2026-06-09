@@ -47,6 +47,10 @@ target_link_libraries(whisperx_server PRIVATE
   CURL::libcurl
   LibArchive::LibArchive
   keychain)
+if(WIN32)
+  # oauth/crypto.cpp uses BCryptGenRandom for the CSPRNG.
+  target_link_libraries(whisperx_server PRIVATE bcrypt)
+endif()
 
 target_compile_options(whisperx_server PRIVATE -Wall -Wextra)
 set_target_properties(whisperx_server PROPERTIES
@@ -92,7 +96,12 @@ if(WHISPERX_CORE_TESTS)
     Catch2::Catch2WithMain nlohmann_json::nlohmann_json
     whisperx_core_lib spdlog::spdlog
     CURL::libcurl LibArchive::LibArchive keychain)
-  if(WHISPERX_CORE_SANITIZE)
+  if(WIN32)
+    target_link_libraries(whisperx_server_tests PRIVATE bcrypt)
+  endif()
+  # No sanitizers on Windows: link options go straight to lld-link, which does
+  # not understand -fsanitize=..., and UBSan has no clang-cl runtime.
+  if(WHISPERX_CORE_SANITIZE AND NOT WIN32)
     target_compile_options(whisperx_server_tests PRIVATE
       -fsanitize=address,undefined -fno-omit-frame-pointer -g)
     target_link_options(whisperx_server_tests PRIVATE

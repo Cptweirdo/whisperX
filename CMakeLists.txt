@@ -18,6 +18,11 @@ project(whisperx_core LANGUAGES CXX C VERSION 0.0.0)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# MSVC/clang-cl don't expose M_PI/M_LN2/etc. without this (they're POSIX, not
+# ISO C); define it globally so every FetchContent dep sees it.
+if(WIN32)
+  add_compile_definitions(_USE_MATH_DEFINES)
+endif()
 # Emit build/compile_commands.json — drives the `cppcheck` static-analysis
 # target below (and clang-tidy / IDEs / clangd).
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -194,6 +199,11 @@ if(WHISPERX_CORE_AUDIO)
   # turns shared; our explicit-STATIC libs and the earlier SQLiteCpp/json (above)
   # are unaffected, and nothing leaks into the cache for audio-off reconfigures.
   set(BUILD_SHARED_LIBS ON)
+  # On Windows, DLL symbols must be explicitly exported. Without this, sherpa's
+  # sub-deps (e.g. ssentencepiece_core) build as DLLs with empty import libs.
+  if(WIN32)
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  endif()
   FetchContent_Declare(
     sherpa_onnx
     GIT_REPOSITORY https://github.com/k2-fsa/sherpa-onnx
@@ -201,6 +211,20 @@ if(WHISPERX_CORE_AUDIO)
   # sherpa bundles its own nlohmann_json (v3.12) and unconditionally
   # add_subdirectory()s it — which collides with our nlohmann_json target.
   # Populate manually and guard that one line so sherpa reuses ours.
+  # simple-sentencepiece (sherpa sub-dep) uses std::result_of which was removed
+  # in C++20. Patch it each configure so it's fixed before the build runs.
+  # The file only exists after the first sherpa-onnx populate, so a fresh clean
+  # build requires one configure-build-reconfigure cycle if the patch fires late.
+  set(_sp_threadpool
+    "${CMAKE_BINARY_DIR}/_deps/simple-sentencepiece-src/ssentencepiece/csrc/threadpool.h")
+  if(EXISTS "${_sp_threadpool}")
+    file(READ "${_sp_threadpool}" _sp_tp)
+    string(REPLACE
+      "typename std::result_of<F(Args...)>::type"
+      "std::invoke_result_t<F, Args...>"
+      _sp_tp "${_sp_tp}")
+    file(WRITE "${_sp_threadpool}" "${_sp_tp}")
+  endif()
   FetchContent_GetProperties(sherpa_onnx)
   if(NOT sherpa_onnx_POPULATED)
     FetchContent_Populate(sherpa_onnx)
@@ -210,6 +234,14 @@ if(WHISPERX_CORE_AUDIO)
       "if(NOT TARGET nlohmann_json)\n    add_subdirectory(\${json_SOURCE_DIR} \${json_BINARY_DIR} EXCLUDE_FROM_ALL)\n  endif()"
       _sherpa_json_cmake "${_sherpa_json_cmake}")
     file(WRITE ${sherpa_onnx_SOURCE_DIR}/cmake/json.cmake "${_sherpa_json_cmake}")
+    # CMAKE_VS_PLATFORM_NAME is only set by VS generators; Ninja leaves it empty.
+    # Patch the GPU cmake guard to also accept CMAKE_SYSTEM_PROCESSOR=AMD64.
+    file(READ ${sherpa_onnx_SOURCE_DIR}/cmake/onnxruntime-win-x64-gpu.cmake _sherpa_gpu_cmake)
+    string(REPLACE
+      "if(NOT (CMAKE_VS_PLATFORM_NAME STREQUAL X64 OR CMAKE_VS_PLATFORM_NAME STREQUAL x64))"
+      "if(NOT (CMAKE_VS_PLATFORM_NAME STREQUAL X64 OR CMAKE_VS_PLATFORM_NAME STREQUAL x64\n        OR CMAKE_SYSTEM_PROCESSOR STREQUAL AMD64 OR CMAKE_SYSTEM_PROCESSOR STREQUAL x86_64))"
+      _sherpa_gpu_cmake "${_sherpa_gpu_cmake}")
+    file(WRITE ${sherpa_onnx_SOURCE_DIR}/cmake/onnxruntime-win-x64-gpu.cmake "${_sherpa_gpu_cmake}")
     add_subdirectory(${sherpa_onnx_SOURCE_DIR} ${sherpa_onnx_BINARY_DIR}
       EXCLUDE_FROM_ALL)
   endif()
@@ -292,7 +324,9 @@ if(WHISPERX_CORE_TESTS)
   # ASan + LeakSanitizer on the native test target from the first build (the
   # memory-safety gate). The pybind module is left clean: ASan inside a dlopened
   # Python extension needs libasan LD_PRELOAD'd, which we avoid here.
-  if(WHISPERX_CORE_SANITIZE)
+  # No sanitizers on Windows: link options go straight to lld-link, which does
+  # not understand -fsanitize=..., and UBSan has no clang-cl runtime.
+  if(WHISPERX_CORE_SANITIZE AND NOT WIN32)
     target_compile_options(whisperx_core_tests PRIVATE
       -fsanitize=address,undefined -fno-omit-frame-pointer -g)
     target_link_options(whisperx_core_tests PRIVATE
@@ -316,11 +350,21 @@ if(WHISPERX_BUILD_SERVER)
       "the native compute chain in whisperx_core_audio).")
   endif()
 
+  # The sherpa block above flipped BUILD_SHARED_LIBS ON (directory-scoped) for
+  # the ORT/libstdc++ boundary; the server deps were always meant to be static.
+  # On Windows this is load-bearing: a shared oatpp can't resolve its static
+  # data members (Status::CODE_*) through WINDOWS_EXPORT_ALL_SYMBOLS, which only
+  # thunks functions, not data.
+  set(BUILD_SHARED_LIBS OFF)
+
   # spdlog — fast logging (console + rotating file). Compiled (not header-only)
   # to keep server TUs lean; same FetchContent + FIND_PACKAGE_ARGS pattern.
   set(SPDLOG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+  # fmt >= 10 makes FMT_STRING consteval; clang-cl rejects it with runtime args.
+  # SPDLOG_USE_STD_FORMAT routes spdlog through std::format (C++20) instead.
+  set(SPDLOG_USE_STD_FORMAT ON CACHE BOOL "" FORCE)
   FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog
@@ -355,6 +399,12 @@ if(WHISPERX_BUILD_SERVER)
     GIT_TAG v1.3.1
     FIND_PACKAGE_ARGS NAMES keychain)
   FetchContent_MakeAvailable(keychain)
+  # keychain adds -pedantic -Werror for non-MSVC compilers but clang-cl has ID
+  # "Clang" and rejects -pedantic. Its option list is a genex split across list
+  # items, so filtering elements corrupts it — drop the warning options wholesale.
+  if(WIN32 AND TARGET keychain)
+    set_target_properties(keychain PROPERTIES COMPILE_OPTIONS "")
+  endif()
 
   add_subdirectory(adapters/server)
 endif()

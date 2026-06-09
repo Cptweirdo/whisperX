@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -11,6 +10,7 @@
 #include <vector>
 
 #include "log/log.hpp"
+#include "time_iso.hpp"
 
 namespace fs = std::filesystem;
 
@@ -19,15 +19,6 @@ namespace whisperx::server::backup {
 using nlohmann::json;
 
 namespace {
-
-std::string now_iso_utc() {
-    std::time_t t = std::time(nullptr);
-    std::tm tm {};
-    gmtime_r(&t, &tm);
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S+00:00", &tm);
-    return buf;
-}
 
 auto logger() { return log::get("backup"); }
 
@@ -233,7 +224,7 @@ BackupResult BackupEngine::do_backup(bool gc) {
     std::string root = merkle_root(local);
     last_signature_ = signature;
     last_root_ = root;
-    last_backup_at_ = now_iso_utc();
+    last_backup_at_ = whisperx::now_iso();
     save_state();
     fs::remove(snapshot_path, ec);
     logger()->info("backup done: gen={} uploaded={} skipped={} root={}",

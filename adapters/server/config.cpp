@@ -54,7 +54,12 @@ void load_dotenv(const fs::path& path) {
             value = value.substr(1, value.size() - 2);
         if (key.empty()) continue;
         // real env wins: only set if unset (setenv overwrite=0)
+#if defined(_WIN32)
+        if (std::getenv(key.c_str()) == nullptr)
+            ::_putenv_s(key.c_str(), value.c_str());
+#else
         ::setenv(key.c_str(), value.c_str(), /*overwrite=*/0);
+#endif
     }
 }
 

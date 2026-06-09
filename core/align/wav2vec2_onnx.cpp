@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <numeric>
 
 #include "onnxruntime_cxx_api.h"
@@ -66,7 +67,7 @@ struct Wav2Vec2Onnx::Impl {
     Impl(const std::string& path, int num_threads, const std::string& provider)
         : env(ORT_LOGGING_LEVEL_WARNING, "wav2vec2_align"),
           options(make_options(num_threads, provider)),
-          session(env, path.c_str(), options) {
+          session(env, std::filesystem::path(path).native().c_str(), options) {
         Ort::AllocatorWithDefaultOptions alloc;
         for (std::size_t i = 0; i < session.GetInputCount(); ++i)
             if (session.GetInputNameAllocated(i, alloc).get() ==

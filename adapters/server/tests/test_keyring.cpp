@@ -4,6 +4,8 @@
 // unique to the test so it never clobbers a real stored hf_token.
 #include <catch2/catch_test_macros.hpp>
 
+#include "posix_compat.hpp"
+
 #include <cstdlib>
 #include <string>
 

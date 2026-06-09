@@ -8,7 +8,7 @@
 // keys unique to that case (no cross-test bleed) and unsets what it pre-seeds.
 #include <catch2/catch_test_macros.hpp>
 
-#include <unistd.h>
+#include "posix_compat.hpp"
 
 #include <cstdlib>
 #include <chrono>

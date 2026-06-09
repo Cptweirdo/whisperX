@@ -5,7 +5,7 @@
 // check that DriveClient::upload_resumable shapes the resumable request.
 #include <catch2/catch_test_macros.hpp>
 
-#include <unistd.h>
+#include "posix_compat.hpp"
 
 #include <atomic>
 #include <filesystem>
