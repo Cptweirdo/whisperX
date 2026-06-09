@@ -67,6 +67,20 @@ bool ModelManager::cuda_available() {
     return avail;
 }
 
+bool ModelManager::coreml_available() {
+    static const bool avail = wal::ort_coreml_available();
+    return avail;
+}
+
+bool ModelManager::device_available(Device dev) {
+    switch (dev) {
+        case Device::Cpu:    return true;
+        case Device::Cuda:   return cuda_available();
+        case Device::CoreML: return coreml_available();
+    }
+    return false;
+}
+
 json ModelManager::status_locked() {
     bool diarize_available = resolve_diarize().has_value();
     json models = json::array();
@@ -82,6 +96,7 @@ json ModelManager::status_locked() {
         {"active", active_},
         {"device", to_string(device_)},
         {"cuda_available", cuda_available()},
+        {"coreml_available", coreml_available()},
         {"mlx_available", false},
         {"whispercpp_available", false},
         {"diarize", diarize_ != nullptr},

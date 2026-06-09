@@ -1,5 +1,6 @@
 #include "jobs/runner.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -118,9 +119,42 @@ RunSession make_run_session(whisperx::db::SessionStore& store,
 
         const std::string silero = manager.silero_path();
 
+        double captured_duration = 0.0;
+        auto on_duration = [&](double d) {
+            captured_duration = d;
+            store.mark_duration(session_id, d);
+        };
+
+        // --- per-stage wall-clock (the device-benchmark numbers) --------------
+        // Logs each finished stage with its measured RTF (elapsed / audio
+        // duration) so a CPU-vs-CUDA/CoreML side-by-side falls out of the server
+        // log — there is no other timing harness. Device is fixed for the job
+        // (the /api/device 409 busy-gate), so snapshot it once.
+        const std::string device_name =
+            manager.status().value("device", std::string("cpu"));
+        std::string prev_stage;
+        auto stage_started = std::chrono::steady_clock::now();
+        auto log_stage_elapsed = [&] {
+            if (prev_stage.empty()) return;
+            double elapsed =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                              stage_started)
+                    .count();
+            if (captured_duration > 0.0)
+                logger->info("stage={} elapsed={:.2f}s rtf={:.3f} device={}",
+                             prev_stage, elapsed,
+                             elapsed / captured_duration, device_name);
+            else
+                logger->info("stage={} elapsed={:.2f}s device={}", prev_stage,
+                             elapsed, device_name);
+        };
+
         // --- progress (durable mark_stage + SSE delta), stage-boundary cancel -
         auto stage = [&](const std::string& s) {
             if (cancel->load()) throw Cancelled();
+            log_stage_elapsed();
+            prev_stage = s;
+            stage_started = std::chrono::steady_clock::now();
             store.mark_stage(session_id, whisperx::db::parse_stage(s));
             const auto row2 = store.get(session_id);
             double dur = row2 ? row2->duration.value_or(0.0) : 0.0;
@@ -129,12 +163,6 @@ RunSession make_run_session(whisperx::db::SessionStore& store,
             if (rtf > 0.0 && dur > 0.0)
                 ev["eta"] = std::llround(rtf * dur);
             broker.publish(session_id, ev);
-        };
-
-        double captured_duration = 0.0;
-        auto on_duration = [&](double d) {
-            captured_duration = d;
-            store.mark_duration(session_id, d);
         };
 
         // --- Steps over the native engines (port of the pybind run_job) ------
@@ -198,6 +226,7 @@ RunSession make_run_session(whisperx::db::SessionStore& store,
             };
 
         json result = orch::run_job(steps, stage, on_duration);
+        log_stage_elapsed();  // close out the final stage's timing
         if (blank_audio_removed)
             logger->warn(
                 "Stripped {} [BLANK_AUDIO] marker(s) the sherpa Whisper backend "

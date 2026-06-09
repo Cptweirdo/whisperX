@@ -471,12 +471,12 @@ public:
         if (!dev)
             return jr(Status::CODE_400,
                       {{"error", "Unknown device: " + device_str}});
-        // Reject cuda when the binary wasn't built with the GPU ORT / no device is
-        // present, rather than constructing a session that silently falls back to CPU.
-        if (*dev == Device::Cuda &&
-            !app_.manager.status().value("cuda_available", false)) {
+        // Reject a device whose EP isn't in this binary / on this machine, rather
+        // than constructing a session that silently falls back to CPU.
+        if (!models::ModelManager::device_available(*dev)) {
             json st = app_.manager.status();
-            st["error"] = "CUDA device not available in this build.";
+            st["error"] = std::string("Device not available in this build: ") +
+                          to_string(*dev);
             return jr(Status::CODE_400, st);
         }
         // UX gate: a running job blocks the switch (in-flight engine borrows are
@@ -599,10 +599,11 @@ public:
         if (!dev)
             return jr(Status::CODE_400,
                       {{"error", "Unknown device: " + device}});
-        if (*dev == Device::Cuda &&
-            !app_.manager.status().value("cuda_available", false))
+        if (!models::ModelManager::device_available(*dev))
             return jr(Status::CODE_400,
-                      {{"error", "CUDA device not available in this build."}});
+                      {{"error",
+                        std::string("Device not available in this build: ") +
+                            to_string(*dev)}});
         // A supplied token is verified then stored in the OS keyring. A keyring
         // failure is non-fatal — diarization works token-free — so we surface a
         // store_error but still finish onboarding (matches server.py's contract).

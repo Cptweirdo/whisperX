@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <numeric>
+#include <unordered_map>
 
 #include "onnxruntime_cxx_api.h"
 
@@ -13,6 +15,20 @@ bool ort_cuda_available() {
     try {
         for (const auto& p : Ort::GetAvailableProviders())
             if (p == "CUDAExecutionProvider") return true;
+    } catch (...) {
+        // ORT provider enumeration failed — treat as unavailable.
+    }
+    return false;
+#else
+    return false;
+#endif
+}
+
+bool ort_coreml_available() {
+#ifdef __APPLE__
+    try {
+        for (const auto& p : Ort::GetAvailableProviders())
+            if (p == "CoreMLExecutionProvider") return true;
     } catch (...) {
         // ORT provider enumeration failed — treat as unavailable.
     }
@@ -45,8 +61,30 @@ Ort::SessionOptions make_options(int num_threads, const std::string& provider) {
         OrtCUDAProviderOptions cuda_opts{};  // device_id 0, library defaults
         opts.AppendExecutionProvider_CUDA(cuda_opts);
     }
-#else
-    (void)provider;  // CPU build: the CUDA-EP symbol may be absent in these headers
+#endif
+#ifdef __APPLE__
+    // CoreML via the modern provider-options API (sherpa's stages 1 & 3 append the
+    // EP through the legacy flags=0 path, which is stuck on the NeuralNetwork model
+    // format — here we own the call site, so pick MLProgram). Knobs are env-driven
+    // so a benchmark run can flip compute units / caching without a rebuild; core/
+    // can't see the server config, hence getenv.
+    if (provider == "coreml") {
+        const char* units = std::getenv("WHISPERX_COREML_COMPUTE_UNITS");
+        std::unordered_map<std::string, std::string> coreml_opts{
+            {"ModelFormat", "MLProgram"},
+            {"MLComputeUnits", units && units[0] ? units : "CPUAndGPU"},
+        };
+        // Without a cache dir the EP recompiles the model on every session build —
+        // painful across set_device()'s evict-and-rebuild. The server defaults this
+        // env to <data_dir>/coreml-cache at startup.
+        if (const char* cache = std::getenv("WHISPERX_COREML_CACHE_DIR");
+            cache && cache[0])
+            coreml_opts["ModelCacheDirectory"] = cache;
+        opts.AppendExecutionProvider("CoreML", coreml_opts);
+    }
+#endif
+#if !defined(WHISPERX_GPU_BUILD) && !defined(__APPLE__)
+    (void)provider;  // CPU build: capability detection rejects gpu devices upstream
 #endif
     return opts;
 }
@@ -63,8 +101,16 @@ struct Wav2Vec2Onnx::Impl {
     bool has_attention_mask = false;
     bool has_frame_lengths = false;
 
+    // WHISPERX_ORT_VERBOSE=1 surfaces ORT's per-node EP assignments — the only way
+    // to see a CoreML/CUDA graph silently falling back to CPU node-by-node.
+    static OrtLoggingLevel log_level() {
+        const char* v = std::getenv("WHISPERX_ORT_VERBOSE");
+        return v && v[0] && v[0] != '0' ? ORT_LOGGING_LEVEL_VERBOSE
+                                        : ORT_LOGGING_LEVEL_WARNING;
+    }
+
     Impl(const std::string& path, int num_threads, const std::string& provider)
-        : env(ORT_LOGGING_LEVEL_WARNING, "wav2vec2_align"),
+        : env(log_level(), "wav2vec2_align"),
           options(make_options(num_threads, provider)),
           session(env, path.c_str(), options) {
         Ort::AllocatorWithDefaultOptions alloc;

@@ -3,6 +3,7 @@
 // store, model manager, single-worker job queue, SSE broker), wires the routes,
 // reconciles interrupted jobs, warms the active model, and runs the server.
 #include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -74,6 +75,15 @@ int main(int argc, char** argv) {
 
     // libcurl global init — the HF-mirror downloader + token verifier use it.
     curl_global_init(CURL_GLOBAL_DEFAULT);
+
+#ifdef __APPLE__
+    // Default the CoreML EP compile cache (read by make_options in core/) so a
+    // device switch's evict-and-rebuild doesn't recompile every model. Env wins.
+    if (const char* v = std::getenv("WHISPERX_COREML_CACHE_DIR"); !v || !v[0]) {
+        std::string coreml_cache = (fs::path(cfg.data_dir) / "coreml-cache").string();
+        setenv("WHISPERX_COREML_CACHE_DIR", coreml_cache.c_str(), /*overwrite=*/0);
+    }
+#endif
 
     // --- engine collaborators (the app/server.py module globals) ------------
     ws::sse::Broker broker;

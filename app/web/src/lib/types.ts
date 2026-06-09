@@ -9,7 +9,7 @@ export type ModelName =
   | "small" | "small.en" | "medium" | "medium.en"
   | "large-v2" | "large-v3" | "large-v3-turbo" | "distil-large-v3";
 
-export type Device = "cpu" | "cuda" | "mlx" | "whispercpp";
+export type Device = "cpu" | "cuda" | "coreml" | "mlx" | "whispercpp";
 export type Format = "srt" | "vtt" | "txt" | "json";
 export type Status = "queued" | "running" | "done" | "error";
 export type Stage = "decoding" | "transcribing" | "loading_align" | "aligning" | "diarizing";
@@ -91,6 +91,7 @@ export interface ModelStatus {
   active: ModelName;
   device: Device;
   cuda_available: boolean;
+  coreml_available: boolean;
   mlx_available: boolean;
   whispercpp_available: boolean;
   diarize: boolean;

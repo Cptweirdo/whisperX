@@ -72,6 +72,11 @@ public:
     // shared_ptrs so a racing job stays safe regardless. Returns status().
     json set_device(Device dev);
 
+    // Whether `dev` can be selected in this build/on this machine: Cpu always,
+    // Cuda/CoreML per the cached ORT provider probes. The single gate behind
+    // /api/device and onboarding (replaces per-endpoint cuda-only checks).
+    static bool device_available(Device dev);
+
     // The shared diarizer, loaded once from local assets, or nullptr if none are
     // available (transcribe + align only — mirrors ensure_diarize returning None).
     std::shared_ptr<whisperx::diarize::SherpaDiarizer> ensure_diarize();
@@ -87,6 +92,9 @@ private:
     // Whether the CUDA device can be selected (GPU build + a usable CUDA device).
     // Cached probe via whisperx::align::ort_cuda_available(); false in a CPU build.
     static bool cuda_available();
+    // Whether the CoreML EP is linked in (Apple builds only). Cached probe via
+    // whisperx::align::ort_coreml_available(); false everywhere else.
+    static bool coreml_available();
     // Resolve assets + construct a WhisperSherpa for `name` on `dev`. No cache
     // mutation — shared by load_asr and set_device's atomic rebuild. Throws on failure.
     std::shared_ptr<whisperx::asr::WhisperSherpa> build_asr_engine(
