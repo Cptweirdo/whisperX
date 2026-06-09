@@ -214,4 +214,15 @@ std::string random_bytes(std::size_t n) {
     return buf;
 }
 
+std::string random_hex(std::size_t n) {
+    static const char* hex = "0123456789abcdef";
+    std::string out;
+    out.reserve(2 * n);
+    for (unsigned char b : random_bytes(n)) {
+        out += hex[b >> 4];
+        out += hex[b & 0xF];
+    }
+    return out;
+}
+
 }  // namespace whisperx::server::oauth

@@ -34,6 +34,11 @@ std::string map_model(const std::string& whisper_arch);
 // nullopt if neither source yields the model.
 std::optional<fs::path> ensure_whisper_dir(const std::string& model_name);
 
+// Map a language code to the mirror folder of its default align model
+// (DEFAULT_ALIGN_MODELS_TORCH/_HF with '/' folded to "--", alignment.py:116).
+// "" when the language has no default align model.
+std::string map_align_model(const std::string& language);
+
 // Ensure the wav2vec2 align directory (model.onnx + meta.json) for a language.
 // Mirror-only (align has no sherpa release). Returns the dir, or nullopt.
 std::optional<fs::path> ensure_align_dir(const std::string& language);

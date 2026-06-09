@@ -32,6 +32,7 @@
 #include "log/log.hpp"
 #include "models/model_manager.hpp"
 #include "oauth/backup_service.hpp"
+#include "oauth/crypto.hpp"
 #include "oauth/flow.hpp"
 #include "secrets/hf_verify.hpp"
 #include "secrets/keyring.hpp"
@@ -131,7 +132,7 @@ public:
         mpart::Reader reader(multipart.get());
         std::string tmp_audio =
             (fs::temp_directory_path() /
-             ("wxupload-" + std::to_string(::rand()) + ".bin"))
+             ("wxupload-" + oauth::random_hex(8) + ".bin"))
                 .string();
         reader.setPartReader("audio", mpart::createFilePartReader(tmp_audio));
         reader.setDefaultPartReader(
@@ -169,11 +170,10 @@ public:
             model = app_.manager.active();
         }
 
-        std::string session_id;
-        {  // uuid4-hex-ish
-            static const char* hex = "0123456789abcdef";
-            for (int i = 0; i < 32; ++i) session_id += hex[std::rand() & 0xF];
-        }
+        // uuid4-shaped, from the OS CSPRNG. std::rand() here was unseeded — every
+        // server boot replayed the same id sequence, colliding with sessions
+        // persisted by a previous run (UNIQUE constraint on sessions.id → 500).
+        std::string session_id = oauth::random_hex(16);
         std::string safe = http_util::secure_filename(orig_name);
         std::string ext = fs::path(safe).extension().string();
         if (ext.empty()) ext = ".bin";

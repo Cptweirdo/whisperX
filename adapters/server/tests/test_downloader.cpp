@@ -39,6 +39,16 @@ TEST_CASE("map_model mirrors SHERPA_MODEL_MAP", "[downloader]") {
     REQUIRE(dl::map_model("unknown-xyz") == "unknown-xyz");  // verbatim passthrough
 }
 
+TEST_CASE("map_align_model mirrors DEFAULT_ALIGN_MODELS + '--' folding",
+          "[downloader]") {
+    REQUIRE(dl::map_align_model("en") == "WAV2VEC2_ASR_BASE_960H");
+    REQUIRE(dl::map_align_model("de") == "VOXPOPULI_ASR_BASE_10K_DE");
+    // HF ids fold '/' to "--" (the mirror's folder naming, alignment.py:116)
+    REQUIRE(dl::map_align_model("ru") ==
+            "jonatasgrosman--wav2vec2-large-xlsr-53-russian");
+    REQUIRE(dl::map_align_model("xx") == "");  // no default align model
+}
+
 TEST_CASE("ensure_whisper_dir is a cache hit when fully seeded", "[downloader]") {
     fs::path tmp = fs::temp_directory_path() /
                    ("wx-dl-" + std::to_string(::getpid()));

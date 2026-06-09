@@ -224,11 +224,74 @@ std::optional<fs::path> ensure_whisper_dir(const std::string& model_name) {
     return fetch_release_tarball(url, "sherpa-onnx-whisper-" + name);
 }
 
+std::string map_align_model(const std::string& language) {
+    // DEFAULT_ALIGN_MODELS_TORCH + _HF (alignment.py:142). The mirror stores each
+    // model under its name with '/' folded to "--" (alignment.py:116), not under
+    // the language code. Unknown languages return "" (no default align model).
+    static const std::map<std::string, std::string> kMap = {
+        // torchaudio pipelines
+        {"en", "WAV2VEC2_ASR_BASE_960H"},
+        {"fr", "VOXPOPULI_ASR_BASE_10K_FR"},
+        {"de", "VOXPOPULI_ASR_BASE_10K_DE"},
+        {"es", "VOXPOPULI_ASR_BASE_10K_ES"},
+        {"it", "VOXPOPULI_ASR_BASE_10K_IT"},
+        // HF hub models
+        {"ja", "jonatasgrosman/wav2vec2-large-xlsr-53-japanese"},
+        {"zh", "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn"},
+        {"nl", "jonatasgrosman/wav2vec2-large-xlsr-53-dutch"},
+        {"uk", "Yehor/wav2vec2-xls-r-300m-uk-with-small-lm"},
+        {"pt", "jonatasgrosman/wav2vec2-large-xlsr-53-portuguese"},
+        {"ar", "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"},
+        {"cs", "comodoro/wav2vec2-xls-r-300m-cs-250"},
+        {"ru", "jonatasgrosman/wav2vec2-large-xlsr-53-russian"},
+        {"pl", "jonatasgrosman/wav2vec2-large-xlsr-53-polish"},
+        {"hu", "jonatasgrosman/wav2vec2-large-xlsr-53-hungarian"},
+        {"fi", "jonatasgrosman/wav2vec2-large-xlsr-53-finnish"},
+        {"fa", "jonatasgrosman/wav2vec2-large-xlsr-53-persian"},
+        {"el", "jonatasgrosman/wav2vec2-large-xlsr-53-greek"},
+        {"tr", "mpoyraz/wav2vec2-xls-r-300m-cv7-turkish"},
+        {"da", "saattrupdan/wav2vec2-xls-r-300m-ftspeech"},
+        {"he", "imvladikon/wav2vec2-xls-r-300m-hebrew"},
+        {"vi", "nguyenvulebinh/wav2vec2-base-vi-vlsp2020"},
+        {"ko", "kresnik/wav2vec2-large-xlsr-korean"},
+        {"ur", "kingabzpro/wav2vec2-large-xls-r-300m-Urdu"},
+        {"te", "anuragshas/wav2vec2-large-xlsr-53-telugu"},
+        {"hi", "theainerd/Wav2Vec2-large-xlsr-hindi"},
+        {"ca", "softcatala/wav2vec2-large-xlsr-catala"},
+        {"ml", "gvs/wav2vec2-large-xlsr-malayalam"},
+        {"no", "NbAiLab/nb-wav2vec2-1b-bokmaal-v2"},
+        {"nn", "NbAiLab/nb-wav2vec2-1b-nynorsk"},
+        {"sk", "comodoro/wav2vec2-xls-r-300m-sk-cv8"},
+        {"sl", "anton-l/wav2vec2-large-xlsr-53-slovenian"},
+        {"hr", "classla/wav2vec2-xls-r-parlaspeech-hr"},
+        {"ro", "gigant/romanian-wav2vec2"},
+        {"eu", "stefan-it/wav2vec2-large-xlsr-53-basque"},
+        {"gl", "ifrz/wav2vec2-large-xlsr-galician"},
+        {"ka", "xsway/wav2vec2-large-xlsr-georgian"},
+        {"lv", "jimregan/wav2vec2-large-xlsr-latvian-cv"},
+        {"tl", "Khalsuu/filipino-wav2vec2-l-xls-r-300m-official"},
+        {"sv", "KBLab/wav2vec2-large-voxrex-swedish"},
+        {"id", "cahya/wav2vec2-large-xlsr-indonesian"}};
+    auto it = kMap.find(language);
+    if (it == kMap.end()) return "";
+    std::string folder = it->second;
+    for (auto pos = folder.find('/'); pos != std::string::npos;
+         pos = folder.find('/'))
+        folder.replace(pos, 1, "--");
+    return folder;
+}
+
 std::optional<fs::path> ensure_align_dir(const std::string& language) {
-    if (!fetch_file(ALIGN_REPO, language + "/meta.json")) return std::nullopt;
-    auto onnx = fetch_file(ALIGN_REPO, language + "/model.onnx");
+    const std::string folder = map_align_model(language);
+    if (folder.empty()) {
+        logger()->warn("Align: no default model for language '{}'", language);
+        return std::nullopt;
+    }
+    if (!fetch_file(ALIGN_REPO, folder + "/meta.json")) return std::nullopt;
+    auto onnx = fetch_file(ALIGN_REPO, folder + "/model.onnx");
     if (!onnx) return std::nullopt;
-    logger()->info("Align '{}' resolved from mirror {}", language, ALIGN_REPO);
+    logger()->info("Align '{}' ({}) resolved from mirror {}", language, folder,
+                   ALIGN_REPO);
     return onnx->parent_path();
 }
 

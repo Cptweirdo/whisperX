@@ -64,6 +64,15 @@ TEST_CASE("base64url uses the url-safe alphabet, no padding", "[oauth][crypto]")
     REQUIRE(out == "-_8");
 }
 
+TEST_CASE("random_hex is 2n lowercase hex chars and non-repeating",
+          "[oauth][crypto]") {
+    std::string h = random_hex(16);  // the session-id shape
+    REQUIRE(h.size() == 32);
+    for (char c : h)
+        REQUIRE(((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')));
+    REQUIRE(random_hex(16) != random_hex(16));  // CSPRNG, not unseeded rand()
+}
+
 TEST_CASE("code_verifier is in the unreserved 43-char range", "[oauth][pkce]") {
     std::string v = code_verifier();
     REQUIRE(v.size() == 43);

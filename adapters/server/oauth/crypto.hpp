@@ -51,4 +51,7 @@ std::string base64url_nopad(const std::string& data);
 // cannot be read — we never silently fall back to a weak source for tokens.
 std::string random_bytes(std::size_t n);
 
+// `n` CSPRNG bytes as 2n lowercase hex chars — collision-safe id material.
+std::string random_hex(std::size_t n);
+
 }  // namespace whisperx::server::oauth
