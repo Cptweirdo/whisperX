@@ -18,6 +18,16 @@
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
     },
     {
+      "name": "windows-clang",
+      "hidden": true,
+      "description": "Use clang-cl on Windows so the parity flags (-ffp-contract=off, -Wall/-Wextra) are honored — MSVC cl silently drops them, risking numeric drift.",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl"
+      }
+    },
+    {
       "name": "dev",
       "displayName": "Core (dep-free, fast lane)",
       "description": "Pure ported algorithms + pybind oracle + Catch2 tests. No ffmpeg/ORT/server. Builds on a fresh checkout with zero system deps.",
@@ -57,6 +67,20 @@
       "displayName": "Server via vcpkg (Windows / hermetic deps)",
       "description": "Same as 'server' but resolves ffmpeg/curl/libarchive/onnxruntime from vcpkg. Requires VCPKG_ROOT.",
       "inherits": ["server", "vcpkg"]
+    },
+    {
+      "name": "server-cuda",
+      "displayName": "Server + CUDA ONNX Runtime EP (native, Linux/native CUDA)",
+      "description": "'server' built with the GPU ORT (WHISPERX_ENABLE_GPU). Needs a CUDA toolkit + GPU. System heavy deps (gcc/clang honor the parity flags).",
+      "inherits": "server",
+      "cacheVariables": { "WHISPERX_ENABLE_GPU": "ON" }
+    },
+    {
+      "name": "server-vcpkg-cuda",
+      "displayName": "Server + CUDA via vcpkg + clang-cl (the Windows GPU path)",
+      "description": "GPU ORT build resolving heavy deps from vcpkg and using clang-cl on Windows. Requires VCPKG_ROOT + CUDA toolkit + cuDNN. See docs/WINDOWS_CUDA.md.",
+      "inherits": ["server", "vcpkg", "windows-clang"],
+      "cacheVariables": { "WHISPERX_ENABLE_GPU": "ON" }
     }
   ],
   "buildPresets": [
@@ -65,6 +89,10 @@
     { "name": "server",       "configurePreset": "server",
       "targets": ["whisperx_server", "whisperx_server_tests"] },
     { "name": "server-vcpkg", "configurePreset": "server-vcpkg",
+      "targets": ["whisperx_server", "whisperx_server_tests"] },
+    { "name": "server-cuda", "configurePreset": "server-cuda",
+      "targets": ["whisperx_server", "whisperx_server_tests"] },
+    { "name": "server-vcpkg-cuda", "configurePreset": "server-vcpkg-cuda",
       "targets": ["whisperx_server", "whisperx_server_tests"] }
   ],
   "testPresets": [
@@ -73,6 +101,10 @@
     { "name": "audio",  "configurePreset": "audio",
       "output": { "outputOnFailure": true } },
     { "name": "server", "configurePreset": "server",
+      "output": { "outputOnFailure": true } },
+    { "name": "server-cuda", "configurePreset": "server-cuda",
+      "output": { "outputOnFailure": true } },
+    { "name": "server-vcpkg-cuda", "configurePreset": "server-vcpkg-cuda",
       "output": { "outputOnFailure": true } }
   ]
 }

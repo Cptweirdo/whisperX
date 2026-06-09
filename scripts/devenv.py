@@ -10,7 +10,8 @@ build matrix lives in one place (CMake's, not a pile of shell snippets).
     python scripts/devenv.py test server     # ctest a preset
     python scripts/devenv.py run             # launch whisperx_server (sets lib path)
 
-Presets: dev (dep-free fast lane) · audio · server · server-vcpkg.
+Presets: dev (dep-free fast lane) · audio · server · server-vcpkg ·
+server-cuda · server-vcpkg-cuda (GPU ONNX Runtime; see docs/WINDOWS_CUDA.md).
 Stdlib only — no pip install needed to bootstrap. Python 3.8+.
 """
 from __future__ import annotations
@@ -124,6 +125,25 @@ def cmd_doctor(_args) -> int:
         if OS == "Darwin":
             print(f"  {ok('ok')}   Security.fw    (keychain, system framework)")
 
+    # GPU/CUDA — optional, only the *-cuda presets need it. Never counts as missing.
+    print(head("\nGPU / CUDA (optional — only for the *-cuda presets)"))
+    nvcc = have("nvcc")
+    smi = have("nvidia-smi")
+    cuda_path = os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME")
+    if nvcc or smi or cuda_path:
+        print(f"  {ok('ok') if nvcc else warn('opt ')} nvcc         "
+              f"{nvcc or '(CUDA toolkit compiler not on PATH)'}")
+        print(f"  {ok('ok') if smi else warn('opt ')} nvidia-smi   "
+              f"{smi or '(no NVIDIA driver tool found)'}")
+        if cuda_path:
+            print(f"  → CUDA_PATH={cuda_path}")
+        print("  → for GPU: python scripts/devenv.py build "
+              + ("server-vcpkg-cuda" if OS == "Windows" else "server-cuda")
+              + " (see docs/WINDOWS_CUDA.md)")
+    else:
+        print(f"  {warn('opt ')} no CUDA toolkit/driver detected — needed only for the "
+              "server-cuda / server-vcpkg-cuda presets (see docs/WINDOWS_CUDA.md)")
+
     print()
     if miss:
         print(bad(f"{miss} required item(s) missing. ") +
@@ -193,7 +213,8 @@ def cmd_deps(args) -> int:
 
 # --- build / test ------------------------------------------------------------
 def _check_preset(preset: str) -> str:
-    valid = {"dev", "audio", "server", "server-vcpkg"}
+    valid = {"dev", "audio", "server", "server-vcpkg",
+             "server-cuda", "server-vcpkg-cuda"}
     if preset not in valid:
         print(bad(f"Unknown preset '{preset}'. Valid: {', '.join(sorted(valid))}"))
         sys.exit(2)
@@ -216,7 +237,7 @@ def cmd_build(args) -> int:
 def cmd_test(args) -> int:
     preset = _check_preset(args.preset)
     if preset == "server-vcpkg":
-        preset = "server"  # one test preset covers the server lane
+        preset = "server"  # one test preset covers the CPU server lane
     return run(["ctest", "--preset", preset], cwd=ROOT)
 
 

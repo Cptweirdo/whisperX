@@ -61,6 +61,7 @@ cmake --preset server && cmake --build --preset server
 | **audio** | dev **+** `WHISPERX_CORE_AUDIO` (in-process libav* decode, sherpa-onnx VAD/ASR/align/diarize, ONNX Runtime) | system **ffmpeg** dev libs |
 | **server** | audio **+** `WHISPERX_BUILD_SERVER` (the native oat++ HTTP/SSE host) | ffmpeg + **curl** + **libarchive** + the OS secret store |
 | **server-vcpkg** | same as `server`, but resolves the C/C++ libs from **vcpkg** | `VCPKG_ROOT` set (the Windows / hermetic path) |
+| **server-cuda** / **server-vcpkg-cuda** | server **+** `WHISPERX_ENABLE_GPU` (the CUDA ONNX Runtime EP — runs ASR/align/diarize on GPU) | CUDA toolkit 12.x + cuDNN + an NVIDIA GPU; the vcpkg variant uses **clang-cl** on Windows. **See [`docs/WINDOWS_CUDA.md`](docs/WINDOWS_CUDA.md).** |
 
 All presets use the Ninja generator, `build/` as the binary dir,
 `RelWithDebInfo`, and export `compile_commands.json`.
@@ -78,6 +79,12 @@ system (or vcpkg):
 | curl | `libcurl4-openssl-dev` | system (CommandLineTools) | vcpkg |
 | libarchive | `libarchive-dev` | `libarchive` | vcpkg |
 | OS secret store | `libsecret-1-dev` | Security.framework (built-in) | wincred (built-in) |
+| CUDA (GPU build only) | CUDA toolkit 12.x + cuDNN + driver | — | CUDA toolkit 12.x + cuDNN + driver |
+
+**GPU / CUDA:** the `server-cuda` / `server-vcpkg-cuda` presets build against
+sherpa-onnx's CUDA ONNX Runtime. On Windows build with **clang-cl** (the preset selects
+it) so the `-ffp-contract=off` parity flag is honored. Full walkthrough + the GPU-dispatch
+validation checklist: [`docs/WINDOWS_CUDA.md`](docs/WINDOWS_CUDA.md).
 
 `devenv.py deps` installs the right set for your platform. On Fedora/Arch it
 maps to `dnf`/`pacman`; the exact ffmpeg-dev package name varies by distro, so

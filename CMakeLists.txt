@@ -37,6 +37,16 @@ option(WHISPERX_CORE_AUDIO "Build the audio decode + VAD stage (ffmpeg + sherpa-
 # requires WHISPERX_CORE_AUDIO. OFF by default — the pybind/dep-free lanes (and CI)
 # are unaffected. Pulls oatpp + spdlog via FetchContent (the light-dep pattern).
 option(WHISPERX_BUILD_SERVER "Build the native oat++ HTTP/SSE server (adapters/server/)" OFF)
+# GPU: build against sherpa-onnx's CUDA ONNX Runtime so the inference stages can run
+# on the CUDA execution provider (the runtime cpu/cuda device switch). OFF = the CPU
+# ORT (the only build that works without a CUDA toolkit + GPU). Drives
+# SHERPA_ONNX_ENABLE_GPU below and the WHISPERX_GPU_BUILD compile define (which gates
+# the wav2vec2 CUDA-EP append + the cuda_available() probe). Requires the audio chain.
+option(WHISPERX_ENABLE_GPU "Build with the CUDA ONNX Runtime EP (sherpa GPU ORT)" OFF)
+if(WHISPERX_ENABLE_GPU AND NOT WHISPERX_CORE_AUDIO)
+  message(FATAL_ERROR "WHISPERX_ENABLE_GPU requires WHISPERX_CORE_AUDIO (the GPU "
+                      "provider only matters for the ASR/align/diarize compute chain).")
+endif()
 
 include(FetchContent)
 FetchContent_Declare(
@@ -162,7 +172,7 @@ if(WHISPERX_CORE_AUDIO)
   set(SHERPA_ONNX_ENABLE_CHECK OFF CACHE BOOL "" FORCE)
   set(SHERPA_ONNX_ENABLE_PORTAUDIO OFF CACHE BOOL "" FORCE)
   set(SHERPA_ONNX_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE)
-  set(SHERPA_ONNX_ENABLE_GPU OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_GPU ${WHISPERX_ENABLE_GPU} CACHE BOOL "" FORCE)
   # When the GPU ORT is enabled, advertise it to our code: gates the wav2vec2 direct
   # CUDA-EP append (make_options) and the cuda_available() runtime probe
   # (ort_cuda_available). Applies to targets declared after this point — the core libs
