@@ -1,0 +1,78 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "vcpkg",
+      "hidden": true,
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+    },
+    {
+      "name": "dev",
+      "displayName": "Core (dep-free, fast lane)",
+      "description": "Pure ported algorithms + pybind oracle + Catch2 tests. No ffmpeg/ORT/server. Builds on a fresh checkout with zero system deps.",
+      "inherits": "base",
+      "cacheVariables": {
+        "WHISPERX_CORE_AUDIO": "OFF",
+        "WHISPERX_BUILD_SERVER": "OFF",
+        "WHISPERX_CORE_PYMODULE": "ON",
+        "WHISPERX_CORE_TESTS": "ON",
+        "WHISPERX_CORE_SANITIZE": "ON"
+      }
+    },
+    {
+      "name": "audio",
+      "displayName": "Audio (+ ffmpeg + sherpa-onnx VAD/ASR/align/diarize)",
+      "description": "Adds the in-process libav* decode + ONNX Runtime compute chain. Needs system ffmpeg dev libs.",
+      "inherits": "base",
+      "cacheVariables": {
+        "WHISPERX_CORE_AUDIO": "ON",
+        "WHISPERX_BUILD_SERVER": "OFF",
+        "WHISPERX_CORE_TESTS": "ON"
+      }
+    },
+    {
+      "name": "server",
+      "displayName": "Server (full native oat++ HTTP/SSE host)",
+      "description": "The C++ replacement for the Python Flask app/. Audio + oat++ + curl + libarchive + keychain.",
+      "inherits": "base",
+      "cacheVariables": {
+        "WHISPERX_CORE_AUDIO": "ON",
+        "WHISPERX_BUILD_SERVER": "ON",
+        "WHISPERX_CORE_TESTS": "ON"
+      }
+    },
+    {
+      "name": "server-vcpkg",
+      "displayName": "Server via vcpkg (Windows / hermetic deps)",
+      "description": "Same as 'server' but resolves ffmpeg/curl/libarchive/onnxruntime from vcpkg. Requires VCPKG_ROOT.",
+      "inherits": ["server", "vcpkg"]
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev",          "configurePreset": "dev" },
+    { "name": "audio",        "configurePreset": "audio" },
+    { "name": "server",       "configurePreset": "server",
+      "targets": ["whisperx_server", "whisperx_server_tests"] },
+    { "name": "server-vcpkg", "configurePreset": "server-vcpkg",
+      "targets": ["whisperx_server", "whisperx_server_tests"] }
+  ],
+  "testPresets": [
+    { "name": "dev",    "configurePreset": "dev",
+      "output": { "outputOnFailure": true } },
+    { "name": "audio",  "configurePreset": "audio",
+      "output": { "outputOnFailure": true } },
+    { "name": "server", "configurePreset": "server",
+      "output": { "outputOnFailure": true } }
+  ]
+}

@@ -45,13 +45,14 @@ float mean_logprob(const SherpaOnnxOfflineRecognizerResult* r) {
 
 struct WhisperSherpa::Impl {
     // Owned C strings (the config holds raw const char* into these).
-    std::string encoder, decoder, tokens, language, task;
+    std::string encoder, decoder, tokens, language, task, provider;
     const SherpaOnnxOfflineRecognizer* recognizer = nullptr;
 
     Impl(const std::string& enc, const std::string& dec, const std::string& tok,
          int num_threads, int feature_dim, const std::string& lang,
-         const std::string& tsk)
-        : encoder(enc), decoder(dec), tokens(tok), language(lang), task(tsk) {
+         const std::string& tsk, const std::string& prov)
+        : encoder(enc), decoder(dec), tokens(tok), language(lang), task(tsk),
+          provider(prov) {
         SherpaOnnxOfflineRecognizerConfig config;
         std::memset(&config, 0, sizeof(config));
         config.feat_config.sample_rate = whisperx::audio::kSampleRate;
@@ -63,7 +64,8 @@ struct WhisperSherpa::Impl {
         config.model_config.whisper.tail_paddings = -1;  // sherpa default
         config.model_config.tokens = tokens.c_str();
         config.model_config.num_threads = num_threads;
-        config.model_config.provider = "cpu";  // non-null: sherpa wraps in string
+        config.model_config.provider =
+            provider.c_str();  // non-null: sherpa wraps in string ("cpu" | "cuda")
         config.model_config.debug = 0;
         config.decoding_method = "greedy_search";
 
@@ -163,9 +165,10 @@ WhisperSherpa::WhisperSherpa(const std::string& encoder,
                              const std::string& decoder,
                              const std::string& tokens, int num_threads,
                              int feature_dim, const std::string& language,
-                             const std::string& task)
+                             const std::string& task,
+                             const std::string& provider)
     : impl_(std::make_unique<Impl>(encoder, decoder, tokens, num_threads,
-                                   feature_dim, language, task)) {}
+                                   feature_dim, language, task, provider)) {}
 WhisperSherpa::~WhisperSherpa() = default;
 WhisperSherpa::WhisperSherpa(WhisperSherpa&&) noexcept = default;
 WhisperSherpa& WhisperSherpa::operator=(WhisperSherpa&&) noexcept = default;

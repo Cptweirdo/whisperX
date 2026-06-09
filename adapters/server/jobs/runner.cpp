@@ -107,8 +107,10 @@ RunSession make_run_session(whisperx::db::SessionStore& store,
         std::optional<int> max_speakers = opt_int(opts, "max_speakers");
 
         // --- resident engines (load on demand; shared diarizer/align) --------
-        whisperx::asr::WhisperSherpa& asr = manager.load_asr(model);
-        wd::SherpaDiarizer* diarizer = manager.ensure_diarize();
+        // shared_ptrs held for the whole job: a runtime device switch may evict
+        // the manager's caches mid-flight; these refs keep our engines alive.
+        std::shared_ptr<whisperx::asr::WhisperSherpa> asr = manager.load_asr(model);
+        std::shared_ptr<wd::SherpaDiarizer> diarizer = manager.ensure_diarize();
         int num_clusters = 0;
         if (max_speakers)
             num_clusters = *max_speakers;
@@ -158,9 +160,9 @@ RunSession make_run_session(whisperx::db::SessionStore& store,
                                    mc.at("end").get<double>());
 
             std::string lang = forced_language;
-            if (lang.empty() && !spans.empty()) lang = asr.detect_language(buf);
+            if (lang.empty() && !spans.empty()) lang = asr->detect_language(buf);
 
-            auto chunks = asr.transcribe(buf, spans, lang, "transcribe");
+            auto chunks = asr->transcribe(buf, spans, lang, "transcribe");
             json out = json::array();
             for (std::size_t i = 0; i < spans.size(); ++i) {
                 blank_audio_removed += chunks[i].blank_audio_removed;
@@ -188,7 +190,7 @@ RunSession make_run_session(whisperx::db::SessionStore& store,
         };
 
         if (diarizer != nullptr)
-            steps.diarize = [&](const wa::AudioBuffer& buf, json aligned) {
+            steps.diarize = [&, diarizer](const wa::AudioBuffer& buf, json aligned) {
                 auto raw = diarizer->diarize(buf, num_clusters);
                 std::vector<wd::Turn> turns;
                 turns.reserve(raw.size());

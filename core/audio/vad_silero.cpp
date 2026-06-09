@@ -33,6 +33,9 @@ std::vector<whisperx::vad::VadSegment> silero_segments(
     config.silero_vad.window_size = 512;
     config.sample_rate = audio.sample_rate;
     config.num_threads = 1;
+    // Deliberately CPU-pinned regardless of the runtime device switch: silero is a
+    // tiny net streamed in 512-sample windows through a serialized drain loop — poor
+    // GPU occupancy, marginal payoff. Not threaded into the device knob by design.
     config.provider = "cpu";  // non-null: sherpa wraps this in std::string
     config.debug = 0;
 

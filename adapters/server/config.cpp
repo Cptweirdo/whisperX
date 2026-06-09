@@ -1,5 +1,6 @@
 #include "config.hpp"
 
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -110,6 +111,23 @@ double env_double(const char* key, double def) {
     }
 }
 
+std::optional<Device> parse_device(const std::string& s) {
+    std::string v;
+    v.reserve(s.size());
+    for (char ch : s) v.push_back(static_cast<char>(std::tolower(ch)));
+    if (v == "cpu") return Device::Cpu;
+    if (v == "cuda") return Device::Cuda;
+    return std::nullopt;
+}
+
+const char* to_string(Device d) {
+    switch (d) {
+        case Device::Cuda: return "cuda";
+        case Device::Cpu:  return "cpu";
+    }
+    return "cpu";
+}
+
 Config load_config() {
     Config c;
     c.data_dir = data_dir();
@@ -121,6 +139,7 @@ Config load_config() {
     c.long_audio_warn_s = env_long("WHISPERX_LONG_AUDIO_WARN_S", 2 * 3600);
     c.log_level = env_str("WHISPERX_LOG_LEVEL", "info");
     c.active_model = env_str("WHISPERX_MODEL", "small");
+    c.device = parse_device(env_str("WHISPERX_DEVICE", "cpu")).value_or(Device::Cpu);
     // Built SPA default: <data_dir>/../? No — the SPA ships beside the binary or
     // at app/static/spa in dev. Allow an explicit override; default resolved by
     // the caller (main) relative to the exe.

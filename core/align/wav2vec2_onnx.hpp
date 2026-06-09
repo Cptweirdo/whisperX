@@ -18,9 +18,19 @@
 
 namespace whisperx::align {
 
+// True if the ONNX Runtime linked into this binary exposes the CUDA execution
+// provider (GPU build + a usable CUDA device). Always false in a CPU build
+// (WHISPERX_GPU_BUILD undefined). Lives here because this TU is the one that pulls
+// the ORT C++ API directly; the server's capability detection delegates to it.
+bool ort_cuda_available();
+
 class Wav2Vec2Onnx {
  public:
-    explicit Wav2Vec2Onnx(const std::string& onnx_path, int num_threads = 1);
+    // provider is the ONNX Runtime execution provider ("cpu" | "cuda"). The CUDA
+    // EP is appended only in a GPU build (WHISPERX_GPU_BUILD); on a CPU build the
+    // string is inert (capability detection rejects "cuda" upstream first).
+    explicit Wav2Vec2Onnx(const std::string& onnx_path, int num_threads = 1,
+                          const std::string& provider = "cpu");
     ~Wav2Vec2Onnx();
     Wav2Vec2Onnx(Wav2Vec2Onnx&&) noexcept;
     Wav2Vec2Onnx& operator=(Wav2Vec2Onnx&&) noexcept;

@@ -467,24 +467,37 @@ public:
     ENDPOINT("POST", "/api/device", switch_device,
              REQUEST(std::shared_ptr<IncomingRequest>, request)) {
         json body = http_util::parse_body(request);
-        std::string device = body.value("device", "");
-        // CPU-only runtime: cpu is accepted (no-op); anything else is rejected.
-        if (device != "cpu") {
-            if (device.empty())
-                return jr(Status::CODE_400, {{"error", "Unknown device: "}});
+        std::string device_str = body.value("device", "");
+        auto dev = parse_device(device_str);
+        if (!dev)
+            return jr(Status::CODE_400,
+                      {{"error", "Unknown device: " + device_str}});
+        // Reject cuda when the binary wasn't built with the GPU ORT / no device is
+        // present, rather than constructing a session that silently falls back to CPU.
+        if (*dev == Device::Cuda &&
+            !app_.manager.status().value("cuda_available", false)) {
             json st = app_.manager.status();
-            st["error"] =
-                "Only the CPU device is available in this build (" + device +
-                " requires a Python/GPU runtime).";
+            st["error"] = "CUDA device not available in this build.";
             return jr(Status::CODE_400, st);
         }
+        // UX gate: a running job blocks the switch (in-flight engine borrows are
+        // shared_ptrs, so this is courtesy, not the memory-safety mechanism).
         if (app_.store.has_active_jobs()) {
             json st = app_.manager.status();
             st["error"] = "busy";
             return jr(Status::CODE_409, st);
         }
-        app_.store.set_setting("device", "cpu");
-        return jr(Status::CODE_200, app_.manager.status());
+        try {
+            json st = app_.manager.set_device(*dev);
+            app_.store.set_setting("device", to_string(*dev));  // persist on success
+            return jr(Status::CODE_200, st);
+        } catch (const std::exception& exc) {
+            // set_device rolled back to the previous device; report, don't crash
+            // (an uncaught exception on the request thread is fatal — no signal handler).
+            json st = app_.manager.status();
+            st["error"] = exc.what();
+            return jr(Status::CODE_400, st);
+        }
     }
 
     // --- Settings / onboarding (token storage + translation deferred) ----
@@ -583,9 +596,14 @@ public:
         std::string token = body.value("token", "");
         if (!models::is_known_model(model))
             return jr(Status::CODE_400, {{"error", "Unknown model: " + model}});
-        if (device != "cpu")
+        auto dev = parse_device(device);
+        if (!dev)
             return jr(Status::CODE_400,
                       {{"error", "Unknown device: " + device}});
+        if (*dev == Device::Cuda &&
+            !app_.manager.status().value("cuda_available", false))
+            return jr(Status::CODE_400,
+                      {{"error", "CUDA device not available in this build."}});
         // A supplied token is verified then stored in the OS keyring. A keyring
         // failure is non-fatal — diarization works token-free — so we surface a
         // store_error but still finish onboarding (matches server.py's contract).
@@ -595,22 +613,30 @@ public:
             try {
                 secrets::set(secrets::keys::HF_TOKEN, token);
             } catch (const secrets::SecretStoreUnavailable& e) {
-                json out = finish_onboarding(model);
+                json out = finish_onboarding(model, *dev);
                 out["store_error"] = e.what();
                 return jr(Status::CODE_200, out);
             }
         }
-        return jr(Status::CODE_200, finish_onboarding(model));
+        return jr(Status::CODE_200, finish_onboarding(model, *dev));
     }
 
     // Persist the chosen model/device + mark onboarded (shared by the keyring-ok
     // and keyring-unavailable paths). Returns the {ok:true} payload.
-    json finish_onboarding(const std::string& model) {
+    json finish_onboarding(const std::string& model, Device device) {
         app_.store.set_setting("active_model", model);
-        app_.store.set_setting("device", "cpu");
+        app_.store.set_setting("device", to_string(device));
         app_.manager.set_active(model);
+        json out{{"ok", true}};
+        try {
+            app_.manager.set_device(device);  // no-op if already on it
+        } catch (const std::exception& e) {
+            // A GPU init failure during onboarding is non-fatal (mirrors the keyring
+            // path): finish on the previous device and surface the error.
+            out["device_error"] = e.what();
+        }
         app_.store.set_setting("onboarded", "1");
-        return json{{"ok", true}};
+        return out;
     }
 
     // --- SSE -------------------------------------------------------------

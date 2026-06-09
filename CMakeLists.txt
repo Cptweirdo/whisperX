@@ -163,6 +163,13 @@ if(WHISPERX_CORE_AUDIO)
   set(SHERPA_ONNX_ENABLE_PORTAUDIO OFF CACHE BOOL "" FORCE)
   set(SHERPA_ONNX_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE)
   set(SHERPA_ONNX_ENABLE_GPU OFF CACHE BOOL "" FORCE)
+  # When the GPU ORT is enabled, advertise it to our code: gates the wav2vec2 direct
+  # CUDA-EP append (make_options) and the cuda_available() runtime probe
+  # (ort_cuda_available). Applies to targets declared after this point — the core libs
+  # + server. CPU build leaves it undefined so cuda_available() is compile-time false.
+  if(SHERPA_ONNX_ENABLE_GPU)
+    add_compile_definitions(WHISPERX_GPU_BUILD)
+  endif()
   set(SHERPA_ONNX_ENABLE_BINARY OFF CACHE BOOL "" FORCE)
   set(SHERPA_ONNX_ENABLE_JNI OFF CACHE BOOL "" FORCE)
   set(SHERPA_ONNX_ENABLE_C_API ON CACHE BOOL "" FORCE)

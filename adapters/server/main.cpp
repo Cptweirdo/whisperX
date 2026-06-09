@@ -81,7 +81,14 @@ int main(int argc, char** argv) {
 
     std::string active =
         store.get_setting("active_model", cfg.active_model).value_or(cfg.active_model);
-    ws::models::ModelManager manager(active, [&broker](const auto& status) {
+    // Device precedence (mirrors active_model): persisted setting > WHISPERX_DEVICE
+    // env (already on cfg.device) > "cpu". An unknown persisted value falls back to
+    // the env-resolved default rather than failing boot.
+    ws::Device device =
+        ws::parse_device(store.get_setting("device", ws::to_string(cfg.device))
+                             .value_or(ws::to_string(cfg.device)))
+            .value_or(cfg.device);
+    ws::models::ModelManager manager(active, device, [&broker](const auto& status) {
         broker.publish(ws::kModelsChannel, ws::views::models_event(status));
     });
 
@@ -102,7 +109,7 @@ int main(int argc, char** argv) {
     std::thread([&manager, logger] {
         try {
             manager.load_asr(manager.active());
-            auto* d = manager.ensure_diarize();
+            auto d = manager.ensure_diarize();
             logger->info("Models ready (active={}, diarization {}).",
                          manager.active(), d ? "ON" : "OFF");
         } catch (const std::exception& e) {

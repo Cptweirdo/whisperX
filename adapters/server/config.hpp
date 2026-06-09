@@ -15,6 +15,21 @@
 
 namespace whisperx::server {
 
+// Execution device for the inference engines. Strings live only at the I/O
+// boundaries (WHISPERX_DEVICE env, /api/device JSON, the persisted setting, and
+// sherpa/ORT's provider C-string); internally the device is this enum so invalid
+// states are unrepresentable and validation has a single home (parse_device).
+// Extensible to Mlx/WhisperCpp later (status() already reports those flags).
+enum class Device { Cpu, Cuda };
+
+// Parse a boundary string ("cpu" | "cuda", case-insensitive) into a Device.
+// Returns nullopt for anything else — the one place device validation happens.
+std::optional<Device> parse_device(const std::string& s);
+// Canonical lowercase name — used for the /models status JSON, the persisted
+// setting, AND as the sherpa/ORT provider string passed to engine ctors (they
+// coincide: "cpu"/"cuda").
+const char* to_string(Device d);
+
 // Load the .env chain into the process environment (real env always wins). Call
 // once at startup before reading any config. `exe_dir` is where the binary lives
 // (for the dev/defaults .env files); pass argv[0]'s directory.
@@ -42,6 +57,7 @@ struct Config {
     std::string spa_dir;         // app/static/spa (built SPA); WHISPERX_SPA_DIR override
     std::string static_dir;      // app/static (parent of spa); WHISPERX_STATIC_DIR
     std::string active_model;    // seed (persisted by the store); WHISPERX_MODEL
+    Device device = Device::Cpu; // WHISPERX_DEVICE (cpu|cuda); persisted setting wins
     // Cloud backup (port of app/backup/__init__.py::build_service):
     std::string backup_backend;  // WHISPERX_BACKUP_BACKEND: "gdrive" | "local" | ""
     std::string backup_dir;      // WHISPERX_BACKUP_DIR (local backend root)

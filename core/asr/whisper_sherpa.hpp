@@ -45,10 +45,13 @@ class WhisperSherpa {
     // encoder/decoder/tokens are the three sherpa Whisper ONNX assets;
     // feature_dim is the mel bin count (80 for tiny…medium/large-v2, 128 for
     // large-v3). language/task are defaults ("" language = auto-detect per chunk).
+    // provider is the ONNX Runtime execution provider ("cpu" | "cuda"); sherpa
+    // selects the CUDA EP from this string once the GPU ORT build is present.
     WhisperSherpa(const std::string& encoder, const std::string& decoder,
                   const std::string& tokens, int num_threads = 1,
                   int feature_dim = 80, const std::string& language = "",
-                  const std::string& task = "transcribe");
+                  const std::string& task = "transcribe",
+                  const std::string& provider = "cpu");
     ~WhisperSherpa();
     WhisperSherpa(WhisperSherpa&&) noexcept;
     WhisperSherpa& operator=(WhisperSherpa&&) noexcept;

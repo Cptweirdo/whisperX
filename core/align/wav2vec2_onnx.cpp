@@ -8,6 +8,20 @@
 
 namespace whisperx::align {
 
+bool ort_cuda_available() {
+#ifdef WHISPERX_GPU_BUILD
+    try {
+        for (const auto& p : Ort::GetAvailableProviders())
+            if (p == "CUDAExecutionProvider") return true;
+    } catch (...) {
+        // ORT provider enumeration failed — treat as unavailable.
+    }
+    return false;
+#else
+    return false;
+#endif
+}
+
 namespace {
 constexpr std::size_t kMinSamples = 400;  // wav2vec2 conv feature-extractor minimum
 constexpr std::size_t kMaxBatch = 8;      // segment-count cap per padded batch
@@ -19,10 +33,21 @@ constexpr std::size_t kMaxBatch = 8;      // segment-count cap per padded batch
 // chunk fills a batch alone; shorter segments still pack up to kMaxBatch.
 constexpr std::size_t kMaxBatchSamples = 30 * 16000;
 
-Ort::SessionOptions make_options(int num_threads) {
+Ort::SessionOptions make_options(int num_threads, const std::string& provider) {
     Ort::SessionOptions opts;
     opts.SetIntraOpNumThreads(num_threads);
     opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+#ifdef WHISPERX_GPU_BUILD
+    // Stage 2 is the only stage that drives ORT directly, so it appends the CUDA
+    // EP itself (sherpa does this internally for stages 1 & 3). ORT auto-copies the
+    // CPU-built input tensors host->device; IoBinding is a later optimization.
+    if (provider == "cuda") {
+        OrtCUDAProviderOptions cuda_opts{};  // device_id 0, library defaults
+        opts.AppendExecutionProvider_CUDA(cuda_opts);
+    }
+#else
+    (void)provider;  // CPU build: the CUDA-EP symbol may be absent in these headers
+#endif
     return opts;
 }
 }  // namespace
@@ -38,9 +63,9 @@ struct Wav2Vec2Onnx::Impl {
     bool has_attention_mask = false;
     bool has_frame_lengths = false;
 
-    Impl(const std::string& path, int num_threads)
+    Impl(const std::string& path, int num_threads, const std::string& provider)
         : env(ORT_LOGGING_LEVEL_WARNING, "wav2vec2_align"),
-          options(make_options(num_threads)),
+          options(make_options(num_threads, provider)),
           session(env, path.c_str(), options) {
         Ort::AllocatorWithDefaultOptions alloc;
         for (std::size_t i = 0; i < session.GetInputCount(); ++i)
@@ -54,8 +79,9 @@ struct Wav2Vec2Onnx::Impl {
     }
 };
 
-Wav2Vec2Onnx::Wav2Vec2Onnx(const std::string& onnx_path, int num_threads)
-    : impl_(std::make_unique<Impl>(onnx_path, num_threads)) {}
+Wav2Vec2Onnx::Wav2Vec2Onnx(const std::string& onnx_path, int num_threads,
+                           const std::string& provider)
+    : impl_(std::make_unique<Impl>(onnx_path, num_threads, provider)) {}
 Wav2Vec2Onnx::~Wav2Vec2Onnx() = default;
 Wav2Vec2Onnx::Wav2Vec2Onnx(Wav2Vec2Onnx&&) noexcept = default;
 Wav2Vec2Onnx& Wav2Vec2Onnx::operator=(Wav2Vec2Onnx&&) noexcept = default;

@@ -25,8 +25,20 @@ bool is_known_model(const std::string& name) {
     return std::find(n.begin(), n.end(), name) != n.end();
 }
 
-ModelManager::ModelManager(std::string active, OnChange on_change)
+namespace {
+// Intra-op thread count per device. CPU: half the cores (≥1) — single-thread CPU
+// left perf on the table; the old hardcoded 1 was a CPU-only-runtime artifact. GPU:
+// 1 — intra-op CPU threads don't help once the forward runs on the CUDA EP.
+int threads_for(Device d) {
+    if (d != Device::Cpu) return 1;
+    unsigned hc = std::thread::hardware_concurrency();
+    return hc > 1 ? static_cast<int>(hc / 2) : 1;
+}
+}  // namespace
+
+ModelManager::ModelManager(std::string active, Device device, OnChange on_change)
     : active_(is_known_model(active) ? std::move(active) : std::string("small")),
+      device_(device),
       on_change_(std::move(on_change)) {}
 
 std::string ModelManager::active() {
@@ -50,6 +62,11 @@ json ModelManager::status() {
     return status_locked();
 }
 
+bool ModelManager::cuda_available() {
+    static const bool avail = wal::ort_cuda_available();
+    return avail;
+}
+
 json ModelManager::status_locked() {
     bool diarize_available = resolve_diarize().has_value();
     json models = json::array();
@@ -63,8 +80,8 @@ json ModelManager::status_locked() {
     }
     return {
         {"active", active_},
-        {"device", "cpu"},
-        {"cuda_available", false},
+        {"device", to_string(device_)},
+        {"cuda_available", cuda_available()},
         {"mlx_available", false},
         {"whispercpp_available", false},
         {"diarize", diarize_ != nullptr},
@@ -77,43 +94,32 @@ json ModelManager::status_locked() {
     };
 }
 
-wa::WhisperSherpa& ModelManager::load_asr(const std::string& name) {
+std::shared_ptr<wa::WhisperSherpa> ModelManager::load_asr(const std::string& name) {
     if (!is_known_model(name))
         throw std::runtime_error("Unknown model: " + name);
     {
         std::lock_guard<std::mutex> lk(lock_);
-        if (auto it = asr_.find(name); it != asr_.end()) return *it->second;
+        if (auto it = asr_.find(name); it != asr_.end()) return it->second;
     }
     std::lock_guard<std::mutex> load(load_lock_);
     {
         std::lock_guard<std::mutex> lk(lock_);
-        if (auto it = asr_.find(name); it != asr_.end()) return *it->second;
+        if (auto it = asr_.find(name); it != asr_.end()) return it->second;
         loading_.insert(name);
     }
     notify_change();  // broadcast "loading"
 
     auto logger = whisperx::server::log::get("models");
     try {
-        auto assets = resolve_whisper(name);
-        if (!assets)
-            throw std::runtime_error(
-                "Whisper assets for '" + name +
-                "' not found locally (set WHISPERX_SHERPA_MODELS_ROOT / "
-                "WHISPERX_SHERPA_WHISPER_DIR; the downloader lands in task 7).");
-        logger->info("Loading whisper model={} on cpu (feature_dim={})", name,
-                     assets->feature_dim);
-        auto pipe = std::make_unique<wa::WhisperSherpa>(
-            assets->encoder, assets->decoder, assets->tokens, /*num_threads=*/1,
-            assets->feature_dim);
-        wa::WhisperSherpa& ref = *pipe;
+        auto pipe = build_asr_engine(name, device_);
         {
             std::lock_guard<std::mutex> lk(lock_);
-            asr_[name] = std::move(pipe);
+            asr_[name] = pipe;
             loading_.erase(name);
             errors_.erase(name);
         }
         notify_change();  // broadcast "ready"
-        return ref;
+        return pipe;
     } catch (const std::exception& exc) {
         {
             std::lock_guard<std::mutex> lk(lock_);
@@ -148,15 +154,77 @@ json ModelManager::set_active(const std::string& name) {
     return status();
 }
 
-wd::SherpaDiarizer* ModelManager::ensure_diarize() {
+std::shared_ptr<wa::WhisperSherpa> ModelManager::build_asr_engine(
+    const std::string& name, Device dev) {
+    auto assets = resolve_whisper(name);
+    if (!assets)
+        throw std::runtime_error(
+            "Whisper assets for '" + name +
+            "' not found locally (set WHISPERX_SHERPA_MODELS_ROOT / "
+            "WHISPERX_SHERPA_WHISPER_DIR; the downloader lands in task 7).");
+    whisperx::server::log::get("models")->info(
+        "Loading whisper model={} on {} (feature_dim={})", name, to_string(dev),
+        assets->feature_dim);
+    return std::make_shared<wa::WhisperSherpa>(
+        assets->encoder, assets->decoder, assets->tokens, threads_for(dev),
+        assets->feature_dim, /*language=*/"", /*task=*/"transcribe",
+        /*provider=*/to_string(dev));
+}
+
+json ModelManager::set_device(Device dev) {
+    // load_lock_ serializes against every heavy load (load_asr/align_for/ensure_
+    // diarize all take it), so device_ can't be read mid-construction by another load.
+    std::lock_guard<std::mutex> load(load_lock_);
+    Device prev;
+    std::string active_snapshot;
     {
         std::lock_guard<std::mutex> lk(lock_);
-        if (diarize_loaded_) return diarize_.get();
+        if (dev == device_) return status_locked();  // no-op
+        prev = device_;
+        active_snapshot = active_;
+    }
+    auto logger = whisperx::server::log::get("models");
+    logger->info("Switching device {} -> {}", to_string(prev), to_string(dev));
+
+    // Atomic rebuild: construct the active model on the NEW device BEFORE evicting,
+    // so a failure (GPU OOM / missing cuDNN / EP load error) leaves device_ and the
+    // caches untouched — the manager stays fully usable on the previous device.
+    std::shared_ptr<wa::WhisperSherpa> new_active;
+    try {
+        new_active = build_asr_engine(active_snapshot, dev);
+    } catch (const std::exception& exc) {
+        logger->error("Device switch to {} failed, kept {}: {}", to_string(dev),
+                      to_string(prev), exc.what());
+        throw;  // nothing mutated yet — clean rollback
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(lock_);
+        // Every resident engine is bound to the old provider — drop them all. align +
+        // diarize rebuild lazily on next use; the active ASR is pre-warmed below.
+        asr_.clear();
+        align_.clear();
+        diarize_.reset();
+        diarize_loaded_ = false;
+        diarize_error_.reset();
+        loading_.clear();
+        errors_.clear();
+        device_ = dev;
+        asr_[active_snapshot] = std::move(new_active);
+    }
+    notify_change();  // push the new device/cuda_available to /models/events + SPA
+    return status();
+}
+
+std::shared_ptr<wd::SherpaDiarizer> ModelManager::ensure_diarize() {
+    {
+        std::lock_guard<std::mutex> lk(lock_);
+        if (diarize_loaded_) return diarize_;
     }
     std::lock_guard<std::mutex> load(load_lock_);
     {
         std::lock_guard<std::mutex> lk(lock_);
-        if (diarize_loaded_) return diarize_.get();
+        if (diarize_loaded_) return diarize_;
     }
     auto logger = whisperx::server::log::get("models");
     auto assets = resolve_diarize();
@@ -172,8 +240,9 @@ wd::SherpaDiarizer* ModelManager::ensure_diarize() {
     try {
         logger->info("Loading diarization (seg={}, embed={})", assets->segmentation,
                      assets->embedding);
-        auto d = std::make_unique<wd::SherpaDiarizer>(assets->segmentation,
-                                                      assets->embedding);
+        auto d = std::make_shared<wd::SherpaDiarizer>(
+            assets->segmentation, assets->embedding, threads_for(device_),
+            /*provider=*/to_string(device_));
         std::lock_guard<std::mutex> lk(lock_);
         diarize_ = std::move(d);
         diarize_loaded_ = true;
@@ -185,21 +254,21 @@ wd::SherpaDiarizer* ModelManager::ensure_diarize() {
     }
     notify_change();
     std::lock_guard<std::mutex> lk(lock_);
-    return diarize_.get();
+    return diarize_;
 }
 
 AlignHandle ModelManager::align_for(const std::string& language) {
     {
         std::lock_guard<std::mutex> lk(lock_);
         if (auto it = align_.find(language); it != align_.end())
-            return {it->second.model.get(), &it->second.dictionary,
+            return {it->second.model, it->second.dictionary,
                     it->second.batchable};
     }
     std::lock_guard<std::mutex> load(load_lock_);
     {
         std::lock_guard<std::mutex> lk(lock_);
         if (auto it = align_.find(language); it != align_.end())
-            return {it->second.model.get(), &it->second.dictionary,
+            return {it->second.model, it->second.dictionary,
                     it->second.batchable};
     }
     auto assets = resolve_align(language);
@@ -211,13 +280,15 @@ AlignHandle ModelManager::align_for(const std::string& language) {
     whisperx::server::log::get("models")->info(
         "Loading align model for language={}", language);
     AlignEntry entry;
-    entry.model = std::make_unique<wal::Wav2Vec2Onnx>(assets->onnx_path);
-    entry.dictionary = std::move(assets->dictionary);
+    entry.model = std::make_shared<wal::Wav2Vec2Onnx>(
+        assets->onnx_path, threads_for(device_), /*provider=*/to_string(device_));
+    entry.dictionary = std::make_shared<const std::map<std::string, int>>(
+        std::move(assets->dictionary));
     entry.batchable = assets->batchable;
     std::lock_guard<std::mutex> lk(lock_);
     auto& slot = align_[language];
     slot = std::move(entry);
-    return {slot.model.get(), &slot.dictionary, slot.batchable};
+    return {slot.model, slot.dictionary, slot.batchable};
 }
 
 std::string ModelManager::silero_path() const {
