@@ -56,6 +56,23 @@ target_compile_options(whisperx_server PRIVATE -Wall -Wextra)
 set_target_properties(whisperx_server PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
+if(WIN32)
+  # The exe imports onnxruntime.dll from sherpa's downloaded ORT (GPU lane: 1.24
+  # + the CUDA/shared provider DLLs), but nothing puts those next to the exe —
+  # vcpkg's applocal only deploys vcpkg-built DLLs, and a wrong-version
+  # onnxruntime.dll in the exe dir wins the search and aborts at startup with an
+  # ORT API-version mismatch. Copy the linked ORT's DLLs (same dir as its import
+  # lib) into the exe dir.
+  get_filename_component(_wx_ort_dir "${location_onnxruntime}" DIRECTORY)
+  file(GLOB _wx_ort_dlls "${_wx_ort_dir}/onnxruntime*.dll")
+  if(_wx_ort_dlls)
+    add_custom_command(TARGET whisperx_server POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              ${_wx_ort_dlls} $<TARGET_FILE_DIR:whisperx_server>
+      COMMAND_EXPAND_LISTS)
+  endif()
+endif()
+
 # --- server unit tests (Catch2 + CTest, ASan/UBSan) --------------------------
 # The transport-agnostic pieces (broker, config) are unit-tested in isolation.
 # Catch2 is already FetchContent-available from the root tests block.

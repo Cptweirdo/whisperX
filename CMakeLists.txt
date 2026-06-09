@@ -192,6 +192,11 @@ if(WHISPERX_CORE_AUDIO)
   if(SHERPA_ONNX_ENABLE_GPU)
     add_compile_definitions(WHISPERX_GPU_BUILD)
   endif()
+  # Never let sherpa "find" a system/vcpkg ORT: its find_library would pick a
+  # different version than the headers it vendors (a vcpkg 1.23 import lib under
+  # 1.24 headers aborts at startup with an ORT API-version mismatch). Its own
+  # downloaded ORT always matches its headers.
+  set(SHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
   set(SHERPA_ONNX_ENABLE_BINARY OFF CACHE BOOL "" FORCE)
   set(SHERPA_ONNX_ENABLE_JNI OFF CACHE BOOL "" FORCE)
   set(SHERPA_ONNX_ENABLE_C_API ON CACHE BOOL "" FORCE)

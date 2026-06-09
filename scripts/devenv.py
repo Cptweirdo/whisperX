@@ -245,11 +245,19 @@ def cmd_test(args) -> int:
 def _runtime_lib_dirs() -> list[Path]:
     """Dirs holding the shared libs the server dlopens (oatpp + onnxruntime)."""
     dirs = [BUILD / "lib", BUILD / "_deps" / "oatpp-build" / "src"]
-    pat = "libonnxruntime*"
+    if OS == "Windows":
+        dirs.append(BUILD / "bin")  # sherpa-onnx-c-api.dll + friends (RUNTIME output)
+    pat = "onnxruntime*.dll" if OS == "Windows" else "libonnxruntime*"
     ort = glob.glob(str(BUILD / "_deps" / "**" / pat), recursive=True)
     for f in ort:
         dirs.append(Path(f).parent)
         break
+    if OS == "Windows":
+        # The ORT CUDA EP needs cuDNN 9 (cudnn64_9.dll) + the CUDA runtime; system
+        # installs are often cuDNN 8. torch's cu12x wheel bundles both — appended
+        # last so a real PATH install still wins.
+        torch_lib = ROOT / ".venv" / "Lib" / "site-packages" / "torch" / "lib"
+        dirs.append(torch_lib)
     return [d for d in dirs if d.exists()]
 
 
