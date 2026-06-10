@@ -122,13 +122,15 @@ std::optional<Device> parse_device(const std::string& s) {
     for (char ch : s) v.push_back(static_cast<char>(std::tolower(ch)));
     if (v == "cpu") return Device::Cpu;
     if (v == "cuda") return Device::Cuda;
+    if (v == "coreml") return Device::CoreML;
     return std::nullopt;
 }
 
 const char* to_string(Device d) {
     switch (d) {
-        case Device::Cuda: return "cuda";
-        case Device::Cpu:  return "cpu";
+        case Device::Cuda:   return "cuda";
+        case Device::CoreML: return "coreml";
+        case Device::Cpu:    return "cpu";
     }
     return "cpu";
 }

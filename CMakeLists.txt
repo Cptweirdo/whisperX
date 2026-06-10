@@ -126,6 +126,7 @@ add_library(whisperx_core_lib STATIC
   core/text/sequence_matcher.cpp
   core/text/sentence_split.cpp
   core/edits/edits.cpp
+  core/db/session_row.cpp
   core/db/session_store.cpp
   core/vad/merge_chunks.cpp
   core/align/trellis.cpp

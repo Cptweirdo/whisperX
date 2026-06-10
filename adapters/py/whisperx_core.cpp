@@ -129,8 +129,21 @@ void bind_session_store(py::module_& m) {
             py::arg("session_id"), py::arg("filename"), py::arg("audio_filename"),
             py::arg("options"), py::arg("model") = py::none())
         .def("mark_running", &SessionStore::mark_running, py::arg("session_id"))
-        .def("mark_stage", &SessionStore::mark_stage, py::arg("session_id"),
-             py::arg("stage"))
+        .def(
+            "mark_stage",
+            [](SessionStore& s, const std::string& session_id,
+               std::optional<std::string> stage) {
+                if (!stage.has_value()) {
+                    s.mark_stage(session_id, std::nullopt);
+                    return;
+                }
+                const auto parsed = whisperx::db::parse_stage(*stage);
+                if (!parsed.has_value()) {
+                    throw py::value_error("unknown stage: " + *stage);
+                }
+                s.mark_stage(session_id, parsed);
+            },
+            py::arg("session_id"), py::arg("stage"))
         .def("mark_duration", &SessionStore::mark_duration, py::arg("session_id"),
              py::arg("duration"))
         .def("mark_done", &SessionStore::mark_done, py::arg("session_id"),
@@ -159,7 +172,8 @@ void bind_session_store(py::module_& m) {
         .def(
             "get_translations",
             [](SessionStore& s, const std::string& session_id) {
-                return json_to_py(s.get_translations(session_id));
+                return json_to_py(
+                    whisperx::db::translations_to_json(s.get_translations(session_id)));
             },
             py::arg("session_id"))
         .def(
@@ -168,19 +182,30 @@ void bind_session_store(py::module_& m) {
                const std::string& lang, const std::string& status,
                std::optional<std::string> service,
                std::optional<std::string> error) {
-                return json_to_py(s.set_translation_status(session_id, lang,
-                                                           status, service, error));
+                const auto parsed = whisperx::db::parse_status(status);
+                if (!parsed.has_value()) {
+                    throw py::value_error("unknown status: " + status);
+                }
+                return json_to_py(whisperx::db::translations_to_json(
+                    s.set_translation_status(session_id, lang, *parsed, service,
+                                             error)));
             },
             py::arg("session_id"), py::arg("lang"), py::arg("status"),
             py::arg("service") = py::none(), py::arg("error") = py::none())
-        // reads
+        // reads — typed SessionRow converted back to the frozen dict shape
         .def(
             "get",
             [](SessionStore& s, const std::string& session_id) {
-                return json_to_py(s.get(session_id));
+                const auto row = s.get(session_id);
+                return row.has_value() ? json_to_py(row->to_json())
+                                       : py::object(py::none());
             },
             py::arg("session_id"))
-        .def("list", [](SessionStore& s) { return json_to_py(s.list()); })
+        .def("list", [](SessionStore& s) {
+            json out = json::array();
+            for (const auto& row : s.list()) out.push_back(row.to_json());
+            return json_to_py(out);
+        })
         .def("has_active_jobs", &SessionStore::has_active_jobs)
         // lifecycle
         .def("reconcile_startup", &SessionStore::reconcile_startup)

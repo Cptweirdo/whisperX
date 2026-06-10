@@ -21,18 +21,8 @@ std::string trim(const std::string& s) {
 
 double round3(double x) { return std::nearbyint(x * 1000.0) / 1000.0; }
 
-bool truthy(const json& v) {
-    if (v.is_null()) return false;
-    if (v.is_boolean()) return v.get<bool>();
-    if (v.is_number()) return v.get<double>() != 0.0;
-    if (v.is_string()) return !v.get<std::string>().empty();
-    return false;
-}
-
-std::string fmt_duration(const json& row, const char* key) {
-    long sec = 0;
-    if (row.is_object() && row.contains(key) && row[key].is_number())
-        sec = static_cast<long>(row[key].get<double>());
+std::string fmt_duration(double duration) {
+    long sec = static_cast<long>(duration);
     long h = sec / 3600, rem = sec % 3600, m = rem / 60, s = rem % 60;
     char buf[32];
     if (h)
@@ -54,9 +44,7 @@ std::string fmt_clock(double total) {
 }
 
 // "2026-06-07T14:30:00+00:00" -> "Jun 07, 2026 · 14:30" (server.py::_fmt_date).
-std::string fmt_date(const json& iso_j) {
-    if (!iso_j.is_string()) return "";
-    std::string iso = iso_j.get<std::string>();
+std::string fmt_date(const std::string& iso) {
     if (iso.empty()) return "";
     std::tm tm{};
     // Parse the leading "YYYY-MM-DDTHH:MM:SS" (ignore any zone suffix).
@@ -140,87 +128,69 @@ struct StatusMeta {
     const char* chip_class;
     bool viewable;
 };
-StatusMeta status_meta(const std::string& status) {
-    if (status == "done") return {"Done", "chip--ok", true};
-    if (status == "running") return {"Processing", "chip--run", false};
-    if (status == "queued") return {"Queued", "chip--run", false};
-    if (status == "error") return {"Error", "chip--err", false};
-    return {"Unprocessed", "", false};
+StatusMeta status_meta(db::Status status) {
+    switch (status) {
+        case db::Status::Done: return {"Done", "chip--ok", true};
+        case db::Status::Running: return {"Processing", "chip--run", false};
+        case db::Status::Queued: return {"Queued", "chip--run", false};
+        case db::Status::Error: return {"Error", "chip--err", false};
+    }
+    return {"Unprocessed", "", false};  // unreachable
+}
+
+json opt_str(const std::optional<std::string>& v) {
+    return v.has_value() ? json(*v) : json(nullptr);
 }
 }  // namespace
 
-json card(const json& row) {
-    std::string status =
-        row.contains("status") && row["status"].is_string()
-            ? row["status"].get<std::string>()
-            : "";
-    auto meta = status_meta(status);
+json card(const db::SessionRow& row) {
+    auto meta = status_meta(row.status);
     std::string sub;
-    if (status == "done") {
-        long ns = (row.contains("num_segments") && row["num_segments"].is_number())
-                      ? row["num_segments"].get<long>()
-                      : 0;
-        sub = std::to_string(ns) + " segments transcribed";
-        if (row.contains("language") && row["language"].is_string() &&
-            !row["language"].get<std::string>().empty())
-            sub += " \xc2\xb7 language " + row["language"].get<std::string>();
+    if (row.status == db::Status::Done) {
+        sub = std::to_string(row.num_segments.value_or(0)) +
+              " segments transcribed";
+        if (row.language.has_value() && !row.language->empty())
+            sub += " \xc2\xb7 language " + *row.language;
         sub += ".";
-    } else if (status == "error") {
-        std::string err =
-            (row.contains("error") && row["error"].is_string())
-                ? row["error"].get<std::string>()
-                : "unknown error";
+    } else if (row.status == db::Status::Error) {
+        const std::string err = row.error.value_or("");
         sub = "Failed: " + (err.empty() ? "unknown error" : err);
     } else {
         sub = "Awaiting transcription on CPU.";
     }
-    auto str_or = [&](const char* k, const char* def) -> json {
-        if (row.contains(k) && row[k].is_string() &&
-            !row[k].get<std::string>().empty())
-            return row[k];
-        return def;
-    };
-    json out = {
-        {"id", row.value("id", "")},
-        {"name", (row.contains("filename") && row["filename"].is_string() &&
-                  !row["filename"].get<std::string>().empty())
-                     ? row["filename"]
-                     : json("Untitled recording")},
+    return {
+        {"id", row.id},
+        {"name", row.filename.has_value() && !row.filename->empty()
+                     ? *row.filename
+                     : "Untitled recording"},
         {"chip_label", meta.label},
         {"chip_class", meta.chip_class},
         {"viewable", meta.viewable},
-        {"dur", fmt_duration(row, "duration")},
-        {"date", fmt_date(row.value("created_at", json(nullptr)))},
+        {"dur", fmt_duration(row.duration.value_or(0.0))},
+        {"date", fmt_date(row.created_at)},
         {"sub", sub},
-        {"model", row.value("model", json(nullptr))},
-        {"language", row.value("language", json(nullptr))},
-        {"diarized", row.contains("diarized") && truthy(row["diarized"])},
-        {"num_segments", (row.contains("num_segments") &&
-                          row["num_segments"].is_number())
-                             ? row["num_segments"]
-                             : json(0)},
-        {"status", status},
-        {"stage", row.value("stage", json(nullptr))},
-        {"error", row.value("error", json(nullptr))},
-        {"translations", (row.contains("translations") &&
-                          row["translations"].is_object())
-                             ? row["translations"]
+        {"model", opt_str(row.model)},
+        {"language", opt_str(row.language)},
+        {"diarized", row.diarized.value_or(false)},
+        {"num_segments", row.num_segments.value_or(0)},
+        {"status", db::to_string(row.status)},
+        {"stage", row.stage.has_value() ? json(db::to_string(*row.stage))
+                                        : json(nullptr)},
+        {"error", opt_str(row.error)},
+        {"translations", row.translations.has_value()
+                             ? db::translations_to_json(*row.translations)
                              : json::object()},
     };
-    (void)str_or;
-    return out;
 }
 
-json summary(const json& rows) {
+json summary(const std::vector<db::SessionRow>& rows) {
     long count = static_cast<long>(rows.size());
     long done = 0;
     double total_audio = 0, transcribed = 0;
     for (const auto& r : rows) {
-        double d = (r.contains("duration") && r["duration"].is_number())
-                       ? r["duration"].get<double>()
-                       : 0.0;
+        double d = r.duration.value_or(0.0);
         total_audio += d;
-        if (r.value("status", "") == "done") {
+        if (r.status == db::Status::Done) {
             ++done;
             transcribed += d;
         }

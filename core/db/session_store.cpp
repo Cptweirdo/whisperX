@@ -74,13 +74,6 @@ CREATE TABLE IF NOT EXISTS speaker_names (
 );
 )sql";
 
-// app.store._COLUMNS — selected order for row_to_dict.
-constexpr std::array<const char*, 15> kColumns = {
-    "id",           "filename",      "audio_filename", "status",
-    "stage",        "error",         "options",        "language",
-    "diarized",     "model",         "num_segments",   "duration",
-    "translations", "created_at",    "updated_at"};
-
 void bind_opt(SQLite::Statement& q, int i, const std::optional<std::string>& v) {
     if (v.has_value()) {
         q.bind(i, *v);
@@ -89,32 +82,60 @@ void bind_opt(SQLite::Statement& q, int i, const std::optional<std::string>& v) 
     }
 }
 
-// Mirror app.store._row_to_dict on a SELECT * row positioned at the current step.
-json row_to_dict(SQLite::Statement& q) {
-    json d = json::object();
-    for (const char* col : kColumns) {
-        const SQLite::Column c = q.getColumn(col);
-        if (c.isNull()) {
-            d[col] = nullptr;
-        } else if (std::string(col) == "options" ||
-                   std::string(col) == "translations") {
-            // JSON text → parsed object (Python: parsed on read; {} on bad JSON).
-            try {
-                d[col] = json::parse(c.getString());
-            } catch (const json::parse_error&) {
-                d[col] = json::object();
-            }
-        } else if (std::string(col) == "diarized") {
-            d[col] = c.getInt() != 0;  // INTEGER 0/1 → bool
-        } else if (std::string(col) == "num_segments") {
-            d[col] = c.getInt64();
-        } else if (std::string(col) == "duration") {
-            d[col] = c.getDouble();
-        } else {
-            d[col] = c.getString();
-        }
+// JSON text → parsed value (Python: parsed on read; {} on bad JSON).
+json parse_json_column(const SQLite::Column& c) {
+    try {
+        return json::parse(c.getString());
+    } catch (const json::parse_error&) {
+        return json::object();
     }
-    return d;
+}
+
+std::optional<std::string> opt_text(SQLite::Statement& q, const char* col) {
+    const SQLite::Column c = q.getColumn(col);
+    if (c.isNull()) return std::nullopt;
+    return c.getString();
+}
+
+// Build a typed SessionRow from a SELECT * row positioned at the current step.
+// Same null / bad-JSON fallbacks as app.store._row_to_dict; lenient on enum
+// strings per the session_row.hpp read policy (get() must never throw).
+SessionRow row_from_stmt(SQLite::Statement& q) {
+    SessionRow r;
+    r.id = q.getColumn("id").getString();
+    r.filename = opt_text(q, "filename");
+    r.audio_filename = opt_text(q, "audio_filename");
+    r.status = parse_status(q.getColumn("status").getString())
+                   .value_or(Status::Error);
+    if (const auto s = opt_text(q, "stage")) {
+        r.stage = parse_stage(*s);  // unknown -> nullopt
+    }
+    r.error = opt_text(q, "error");
+    {
+        const SQLite::Column c = q.getColumn("options");
+        r.options = c.isNull() ? json(nullptr) : parse_json_column(c);
+    }
+    r.language = opt_text(q, "language");
+    {
+        const SQLite::Column c = q.getColumn("diarized");
+        if (!c.isNull()) r.diarized = c.getInt() != 0;  // INTEGER 0/1 → bool
+    }
+    r.model = opt_text(q, "model");
+    {
+        const SQLite::Column c = q.getColumn("num_segments");
+        if (!c.isNull()) r.num_segments = c.getInt64();
+    }
+    {
+        const SQLite::Column c = q.getColumn("duration");
+        if (!c.isNull()) r.duration = c.getDouble();
+    }
+    {
+        const SQLite::Column c = q.getColumn("translations");
+        if (!c.isNull()) r.translations = translations_from_json(parse_json_column(c));
+    }
+    r.created_at = q.getColumn("created_at").getString();
+    r.updated_at = q.getColumn("updated_at").getString();
+    return r;
 }
 
 }  // namespace
@@ -220,11 +241,13 @@ void SessionStore::mark_running(const std::string& session_id) {
 }
 
 void SessionStore::mark_stage(const std::string& session_id,
-                              const std::optional<std::string>& stage) {
+                              const std::optional<Stage>& stage) {
     std::lock_guard<std::mutex> g(lock_);
     SQLite::Statement q(
         *db_, "UPDATE sessions SET stage=?, updated_at=? WHERE id=?");
-    bind_opt(q, 1, stage);
+    bind_opt(q, 1, stage.has_value()
+                       ? std::optional<std::string>(to_string(*stage))
+                       : std::nullopt);
     q.bind(2, now_iso());
     q.bind(3, session_id);
     q.exec();
@@ -369,19 +392,18 @@ void SessionStore::set_setting(const std::string& key, const std::string& value)
 }
 
 // --- translations (JSON column) -----------------------------------------
-json SessionStore::get_translations(const std::string& session_id) {
+TranslationMap SessionStore::get_translations(const std::string& session_id) {
     // Python: (row or {}).get("translations") or {}  — get() takes the lock.
-    json row = get(session_id);
-    if (row.is_null() || !row.contains("translations") ||
-        row["translations"].is_null()) {
-        return json::object();
+    const auto row = get(session_id);
+    if (!row.has_value() || !row->translations.has_value()) {
+        return TranslationMap();
     }
-    return row["translations"];
+    return *row->translations;
 }
 
-json SessionStore::set_translation_status(
-    const std::string& session_id, const std::string& lang,
-    const std::string& status, const std::optional<std::string>& service,
+TranslationMap SessionStore::set_translation_status(
+    const std::string& session_id, const std::string& lang, Status status,
+    const std::optional<std::string>& service,
     const std::optional<std::string>& error) {
     std::lock_guard<std::mutex> g(lock_);
     json current = json::object();
@@ -398,14 +420,16 @@ json SessionStore::set_translation_status(
             if (!current.is_object()) current = json::object();
         }
     }
+    // Raw-JSON read-modify-write on purpose: preserves unknown extra keys in
+    // entries (and the on-disk dump bytes) that a typed-map round-trip would drop.
     json entry = current.contains(lang) ? current[lang] : json::object();
-    entry["status"] = status;
+    entry["status"] = to_string(status);
     if (service.has_value()) {
         entry["service"] = *service;
     }
     if (error.has_value()) {
         entry["error"] = *error;
-    } else if (status != "error") {
+    } else if (status != Status::Error) {
         entry.erase("error");
     }
     current[lang] = entry;
@@ -415,27 +439,27 @@ json SessionStore::set_translation_status(
     up.bind(2, now_iso());
     up.bind(3, session_id);
     up.exec();
-    return current;
+    return translations_from_json(current);
 }
 
 // --- reads ---------------------------------------------------------------
-json SessionStore::get(const std::string& session_id) {
+std::optional<SessionRow> SessionStore::get(const std::string& session_id) {
     std::lock_guard<std::mutex> g(lock_);
     SQLite::Statement q(*db_, "SELECT * FROM sessions WHERE id=?");
     q.bind(1, session_id);
     if (q.executeStep()) {
-        return row_to_dict(q);
+        return row_from_stmt(q);
     }
-    return json(nullptr);
+    return std::nullopt;
 }
 
-json SessionStore::list() {
+std::vector<SessionRow> SessionStore::list() {
     std::lock_guard<std::mutex> g(lock_);
-    json out = json::array();
+    std::vector<SessionRow> out;
     SQLite::Statement q(
         *db_, "SELECT * FROM sessions ORDER BY created_at DESC, id DESC");
     while (q.executeStep()) {
-        out.push_back(row_to_dict(q));
+        out.push_back(row_from_stmt(q));
     }
     return out;
 }

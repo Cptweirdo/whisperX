@@ -159,7 +159,7 @@ TEST_CASE("restore reproduces the tree and swaps the DB into a fresh dir",
                 (fs::path(dst_dir) / "sessions" / "s1" / "audio.wav").string()) ==
             "RESTORE-ME");
     REQUIRE_FALSE(store2.list().empty());          // DB swapped in
-    REQUIRE_FALSE(store2.get("s1").is_null());     // the row came back
+    REQUIRE(store2.get("s1").has_value());         // the row came back
 }
 
 TEST_CASE("restore with prune deletes local files absent from the manifest",

@@ -71,7 +71,7 @@ TEST_CASE("a completed job marks done and publishes done after the store update"
     REQUIRE(ev.has_value());
     REQUIRE((*ev)["status"] == "done");
     // The event fired after mark_done, so the row is already terminal.
-    REQUIRE(store.get("s1")["status"] == "done");
+    REQUIRE(store.get("s1")->status == whisperx::db::Status::Done);
 }
 
 TEST_CASE("a throwing job marks error and publishes error", "[jobs]") {
@@ -94,8 +94,9 @@ TEST_CASE("a throwing job marks error and publishes error", "[jobs]") {
     REQUIRE(ev.has_value());
     REQUIRE((*ev)["status"] == "error");
     auto row = store.get("s1");
-    REQUIRE(row["status"] == "error");
-    REQUIRE(row["error"] == "boom");
+    REQUIRE(row.has_value());
+    REQUIRE(row->status == whisperx::db::Status::Error);
+    REQUIRE(row->error == "boom");
 }
 
 TEST_CASE("a cancelled job publishes nothing and is not marked error",
@@ -122,7 +123,7 @@ TEST_CASE("a cancelled job publishes nothing and is not marked error",
     q.cancel("s1");
 
     REQUIRE_FALSE(sub->pop(500ms).has_value());  // no terminal event
-    REQUIRE(store.get("s1")["status"] != "error");
+    REQUIRE(store.get("s1")->status != whisperx::db::Status::Error);
 }
 
 TEST_CASE("jobs run serially (one worker)", "[jobs]") {

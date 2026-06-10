@@ -79,8 +79,9 @@ void TranslationQueue::run_one(const Job& job) {
         if (broker_) broker_->publish(channel(job.session_id), e);
     };
 
-    store_.set_translation_status(job.session_id, job.target_lang, "running",
-                                  job.service, std::nullopt);
+    store_.set_translation_status(job.session_id, job.target_lang,
+                                  whisperx::db::Status::Running, job.service,
+                                  std::nullopt);
     publish(event(job.target_lang, "running"));
     try {
         json result = store_.load_result(job.session_id);
@@ -112,13 +113,15 @@ void TranslationQueue::run_one(const Job& job) {
     } catch (const std::exception& exc) {
         logger->error("Translation of {} -> {} failed: {}", job.session_id,
                       job.target_lang, exc.what());
-        store_.set_translation_status(job.session_id, job.target_lang, "error",
-                                      std::nullopt, std::string(exc.what()));
+        store_.set_translation_status(job.session_id, job.target_lang,
+                                      whisperx::db::Status::Error, std::nullopt,
+                                      std::string(exc.what()));
         publish(event(job.target_lang, "error", exc.what()));
         return;
     }
-    store_.set_translation_status(job.session_id, job.target_lang, "done",
-                                  std::nullopt, std::nullopt);
+    store_.set_translation_status(job.session_id, job.target_lang,
+                                  whisperx::db::Status::Done, std::nullopt,
+                                  std::nullopt);
     publish(event(job.target_lang, "done"));
 }
 

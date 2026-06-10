@@ -184,6 +184,25 @@ TEST_CASE("data_dir honors WHISPERX_DATA_DIR override", "[config]") {
     ::unsetenv("WHISPERX_DATA_DIR");
 }
 
+TEST_CASE("parse_device accepts cpu/cuda/coreml (any case), rejects junk",
+          "[config]") {
+    CHECK(parse_device("cpu") == Device::Cpu);
+    CHECK(parse_device("cuda") == Device::Cuda);
+    CHECK(parse_device("coreml") == Device::CoreML);
+    CHECK(parse_device("CoreML") == Device::CoreML);
+    CHECK(parse_device("CUDA") == Device::Cuda);
+    CHECK_FALSE(parse_device("").has_value());
+    CHECK_FALSE(parse_device("metal").has_value());
+    CHECK_FALSE(parse_device("mlx").has_value());        // not a Device (yet)
+    CHECK_FALSE(parse_device("whispercpp").has_value());  // backend, not device
+}
+
+TEST_CASE("to_string(Device) round-trips through parse_device", "[config]") {
+    for (auto d : {Device::Cpu, Device::Cuda, Device::CoreML})
+        CHECK(parse_device(to_string(d)) == d);
+    CHECK(std::string(to_string(Device::CoreML)) == "coreml");  // sherpa provider
+}
+
 TEST_CASE("load_config reads typed knobs from the environment", "[config]") {
     ::setenv("WHISPERX_HOST", "0.0.0.0", 1);
     ::setenv("WHISPERX_PORT", "9090", 1);

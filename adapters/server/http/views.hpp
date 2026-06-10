@@ -6,8 +6,11 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include "db/session_row.hpp"
 
 namespace whisperx::server::views {
 
@@ -26,8 +29,8 @@ json turn_words(const json& segments, const json& seg_indices);
 json build_turns(const json& segments, const json& names);
 
 // server.py::_card / _summary — dashboard card + list summary.
-json card(const json& row);
-json summary(const json& rows);
+json card(const db::SessionRow& row);
+json summary(const std::vector<db::SessionRow>& rows);
 
 // server.py::_models_event — the /models/events payload from a ModelManager status.
 json models_event(const json& status);

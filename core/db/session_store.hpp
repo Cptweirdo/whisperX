@@ -25,6 +25,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "db/session_row.hpp"
+
 namespace SQLite {
 class Database;
 }
@@ -33,10 +35,12 @@ namespace whisperx::db {
 
 using nlohmann::json;
 
-// Mirrors app.store._row_to_dict: a session row as a JSON object with the 15
-// columns as keys, `options`/`translations` parsed to objects (or null),
-// `diarized` as a bool (or null), numeric columns as int/double (or null).
-// `get()` returns this (or JSON null for a missing id); `list()` an array of them.
+// Session rows cross this API as typed `SessionRow` structs (see
+// session_row.hpp): status/stage enums, std::optional for nullable columns, a
+// typed translations map. Only `options` and the file-backed sidecars stay
+// opaque json. The pybind facade converts via SessionRow::to_json(), which
+// mirrors app.store._row_to_dict exactly, so the Python-visible dict shape
+// (and the §2 on-disk contract) is unchanged.
 class SessionStore {
 public:
     explicit SessionStore(const std::string& data_dir);
@@ -57,7 +61,7 @@ public:
                 const std::optional<std::string>& model);
     void mark_running(const std::string& session_id);
     void mark_stage(const std::string& session_id,
-                    const std::optional<std::string>& stage);
+                    const std::optional<Stage>& stage);
     void mark_duration(const std::string& session_id, double duration);
     void mark_done(const std::string& session_id,
                    const std::optional<std::string>& language, bool diarized,
@@ -79,15 +83,15 @@ public:
     void set_setting(const std::string& key, const std::string& value);
 
     // --- translations (the JSON column only; sidecar files stay in Python) ---
-    json get_translations(const std::string& session_id);
-    json set_translation_status(const std::string& session_id,
-                                const std::string& lang, const std::string& status,
-                                const std::optional<std::string>& service,
-                                const std::optional<std::string>& error);
+    TranslationMap get_translations(const std::string& session_id);
+    TranslationMap set_translation_status(
+        const std::string& session_id, const std::string& lang, Status status,
+        const std::optional<std::string>& service,
+        const std::optional<std::string>& error);
 
     // --- reads -----------------------------------------------------------
-    json get(const std::string& session_id);  // object or null
-    json list();                              // array
+    std::optional<SessionRow> get(const std::string& session_id);
+    std::vector<SessionRow> list();
     bool has_active_jobs();
 
     // --- lifecycle -------------------------------------------------------

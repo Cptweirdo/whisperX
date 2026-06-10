@@ -3,6 +3,7 @@
 export const DEVICE_LABELS: Record<string, string> = {
   cpu: "CPU",
   cuda: "GPU (CUDA)",
+  coreml: "Apple GPU/ANE (CoreML)",
   mlx: "Apple GPU (MLX)",
   whispercpp: "whisper.cpp (Metal)",
 };
@@ -10,6 +11,7 @@ export const DEVICE_LABELS: Record<string, string> = {
 export const DEVICE_NOTES: Record<string, string> = {
   cpu: "Always available. Slowest; fine for short clips.",
   cuda: "NVIDIA GPU acceleration.",
+  coreml: "Apple CoreML execution provider — experimental; benchmark vs CPU.",
   mlx: "Apple Silicon GPU via MLX.",
   whispercpp: "Apple Silicon Metal via whisper.cpp — fastest on Mac.",
 };

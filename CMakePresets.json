@@ -70,6 +70,13 @@
       "inherits": ["server", "vcpkg"]
     },
     {
+      "name": "server-macos",
+      "displayName": "Server on macOS (arm64, CoreML EP available)",
+      "description": "Same as 'server' on Apple Silicon. sherpa downloads the official ORT osx-arm64 prebuilt, which already bundles the CoreML EP — no extra flag. See docs/MACOS_COREML.md.",
+      "inherits": "server",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
       "name": "server-cuda",
       "displayName": "Server + CUDA ONNX Runtime EP (native, Linux/native CUDA)",
       "description": "'server' built with the GPU ORT (WHISPERX_ENABLE_GPU). Needs a CUDA toolkit + GPU. System heavy deps (gcc/clang honor the parity flags).",
@@ -91,6 +98,8 @@
       "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
     { "name": "server-vcpkg", "configurePreset": "server-vcpkg",
       "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
+    { "name": "server-macos", "configurePreset": "server-macos",
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
     { "name": "server-cuda", "configurePreset": "server-cuda",
       "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
     { "name": "server-vcpkg-cuda", "configurePreset": "server-vcpkg-cuda",
@@ -102,6 +111,8 @@
     { "name": "audio",  "configurePreset": "audio",
       "output": { "outputOnFailure": true } },
     { "name": "server", "configurePreset": "server",
+      "output": { "outputOnFailure": true } },
+    { "name": "server-macos", "configurePreset": "server-macos",
       "output": { "outputOnFailure": true } },
     { "name": "server-cuda", "configurePreset": "server-cuda",
       "output": { "outputOnFailure": true } },

@@ -25,6 +25,7 @@
   const DEVICES: { id: string; label: string }[] = [
     { id: "cpu", label: "CPU" },
     { id: "cuda", label: "GPU (CUDA)" },
+    { id: "coreml", label: "Apple GPU/ANE (CoreML)" },
     { id: "mlx", label: "Apple GPU (MLX)" },
     { id: "whispercpp", label: "whisper.cpp (Metal)" },
   ];
@@ -32,6 +33,7 @@
     const m = models.status;
     if (id === "cpu") return true;
     if (id === "cuda") return !!m?.cuda_available;
+    if (id === "coreml") return !!m?.coreml_available;
     if (id === "mlx") return !!m?.mlx_available;
     if (id === "whispercpp") return !!m?.whispercpp_available;
     return false;

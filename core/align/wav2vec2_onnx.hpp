@@ -24,11 +24,18 @@ namespace whisperx::align {
 // the ORT C++ API directly; the server's capability detection delegates to it.
 bool ort_cuda_available();
 
+// True if the linked ONNX Runtime exposes the CoreML execution provider. Always
+// false off-Apple (the official osx-arm64 ORT prebuilt sherpa downloads bundles
+// the EP, so on macOS this is effectively "is this an Apple build"). Same home as
+// ort_cuda_available() for the same reason.
+bool ort_coreml_available();
+
 class Wav2Vec2Onnx {
  public:
-    // provider is the ONNX Runtime execution provider ("cpu" | "cuda"). The CUDA
-    // EP is appended only in a GPU build (WHISPERX_GPU_BUILD); on a CPU build the
-    // string is inert (capability detection rejects "cuda" upstream first).
+    // provider is the ONNX Runtime execution provider ("cpu" | "cuda" | "coreml").
+    // The CUDA EP is appended only in a GPU build (WHISPERX_GPU_BUILD), the CoreML
+    // EP only on Apple; elsewhere the string is inert (capability detection
+    // rejects unavailable devices upstream first).
     explicit Wav2Vec2Onnx(const std::string& onnx_path, int num_threads = 1,
                           const std::string& provider = "cpu");
     ~Wav2Vec2Onnx();

@@ -27,6 +27,7 @@
   const BACKENDS = [
     ["cpu", "CPU", "Runs on any machine — no GPU required. Slowest for long files.", "Universal · int8"],
     ["cuda", "CUDA", "NVIDIA GPUs. Highest throughput using float16 compute.", "NVIDIA · float16"],
+    ["coreml", "CoreML", "Apple CoreML execution provider. Experimental — benchmark against CPU first.", "Apple Silicon"],
     ["mlx", "MLX", "Apple Silicon (M-series). Native on-device acceleration for macOS.", "Apple Silicon"],
     ["whispercpp", "whisper.cpp", "whisper.cpp via pywhispercpp. Metal on Apple Silicon, CPU elsewhere. Fastest on Mac for large models.", "Metal · CPU"],
   ];
@@ -34,6 +35,7 @@
     const m = data?.models;
     if (id === "cpu") return true;
     if (id === "cuda") return !!m?.cuda_available;
+    if (id === "coreml") return !!m?.coreml_available;
     if (id === "mlx") return !!m?.mlx_available;
     if (id === "whispercpp") return !!m?.whispercpp_available;
     return false;
