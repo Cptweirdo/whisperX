@@ -147,6 +147,11 @@ Config load_config() {
     c.log_level = env_str("WHISPERX_LOG_LEVEL", "info");
     c.active_model = env_str("WHISPERX_MODEL", "small");
     c.device = parse_device(env_str("WHISPERX_DEVICE", "cpu")).value_or(Device::Cpu);
+    c.diarize_threshold = env_double("WHISPERX_DIARIZE_THRESHOLD", c.diarize_threshold);
+    c.diarize_min_on = env_double("WHISPERX_DIARIZE_MIN_ON", c.diarize_min_on);
+    c.diarize_min_off = env_double("WHISPERX_DIARIZE_MIN_OFF", c.diarize_min_off);
+    c.diarize_merge_threshold =
+        env_double("WHISPERX_DIARIZE_MERGE_THRESHOLD", c.diarize_merge_threshold);
     // Built SPA default: <data_dir>/../? No — the SPA ships beside the binary or
     // at app/static/spa in dev. Allow an explicit override; default resolved by
     // the caller (main) relative to the exe.

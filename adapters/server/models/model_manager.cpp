@@ -36,10 +36,12 @@ int threads_for(Device d) {
 }
 }  // namespace
 
-ModelManager::ModelManager(std::string active, Device device, OnChange on_change)
+ModelManager::ModelManager(std::string active, Device device, OnChange on_change,
+                           DiarizeTuning diarize_tuning)
     : active_(is_known_model(active) ? std::move(active) : std::string("small")),
       device_(device),
-      on_change_(std::move(on_change)) {}
+      on_change_(std::move(on_change)),
+      diarize_tuning_(diarize_tuning) {}
 
 std::string ModelManager::active() {
     std::lock_guard<std::mutex> lk(lock_);
@@ -253,11 +255,24 @@ std::shared_ptr<wd::SherpaDiarizer> ModelManager::ensure_diarize() {
         return nullptr;
     }
     try {
-        logger->info("Loading diarization (seg={}, embed={})", assets->segmentation,
-                     assets->embedding);
+        logger->info("Loading diarization (seg={}, embed={}, threshold={}, "
+                     "min_on={}, min_off={}, merge={}, provider=cpu, threads={})",
+                     assets->segmentation, assets->embedding,
+                     diarize_tuning_.threshold, diarize_tuning_.min_duration_on,
+                     diarize_tuning_.min_duration_off,
+                     diarize_tuning_.merge_threshold, threads_for(Device::Cpu));
+        // Diarization always runs on CPU with CPU-count threads, regardless of
+        // device_: the workload is hundreds of tiny forwards (10s segmentation
+        // windows + per-chunk embeddings), where per-call CUDA launch/copy
+        // overhead serializes everything onto one core. Measured on a 23-min
+        // file: cuda+1thread 737s, cuda+8threads no better (single core pegged),
+        // cpu+8threads 98s. Whisper keeps the device provider — its 30s windows
+        // are big enough for the GPU to win.
         auto d = std::make_shared<wd::SherpaDiarizer>(
-            assets->segmentation, assets->embedding, threads_for(device_),
-            /*provider=*/to_string(device_));
+            assets->segmentation, assets->embedding, threads_for(Device::Cpu),
+            /*provider=*/"cpu", diarize_tuning_.threshold,
+            diarize_tuning_.min_duration_on, diarize_tuning_.min_duration_off,
+            diarize_tuning_.merge_threshold);
         std::lock_guard<std::mutex> lk(lock_);
         diarize_ = std::move(d);
         diarize_loaded_ = true;

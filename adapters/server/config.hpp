@@ -61,6 +61,22 @@ struct Config {
     std::string static_dir;      // app/static (parent of spa); WHISPERX_STATIC_DIR
     std::string active_model;    // seed (persisted by the store); WHISPERX_MODEL
     Device device = Device::Cpu; // WHISPERX_DEVICE (cpu|cuda|coreml); persisted setting wins
+    // Diarization clustering (sherpa FastClustering, core/diarize/diarize_sherpa.hpp).
+    // threshold is a cosine *distance*: larger merges more aggressively -> fewer
+    // speakers. sherpa's 0.5 default over-segments real recordings (12+ labels on a
+    // 2-speaker call); 0.7 + the centroid merge below is the optimum of a sweep over
+    // the golden 4-speaker dialogs + a real 2-speaker call (commit message has the
+    // table). min_on drops speech bursts shorter than it; min_off merges pauses
+    // shorter than it (seconds).
+    double diarize_threshold = 0.7;  // WHISPERX_DIARIZE_THRESHOLD
+    double diarize_min_on = 0.3;     // WHISPERX_DIARIZE_MIN_ON
+    double diarize_min_off = 0.5;    // WHISPERX_DIARIZE_MIN_OFF
+    // Centroid merge post-pass (core/diarize/merge_clusters.hpp): pooled
+    // per-cluster embeddings closer than this re-join. Pooled-embedding distance
+    // scale — true-speaker centroid pairs sit >=0.29 in the sweep, so 0.25 merges
+    // fragments while keeping real speakers apart. NOT the chunk scale above.
+    // 0 disables the pass.
+    double diarize_merge_threshold = 0.25;  // WHISPERX_DIARIZE_MERGE_THRESHOLD
     // Cloud backup (port of app/backup/__init__.py::build_service):
     std::string backup_backend;  // WHISPERX_BACKUP_BACKEND: "gdrive" | "local" | ""
     std::string backup_dir;      // WHISPERX_BACKUP_DIR (local backend root)

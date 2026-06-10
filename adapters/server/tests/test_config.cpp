@@ -221,3 +221,32 @@ TEST_CASE("load_config reads typed knobs from the environment", "[config]") {
                    "WHISPERX_MODEL", "WHISPERX_DATA_DIR"})
         ::unsetenv(k);
 }
+
+TEST_CASE("load_config reads the diarization clustering knobs", "[config]") {
+    for (auto k : {"WHISPERX_DIARIZE_THRESHOLD", "WHISPERX_DIARIZE_MIN_ON",
+                   "WHISPERX_DIARIZE_MIN_OFF", "WHISPERX_DIARIZE_MERGE_THRESHOLD"})
+        ::unsetenv(k);
+
+    Config defaults = load_config();
+    CHECK(defaults.diarize_threshold == 0.7);  // tuned default, not sherpa's 0.5
+    CHECK(defaults.diarize_min_on == 0.3);
+    CHECK(defaults.diarize_min_off == 0.5);
+    CHECK(defaults.diarize_merge_threshold == 0.25);  // centroid post-pass on
+
+    ::setenv("WHISPERX_DIARIZE_THRESHOLD", "0.5", 1);
+    ::setenv("WHISPERX_DIARIZE_MIN_ON", "0.1", 1);
+    ::setenv("WHISPERX_DIARIZE_MIN_OFF", "1.25", 1);
+    ::setenv("WHISPERX_DIARIZE_MERGE_THRESHOLD", "0", 1);  // 0 = pass disabled
+    Config c = load_config();
+    CHECK(c.diarize_threshold == 0.5);
+    CHECK(c.diarize_min_on == 0.1);
+    CHECK(c.diarize_min_off == 1.25);
+    CHECK(c.diarize_merge_threshold == 0.0);
+
+    ::setenv("WHISPERX_DIARIZE_THRESHOLD", "junk", 1);  // garbage -> default
+    CHECK(load_config().diarize_threshold == defaults.diarize_threshold);
+
+    for (auto k : {"WHISPERX_DIARIZE_THRESHOLD", "WHISPERX_DIARIZE_MIN_ON",
+                   "WHISPERX_DIARIZE_MIN_OFF", "WHISPERX_DIARIZE_MERGE_THRESHOLD"})
+        ::unsetenv(k);
+}

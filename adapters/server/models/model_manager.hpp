@@ -44,13 +44,24 @@ struct AlignHandle {
     bool batchable;
 };
 
+// Diarization clustering tuning, forwarded verbatim to the SherpaDiarizer ctor.
+// Defaults mirror Config (config.hpp) so tests constructing a bare ModelManager
+// get the production values.
+struct DiarizeTuning {
+    float threshold = 0.7f;     // WHISPERX_DIARIZE_THRESHOLD
+    float min_duration_on = 0.3f;   // WHISPERX_DIARIZE_MIN_ON
+    float min_duration_off = 0.5f;  // WHISPERX_DIARIZE_MIN_OFF
+    float merge_threshold = 0.25f;  // WHISPERX_DIARIZE_MERGE_THRESHOLD
+};
+
 class ModelManager {
 public:
     // on_change fires with status() after any load/active/diarize transition, so
     // the server can push live model state over /models/events.
     using OnChange = std::function<void(const json&)>;
 
-    ModelManager(std::string active, Device device, OnChange on_change = nullptr);
+    ModelManager(std::string active, Device device, OnChange on_change = nullptr,
+                 DiarizeTuning diarize_tuning = {});
 
     std::string active();
     json status();
@@ -118,6 +129,7 @@ private:
     std::string active_;
     Device device_ = Device::Cpu;  // guarded by lock_; mutated only by set_device
     OnChange on_change_;
+    DiarizeTuning diarize_tuning_;  // immutable after construction
 };
 
 }  // namespace whisperx::server::models
