@@ -37,10 +37,14 @@ class SherpaDiarizer {
     // embedding extractor ONNX (wespeaker_en_voxceleb CAM++). threshold is the
     // FastClustering cosine distance used when the speaker count is unknown;
     // min_duration_{on,off} drop tiny segments / merge tiny gaps (sherpa defaults).
+    // merge_threshold drives the centroid post-pass (merge_clusters.hpp) that
+    // re-joins clusters FastClustering fragmented: pooled per-cluster embeddings
+    // closer than it are one speaker. It lives on the pooled-embedding distance
+    // scale (~0.3) — much tighter than the chunk-level `threshold`. 0 disables.
     SherpaDiarizer(const std::string& segmentation, const std::string& embedding,
                    int num_threads = 1, const std::string& provider = "cpu",
                    float threshold = 0.5f, float min_duration_on = 0.3f,
-                   float min_duration_off = 0.5f);
+                   float min_duration_off = 0.5f, float merge_threshold = 0.25f);
     ~SherpaDiarizer();
     SherpaDiarizer(SherpaDiarizer&&) noexcept;
     SherpaDiarizer& operator=(SherpaDiarizer&&) noexcept;
@@ -49,7 +53,9 @@ class SherpaDiarizer {
 
     // Diarize the whole buffer. `num_clusters > 0` forces exactly that many
     // speakers (FastClustering num_clusters); `<= 0` lets the cosine threshold
-    // decide the count. Returns turns sorted by start time.
+    // decide the count and then applies the centroid merge post-pass (when
+    // merge_threshold > 0), renumbering speakers by first appearance. Returns
+    // turns sorted by start time.
     std::vector<DiarSegment> diarize(const whisperx::audio::AudioBuffer& audio,
                                      int num_clusters = 0);
 

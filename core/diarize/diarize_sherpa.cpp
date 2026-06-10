@@ -4,6 +4,7 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "diarize/merge_clusters.hpp"
 #include "sherpa-onnx/c-api/c-api.h"
 
 namespace whisperx::diarize {
@@ -13,6 +14,7 @@ struct SherpaDiarizer::Impl {
     std::string segmentation, embedding, provider;
     int num_threads;
     float threshold, min_duration_on, min_duration_off;
+    float merge_threshold = 0.0f;  // set by the SherpaDiarizer ctor
     const SherpaOnnxOfflineSpeakerDiarization* sd = nullptr;
     // Built lazily on the first embeddings() call (the diarization handle has its
     // own internal extractor we can't reach, so we run a second one ourselves).
@@ -80,10 +82,13 @@ struct SherpaDiarizer::Impl {
 SherpaDiarizer::SherpaDiarizer(const std::string& segmentation,
                                const std::string& embedding, int num_threads,
                                const std::string& provider, float threshold,
-                               float min_duration_on, float min_duration_off)
+                               float min_duration_on, float min_duration_off,
+                               float merge_threshold)
     : impl_(std::make_unique<Impl>(segmentation, embedding, num_threads, provider,
                                    threshold, min_duration_on,
-                                   min_duration_off)) {}
+                                   min_duration_off)) {
+    impl_->merge_threshold = merge_threshold;
+}
 SherpaDiarizer::~SherpaDiarizer() = default;
 SherpaDiarizer::SherpaDiarizer(SherpaDiarizer&&) noexcept = default;
 SherpaDiarizer& SherpaDiarizer::operator=(SherpaDiarizer&&) noexcept = default;
@@ -109,6 +114,26 @@ std::vector<DiarSegment> SherpaDiarizer::diarize(
                            static_cast<double>(segs[i].end), segs[i].speaker});
         SherpaOnnxOfflineSpeakerDiarizationDestroySegment(segs);
         SherpaOnnxOfflineSpeakerDiarizationDestroyResult(r);
+    }
+
+    // Centroid merge post-pass — only in auto-count mode (a user-forced count is
+    // exact already) and only when FastClustering produced multiple clusters.
+    if (num_clusters <= 0 && impl_->merge_threshold > 0.0f && !out.empty()) {
+        std::map<int, double> talk;
+        for (const auto& seg : out) talk[seg.speaker] += seg.end - seg.start;
+        if (talk.size() > 1) {
+            auto mapping = merge_speaker_clusters(embeddings(audio, out), talk,
+                                                  impl_->merge_threshold);
+            // Relabel, then renumber compactly by first appearance (turns are
+            // sorted by start time, so ids read naturally in the transcript).
+            std::map<int, int> compact;
+            for (auto& seg : out) {
+                int merged = mapping.at(seg.speaker);
+                auto [it, inserted] =
+                    compact.emplace(merged, static_cast<int>(compact.size()));
+                seg.speaker = it->second;
+            }
+        }
     }
     return out;
 }

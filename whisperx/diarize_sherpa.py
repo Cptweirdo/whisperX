@@ -242,12 +242,19 @@ class SherpaDiarizationPipeline:
 def load_sherpa_diarize_model(
     *,
     threads: int = 1,
-    threshold: float = 0.5,
+    threshold: float = 0.7,
     min_duration_on: float = 0.3,
     min_duration_off: float = 0.5,
+    merge_threshold: float = 0.25,
     download_root: Optional[str] = None,
 ) -> SherpaDiarizationPipeline:
-    """Build a :class:`SherpaDiarizationPipeline` (sherpa-onnx diarization on ORT)."""
+    """Build a :class:`SherpaDiarizationPipeline` (sherpa-onnx diarization on ORT).
+
+    threshold/merge_threshold defaults match the native server (config.hpp):
+    FastClustering at 0.5 over-segments real recordings; 0.7 plus the centroid
+    merge post-pass (merge_clusters.hpp, pooled-embedding scale) is the sweep
+    optimum over the golden dialogs + a real 2-speaker call.
+    """
     import whisperx_core  # lazy — only when the diarize token actually loads a model
 
     seg, embed = _resolve_diarize_assets(download_root)
@@ -261,5 +268,6 @@ def load_sherpa_diarize_model(
         threshold=threshold,
         min_duration_on=min_duration_on,
         min_duration_off=min_duration_off,
+        merge_threshold=merge_threshold,
     )
     return SherpaDiarizationPipeline(model=model, threshold=threshold)

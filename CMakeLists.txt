@@ -135,6 +135,7 @@ add_library(whisperx_core_lib STATIC
   core/align/emission_post.cpp
   core/diarize/interval_tree.cpp
   core/diarize/assign_speakers.cpp
+  core/diarize/merge_clusters.cpp
   core/writers/writers.cpp
   core/orchestrate/orchestrate.cpp
   core/asr/blank_audio.cpp
@@ -328,6 +329,7 @@ if(WHISPERX_CORE_TESTS)
     core/tests/test_emission_post.cpp
     core/tests/test_char_clean.cpp
     core/tests/test_assign_speakers.cpp
+    core/tests/test_merge_clusters.cpp
     core/tests/test_writers.cpp
     core/tests/test_orchestrate.cpp
     core/tests/test_blank_audio.cpp)

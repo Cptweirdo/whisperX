@@ -806,11 +806,12 @@ void bind_audio(py::module_& m) {
     // returns. A/B (not parity) with community-1 — judged by speaker-count + DER.
     py::class_<whisperx::diarize::SherpaDiarizer>(m, "SherpaDiarizer")
         .def(py::init<const std::string&, const std::string&, int,
-                      const std::string&, float, float, float>(),
+                      const std::string&, float, float, float, float>(),
              py::arg("segmentation"), py::arg("embedding"),
              py::arg("num_threads") = 1, py::arg("provider") = "cpu",
              py::arg("threshold") = 0.5f, py::arg("min_duration_on") = 0.3f,
-             py::arg("min_duration_off") = 0.5f)
+             py::arg("min_duration_off") = 0.5f,
+             py::arg("merge_threshold") = 0.25f)
         .def(
             "diarize",
             [](whisperx::diarize::SherpaDiarizer& self,

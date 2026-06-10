@@ -109,8 +109,11 @@ def _der(ref, hyp, dur, res=0.01):
 @pytest.fixture(scope="module")
 def diarizer():
     seg, embed = _assets_or_skip()
+    # merge_threshold=0 pins raw FastClustering: this DER ceiling bounds the
+    # clusterer itself, independent of the centroid-merge post-pass defaults.
     return wc.SherpaDiarizer(
-        segmentation=seg, embedding=embed, num_threads=4, threshold=0.5
+        segmentation=seg, embedding=embed, num_threads=4, threshold=0.5,
+        merge_threshold=0.0
     )
 
 
