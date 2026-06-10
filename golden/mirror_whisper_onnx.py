@@ -47,13 +47,17 @@ CONTRACT_VERSION = 1  # bumped if the published layout (meta.json keys) changes.
 # turbo, derived from it) use 128 mels; everything else uses 80.
 FEATURE_DIM = {"large-v3": 128, "large-v3-turbo": 128, "turbo": 128}
 
+# sherpa's release names the turbo export plain "turbo"; we publish it under its
+# canonical name. Download-side alias only — the mirror folder key stays canonical.
+SHERPA_RELEASE_NAME = {"large-v3-turbo": "turbo"}
+
 # A golden clip for the optional self-check (proves the mirrored model loads through
 # WhisperSherpa and produces non-empty English text before upload). en_libri works
 # for any multilingual model; .en-only models would need an English clip too.
 CHECK_CLIP = {
     "tiny": "en_libri", "base": "en_libri", "small": "en_libri",
     "medium": "en_libri", "large-v1": "en_libri", "large-v2": "en_libri",
-    "large-v3": "en_libri",
+    "large-v3": "en_libri", "large-v3-turbo": "en_libri",
 }
 
 
@@ -91,11 +95,12 @@ def _versions() -> dict:
 
 
 def _download_sherpa(model: str, dest: Path) -> Path:
-    """Download + extract the sherpa release tarball into `dest`/sherpa-onnx-whisper-<model>."""
+    """Download + extract the sherpa release tarball into `dest`/sherpa-onnx-whisper-<rel>."""
     import requests
 
-    url = SHERPA_RELEASE.format(model=model)
-    tar_path = dest / f"whisper-{model}.tar.bz2"
+    rel = SHERPA_RELEASE_NAME.get(model, model)
+    url = SHERPA_RELEASE.format(model=rel)
+    tar_path = dest / f"whisper-{rel}.tar.bz2"
     print(f"  downloading {url}")
     with requests.get(url, stream=True, timeout=300) as r:
         r.raise_for_status()
@@ -104,7 +109,7 @@ def _download_sherpa(model: str, dest: Path) -> Path:
                 f.write(chunk)
     with tarfile.open(tar_path, "r:bz2") as tf:
         tf.extractall(dest)
-    out = dest / f"sherpa-onnx-whisper-{model}"
+    out = dest / f"sherpa-onnx-whisper-{rel}"
     if not out.is_dir():
         # some tarballs use a flat layout; fall back to the extract root
         out = dest
@@ -192,7 +197,8 @@ def mirror_one(model: str, *, repo: str, do_upload: bool, do_check: bool,
             "decoder": decoder,
             "tokens": tokens,
             "feature_dim": feature_dim,
-            "source": SHERPA_RELEASE.format(model=model),
+            "source": SHERPA_RELEASE.format(
+                model=SHERPA_RELEASE_NAME.get(model, model)),
             "encoder_sha256": enc_sha,
             "decoder_sha256": _sha256(src / decoder),
             "tokens_sha256": _sha256(src / tokens),
