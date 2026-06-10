@@ -2,14 +2,14 @@
 // the non-blocking OAuth connect flow watched on /backup/events (ports the old
 // watchBackupConnect). All payloads are JSON now (no server-rendered card).
 import { api, urls } from "../api";
-import { openSSE, sseStream } from "../sse";
+import { persistentSSE, sseStream } from "../sse";
 import { notify } from "./toast.svelte";
 import type { BackupStatus } from "../types";
 
 class BackupStore {
   status = $state<BackupStatus | null>(null);
   connecting = $state(false);
-  #es: EventSource | null = null;
+  #stop: (() => void) | null = null;
 
   get linked(): boolean {
     return !!this.status?.linked;
@@ -23,8 +23,8 @@ class BackupStore {
   }
 
   start() {
-    if (this.#es) return;
-    this.#es = openSSE(urls.backupStatusEvents(), (d) => {
+    if (this.#stop) return;
+    this.#stop = persistentSSE(urls.backupStatusEvents(), (d) => {
       if (d.status) this.status = d.status;
     });
   }

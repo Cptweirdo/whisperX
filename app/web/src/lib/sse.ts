@@ -19,6 +19,33 @@ export function openSSE(url: string, onData: (data: any, es: EventSource) => voi
   return es;
 }
 
+/** Open an app-lifetime stream that releases its connection while the tab is
+ *  hidden and reopens on return. Browsers cap HTTP/1.1 at ~6 connections per
+ *  host:port shared across ALL tabs, so ever-open EventSources in background tabs
+ *  starve every other request (fetches queue forever). Both persistent
+ *  endpoints (/models/events, /backup/status/events) replay full state as the
+ *  first frame on connect, so a reopen self-refreshes. Returns stop(). */
+export function persistentSSE(url: string, onData: (data: any) => void): () => void {
+  let es: EventSource | null = null;
+  const open = () => {
+    if (!es) es = openSSE(url, (d) => onData(d));
+  };
+  const close = () => {
+    es?.close();
+    es = null;
+  };
+  const onVisibility = () => {
+    if (document.hidden) close();
+    else open();
+  };
+  document.addEventListener("visibilitychange", onVisibility);
+  if (!document.hidden) open();
+  return () => {
+    document.removeEventListener("visibilitychange", onVisibility);
+    close();
+  };
+}
+
 export interface StreamOpts {
   onData: (data: any) => void;
   /** Optional predicate; when it returns true the stream is closed after the

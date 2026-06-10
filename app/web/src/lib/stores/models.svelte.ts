@@ -3,7 +3,7 @@
 // sidebar device chip, and the "loading models" → "ready" toasts (ported from
 // base.html's models stream consumer).
 import { api, urls } from "../api";
-import { openSSE } from "../sse";
+import { persistentSSE } from "../sse";
 import { notify } from "./toast.svelte";
 import { DEVICE_LABELS } from "../constants";
 import type { ModelMeta, ModelStatus } from "../types";
@@ -11,7 +11,7 @@ import type { ModelMeta, ModelStatus } from "../types";
 class ModelsStore {
   status = $state<ModelStatus | null>(null);
   modelsReady = $state(false);
-  #es: EventSource | null = null;
+  #stop: (() => void) | null = null;
   #loadingToast: HTMLElement | null = null;
   #sawLoading = false;
 
@@ -60,8 +60,8 @@ class ModelsStore {
   }
 
   start() {
-    if (this.#es) return;
-    this.#es = openSSE(urls.modelsEvents(), (d) => this.#onState(d));
+    if (this.#stop) return;
+    this.#stop = persistentSSE(urls.modelsEvents(), (d) => this.#onState(d));
   }
 
   #onState(d: any) {
