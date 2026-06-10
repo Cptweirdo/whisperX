@@ -40,8 +40,13 @@ std::vector<whisperx::vad::VadSegment> silero_segments(
     config.debug = 0;
 
     VadHandle vad;
+    // Buffer headroom: the VAD's internal circular buffer (2nd arg, seconds)
+    // retains the whole in-flight speech run plus look-back windows, so sized
+    // exactly at max_speech_duration (= chunk_size) a continuous run overflows
+    // it ("circular-buffer.cc Push Overflow"). 2x leaves room for the run plus
+    // the silence/look-back margin (sherpa's own default is 60 s vs ~20 s runs).
     vad.p = SherpaOnnxCreateVoiceActivityDetector(
-        &config, static_cast<float>(chunk_size));
+        &config, static_cast<float>(chunk_size) * 2.0f);
     if (!vad.p)
         throw std::runtime_error(
             "failed to create silero VAD (model: " + model_path + ")");

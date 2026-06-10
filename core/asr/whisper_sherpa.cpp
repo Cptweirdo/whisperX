@@ -191,8 +191,12 @@ std::vector<AsrChunk> WhisperSherpa::transcribe(
 
 std::string WhisperSherpa::detect_language(
     const whisperx::audio::AudioBuffer& audio) {
-    // First 30 s (kNSamples), the window FasterWhisperPipeline.detect_language uses.
-    std::span<const float> s = audio.slice(0, whisperx::audio::kNSamples);
+    // FasterWhisperPipeline.detect_language uses the first 30 s (kNSamples), but
+    // a full kNSamples wave plus sherpa's tail padding overflows its 30 s circular
+    // buffer (circular-buffer.cc Push overflow) and trips the "waves less than 30
+    // seconds" truncation in DecodeStream — so cap to the same sub-30 s window as
+    // decode_capped.
+    std::span<const float> s = audio.slice(0, kMaxDecodeSamples);
     return impl_->detect(s.data(), static_cast<int32_t>(s.size()));
 }
 
