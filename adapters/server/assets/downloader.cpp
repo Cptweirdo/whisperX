@@ -5,6 +5,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <system_error>
 
 #include <archive.h>
@@ -48,9 +49,19 @@ std::optional<std::string> env(const char* key) {
 
 std::shared_ptr<spdlog::logger> logger() { return log::get("downloader"); }
 
-// libcurl options carrying the HF bearer token when one is resolvable.
-net::Options auth_opts() {
+// No overall timeout for asset downloads: model files are hundreds of MB to
+// multi-GB, and the request default (Options.timeout_s = 60) aborts them
+// mid-transfer on ordinary links (upload_file opts out the same way).
+net::Options download_opts() {
     net::Options o;
+    o.timeout_s = 0;
+    return o;
+}
+
+// download_opts + the HF bearer token when one is resolvable. HF mirror fetches
+// only — never send the token to other hosts (github release fallbacks).
+net::Options auth_opts() {
+    net::Options o = download_opts();
     if (auto b = net::bearer_header(secrets::resolve_hf_token()))
         o.headers.push_back(*b);
     return o;
@@ -66,6 +77,11 @@ std::optional<fs::path> fetch_file(const std::string& repo,
     long st = net::download_to_file(hf_url(repo, rel_path), dest.string(),
                                     auth_opts());
     if (st >= 200 && st < 300) return dest;
+    // 404 is an expected mirror miss (callers log the fallback); anything else
+    // (timeout, 5xx, auth) would otherwise surface as "not found locally".
+    if (st != 404)
+        logger()->warn("mirror download failed (HTTP {}): {}/{}", st, repo,
+                       rel_path);
     return std::nullopt;
 }
 
@@ -151,7 +167,7 @@ std::optional<fs::path> fetch_release_tarball(const std::string& url,
     std::error_code ec;
     fs::create_directories(cache, ec);
     logger()->info("Downloading sherpa release tarball: {}", url);
-    long st = net::download_to_file(url, tmp.string());
+    long st = net::download_to_file(url, tmp.string(), download_opts());
     if (st < 200 || st >= 300) {
         logger()->warn("tarball download failed (HTTP {}): {}", st, url);
         std::remove(tmp.string().c_str());
@@ -174,6 +190,11 @@ std::string hf_url(const std::string& repo, const std::string& rel_path,
 fs::path cache_root() {
     if (auto c = env("WHISPERX_SHERPA_CACHE")) return fs::path(*c);
     if (auto h = env("HOME")) return fs::path(*h) / ".cache" / "whisperx-sherpa";
+    // Windows: HOME is usually unset; USERPROFILE is the home dir (matches
+    // Python's Path.home(), so both runtimes share one cache). Temp is a last
+    // resort only — multi-GB models would vanish on temp cleanup.
+    if (auto p = env("USERPROFILE"))
+        return fs::path(*p) / ".cache" / "whisperx-sherpa";
     return fs::temp_directory_path() / "whisperx-sherpa";
 }
 
@@ -295,7 +316,8 @@ std::optional<fs::path> ensure_align_dir(const std::string& language) {
     return onnx->parent_path();
 }
 
-std::optional<whisperx::server::models::DiarizeAssets> ensure_diarize() {
+static std::optional<whisperx::server::models::DiarizeAssets>
+ensure_diarize_uncached() {
     using whisperx::server::models::DiarizeAssets;
 
     // 1. Mirror: meta.json names segmentation + embedding.
@@ -335,10 +357,33 @@ std::optional<whisperx::server::models::DiarizeAssets> ensure_diarize() {
     fs::path embed = cache_root() / "wespeaker_en_voxceleb_CAM++.onnx";
     if (!fs::exists(embed, ec)) {
         logger()->info("Downloading sherpa embedding: {}", EMBED_RELEASE);
-        long st = net::download_to_file(EMBED_RELEASE, embed.string());
+        long st = net::download_to_file(EMBED_RELEASE, embed.string(),
+                                        download_opts());
         if (st < 200 || st >= 300) return std::nullopt;
     }
     return DiarizeAssets{seg.string(), embed.string()};
+}
+
+std::optional<whisperx::server::models::DiarizeAssets> ensure_diarize() {
+    using whisperx::server::models::DiarizeAssets;
+
+    // Memoize success: ModelManager::status_locked() resolves diarize assets on
+    // every /api/models build and SSE notify_change, which otherwise re-parses
+    // meta.json and logs "resolved from mirror" once per poll. Failure is not
+    // cached so an offline start can still resolve later.
+    static std::mutex cache_mu;
+    static std::optional<DiarizeAssets> cached;
+    {
+        std::lock_guard<std::mutex> lk(cache_mu);
+        if (cached) return cached;
+    }
+
+    auto resolved = ensure_diarize_uncached();
+    if (resolved) {
+        std::lock_guard<std::mutex> lk(cache_mu);
+        cached = resolved;
+    }
+    return resolved;
 }
 
 }  // namespace whisperx::server::assets
