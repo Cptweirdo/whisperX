@@ -9,6 +9,7 @@ build matrix lives in one place (CMake's, not a pile of shell snippets).
     python scripts/devenv.py build server    # configure + build a preset
     python scripts/devenv.py test server     # ctest a preset
     python scripts/devenv.py run             # launch whisperx_server (sets lib path)
+    python scripts/devenv.py purge           # delete the local session DB + audio
 
 Presets: dev (dep-free fast lane) · audio · server · server-vcpkg ·
 server-cuda · server-vcpkg-cuda (GPU ONNX Runtime; see docs/WINDOWS_CUDA.md).
@@ -242,6 +243,32 @@ def cmd_test(args) -> int:
 
 
 # --- run ---------------------------------------------------------------------
+def _ensure_spa() -> int:
+    """Build the Svelte SPA if missing (port of app/start.sh's build-if-absent).
+
+    The server 500s UI routes without app/static/spa/index.html. Missing bun is
+    a warning, not an error — the JSON API works without the SPA.
+    """
+    web = ROOT / "app" / "web"
+    index = ROOT / "app" / "static" / "spa" / "index.html"
+    if index.exists():
+        return 0
+    bun = have("bun")
+    if not bun:
+        print(warn("SPA not built and bun not found — UI routes will 500. "
+                   "Install bun (https://bun.sh) or run: "
+                   "cd app/web && bun run build"))
+        return 0
+    print(head("SPA not built — building app/web → app/static/spa…"))
+    if not (web / "node_modules").exists():
+        rc = run([bun, "install"], cwd=web)
+        if rc:
+            return rc
+    # --bun: run vite under bun itself, not the system node (the .bin shim
+    # would otherwise pick up whatever node is on PATH — too old here).
+    return run([bun, "run", "--bun", "build"], cwd=web)
+
+
 def _runtime_lib_dirs() -> list[Path]:
     """Dirs holding the shared libs the server dlopens (oatpp + onnxruntime)."""
     dirs = [BUILD / "lib", BUILD / "_deps" / "oatpp-build" / "src"]
@@ -267,6 +294,9 @@ def cmd_run(args) -> int:
         print(bad(f"{exe} not found. ") + "Build first: " +
               head("python scripts/devenv.py build server"))
         return 1
+    rc = _ensure_spa()
+    if rc:
+        return rc
     env = os.environ.copy()
     dirs = [str(d) for d in _runtime_lib_dirs()]
     if OS == "Windows":
@@ -281,6 +311,55 @@ def cmd_run(args) -> int:
     print(head(f"Serving on http://127.0.0.1:{env['WHISPERX_PORT']} "
                f"(model={env['WHISPERX_MODEL']}, data={env['WHISPERX_DATA_DIR']})"))
     return run([str(exe), *args.server_args], env=env)
+
+
+# --- purge -------------------------------------------------------------------
+def cmd_purge(args) -> int:
+    """Delete the session DB (sessions + settings) and stored audio.
+
+    Only the named session artifacts are removed — anything else in the data dir
+    (notably .env, which config.cpp loads) is left alone.
+    """
+    data = Path(os.environ.get("WHISPERX_DATA_DIR", str(ROOT / ".devdata")))
+    targets = [data / n for n in
+               ("sessions.db", "sessions.db-wal", "sessions.db-shm", "sessions")]
+    existing = [t for t in targets if t.exists()]
+    if not existing:
+        print(ok(f"Nothing to purge — no session data under {data}"))
+        return 0
+
+    def size(p: Path) -> int:
+        if p.is_dir():
+            return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+        return p.stat().st_size
+
+    print(head(f"Session data under {data}:"))
+    total = 0
+    for t in existing:
+        s = size(t)
+        total += s
+        print(f"  {t.name + ('/' if t.is_dir() else ''):<16} {s / (1 << 20):8.1f} MiB")
+    print(f"  {'total':<16} {total / (1 << 20):8.1f} MiB")
+
+    if not args.yes:
+        try:
+            answer = input(warn(
+                "Delete all sessions, settings and stored audio? [y/N] "))
+        except EOFError:
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Aborted — nothing deleted.")
+            return 1
+
+    for t in existing:
+        try:
+            shutil.rmtree(t) if t.is_dir() else t.unlink()
+        except OSError as e:
+            print(bad(f"Could not delete {t}: {e}"))
+            print("Is the server still running? Stop it and re-run.")
+            return 1
+    print(ok("Purged."))
+    return 0
 
 
 def main() -> int:
@@ -309,10 +388,17 @@ def main() -> int:
                    help="dev | audio | server (default: server)")
     t.set_defaults(func=cmd_test)
 
-    r = sub.add_parser("run", help="launch whisperx_server with the lib path set")
+    r = sub.add_parser("run", help="launch whisperx_server (builds the SPA if "
+                                   "missing, sets the lib path)")
     r.add_argument("server_args", nargs="*",
                    help="extra args forwarded to whisperx_server")
     r.set_defaults(func=cmd_run)
+
+    pg = sub.add_parser("purge", help="delete the local session DB (sessions, "
+                                      "settings) + stored audio, after confirming")
+    pg.add_argument("-y", "--yes", action="store_true",
+                    help="skip the confirmation prompt")
+    pg.set_defaults(func=cmd_purge)
 
     args = p.parse_args()
     return args.func(args)
