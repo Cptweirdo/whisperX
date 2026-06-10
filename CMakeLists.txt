@@ -287,9 +287,12 @@ if(WHISPERX_CORE_AUDIO)
   # Phase 6: end-to-end native run_job bench (per-stage RTF + RSS-over-N-jobs).
   # Drives the real orchestrate::run_job over the native engines; same chrono /
   # no-Google-Benchmark style. nlohmann_json for the meta.json read + JSON emit.
-  add_executable(bench_run_job bench/bench_run_job.cpp)
-  target_link_libraries(bench_run_job PRIVATE
-    whisperx_core_audio nlohmann_json::nlohmann_json)
+  # Linux-only: RSS sampling reads /proc/self/statm + sysconf(_SC_PAGESIZE).
+  if(NOT WIN32)
+    add_executable(bench_run_job bench/bench_run_job.cpp)
+    target_link_libraries(bench_run_job PRIVATE
+      whisperx_core_audio nlohmann_json::nlohmann_json)
+  endif()
 endif()
 
 # --- pybind11 oracle module --------------------------------------------------
