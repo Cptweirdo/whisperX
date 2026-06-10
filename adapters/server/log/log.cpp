@@ -40,6 +40,9 @@ void do_init(const std::string& data_dir, const std::string& level) {
     spdlog::set_default_logger(def);
     spdlog::set_level(g_level);
     spdlog::flush_on(spdlog::level::warn);
+    // Info lines (stage progress, "Listening on …") would otherwise sit in the
+    // stdio buffer until exit, leaving the log file looking dead mid-run.
+    spdlog::flush_every(std::chrono::seconds(3));
 }
 }  // namespace
 
