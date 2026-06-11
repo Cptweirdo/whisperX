@@ -52,6 +52,16 @@ if(WHISPERX_ENABLE_GPU AND NOT WHISPERX_CORE_AUDIO)
   message(FATAL_ERROR "WHISPERX_ENABLE_GPU requires WHISPERX_CORE_AUDIO (the GPU "
                       "provider only matters for the ASR/align/diarize compute chain).")
 endif()
+# whisper.cpp + GGML Metal as a second ASR backend (METAL_INTEGRATION.md Route B).
+# A separate engine dimension (ggml .bin assets, not ONNX), orthogonal to the Device
+# enum — selected at runtime by AsrBackend / WHISPERX_ASR_BACKEND. OFF by default; ON
+# pulls whisper.cpp via FetchContent and defines WHISPERX_WHISPERCPP_BUILD (which gates
+# the WhisperCpp engine + the whispercpp_available probe). Requires the audio chain.
+option(WHISPERX_ENABLE_WHISPERCPP "Build the whisper.cpp + GGML Metal ASR backend" OFF)
+if(WHISPERX_ENABLE_WHISPERCPP AND NOT WHISPERX_CORE_AUDIO)
+  message(FATAL_ERROR "WHISPERX_ENABLE_WHISPERCPP requires WHISPERX_CORE_AUDIO (it is "
+                      "an alternate Stage-1 ASR engine in the compute chain).")
+endif()
 
 # sherpa-onnx FORCE-writes BUILD_SHARED_LIBS=ON into the CMake *cache* (its own
 # CMakeLists), which would silently flip the early deps below (utf8proc) to
@@ -225,20 +235,6 @@ if(WHISPERX_CORE_AUDIO)
   # sherpa bundles its own nlohmann_json (v3.12) and unconditionally
   # add_subdirectory()s it — which collides with our nlohmann_json target.
   # Populate manually and guard that one line so sherpa reuses ours.
-  # simple-sentencepiece (sherpa sub-dep) uses std::result_of which was removed
-  # in C++20. Patch it each configure so it's fixed before the build runs.
-  # The file only exists after the first sherpa-onnx populate, so a fresh clean
-  # build requires one configure-build-reconfigure cycle if the patch fires late.
-  set(_sp_threadpool
-    "${CMAKE_BINARY_DIR}/_deps/simple-sentencepiece-src/ssentencepiece/csrc/threadpool.h")
-  if(EXISTS "${_sp_threadpool}")
-    file(READ "${_sp_threadpool}" _sp_tp)
-    string(REPLACE
-      "typename std::result_of<F(Args...)>::type"
-      "std::invoke_result_t<F, Args...>"
-      _sp_tp "${_sp_tp}")
-    file(WRITE "${_sp_threadpool}" "${_sp_tp}")
-  endif()
   FetchContent_GetProperties(sherpa_onnx)
   if(NOT sherpa_onnx_POPULATED)
     FetchContent_Populate(sherpa_onnx)
@@ -273,6 +269,44 @@ if(WHISPERX_CORE_AUDIO)
     endforeach()
     add_subdirectory(${sherpa_onnx_SOURCE_DIR} ${sherpa_onnx_BINARY_DIR}
       EXCLUDE_FROM_ALL)
+    # simple-sentencepiece (a sherpa sub-dep, fetched by the add_subdirectory above)
+    # uses std::result_of, removed in C++20. libstdc++ tolerates it; macOS libc++
+    # hard-errors (and derails the include into spurious <filesystem> errors). Patch
+    # the file now — it exists post-populate, and ninja only reads it at build time,
+    # so this fixes a clean one-pass build. Idempotent: the REPLACE no-ops once done.
+    set(_sp_threadpool
+      "${CMAKE_BINARY_DIR}/_deps/simple-sentencepiece-src/ssentencepiece/csrc/threadpool.h")
+    if(EXISTS "${_sp_threadpool}")
+      file(READ "${_sp_threadpool}" _sp_tp)
+      string(REPLACE
+        "typename std::result_of<F(Args...)>::type"
+        "std::invoke_result_t<F, Args...>"
+        _sp_tp "${_sp_tp}")
+      file(WRITE "${_sp_threadpool}" "${_sp_tp}")
+    endif()
+  endif()
+
+  # whisper.cpp + GGML (Route B Stage-1 engine). Vendored from source like sherpa;
+  # ggml brings the Metal backend (default on Apple). EMBED_LIBRARY bakes the Metal
+  # shader into the binary so there is no runtime .metallib lookup. BUILD_SHARED_LIBS
+  # is ON here (sherpa block) — whisper/ggml follow it; no ORT symbol overlap (ggml is
+  # a separate runtime), but the macOS link is verified in the build.
+  set(_wx_whispercpp_src "")
+  set(_wx_whispercpp_lib "")
+  if(WHISPERX_ENABLE_WHISPERCPP)
+    set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+    set(GGML_METAL ${APPLE} CACHE BOOL "" FORCE)
+    set(GGML_METAL_EMBED_LIBRARY ${APPLE} CACHE BOOL "" FORCE)
+    set(GGML_ACCELERATE ${APPLE} CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+      whisper_cpp
+      GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp
+      GIT_TAG v1.8.6)
+    FetchContent_MakeAvailable(whisper_cpp)
+    list(APPEND _wx_whispercpp_src core/asr/whisper_cpp.cpp)
+    list(APPEND _wx_whispercpp_lib whisper)
   endif()
 
   add_library(whisperx_core_audio STATIC
@@ -281,7 +315,8 @@ if(WHISPERX_CORE_AUDIO)
     core/align/wav2vec2_onnx.cpp
     core/align/align_driver.cpp
     core/asr/whisper_sherpa.cpp
-    core/diarize/diarize_sherpa.cpp)
+    core/diarize/diarize_sherpa.cpp
+    ${_wx_whispercpp_src})
   target_include_directories(whisperx_core_audio PUBLIC core)
   # ORT C++ headers (onnxruntime_cxx_api.h) reach wav2vec2_onnx.cpp transitively via
   # sherpa-onnx-c-api's interface includes; the shared libonnxruntime.so is linked by
@@ -290,8 +325,12 @@ if(WHISPERX_CORE_AUDIO)
   # here. Shared (not the static archive) per the 2B heap-corruption finding.
   target_link_libraries(whisperx_core_audio PUBLIC
     whisperx_core_lib nlohmann_json::nlohmann_json PkgConfig::FFMPEG
-    sherpa-onnx-c-api ${location_onnxruntime})
+    sherpa-onnx-c-api ${location_onnxruntime} ${_wx_whispercpp_lib})
   target_compile_definitions(whisperx_core_audio PUBLIC WHISPERX_CORE_AUDIO)
+  # PUBLIC so consumers (model_manager.cpp's backend branch + status probe) also see it.
+  if(WHISPERX_ENABLE_WHISPERCPP)
+    target_compile_definitions(whisperx_core_audio PUBLIC WHISPERX_WHISPERCPP_BUILD)
+  endif()
   target_compile_options(whisperx_core_audio PRIVATE -Wall -Wextra)
   set_target_properties(whisperx_core_audio PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

@@ -215,6 +215,32 @@ TEST_CASE("parse_precision accepts fp16/fp32/int8 (any case), rejects junk",
         CHECK(parse_precision(to_string(p)) == p);
 }
 
+TEST_CASE("parse_asr_backend accepts sherpa/whispercpp aliases, rejects junk",
+          "[config]") {
+    CHECK(parse_asr_backend("sherpa") == AsrBackend::Sherpa);
+    CHECK(parse_asr_backend("sherpa-onnx") == AsrBackend::Sherpa);
+    CHECK(parse_asr_backend("whispercpp") == AsrBackend::WhisperCpp);
+    CHECK(parse_asr_backend("whisper.cpp") == AsrBackend::WhisperCpp);
+    CHECK(parse_asr_backend("whisper-cpp") == AsrBackend::WhisperCpp);
+    CHECK(parse_asr_backend("WhisperCpp") == AsrBackend::WhisperCpp);
+    CHECK_FALSE(parse_asr_backend("").has_value());
+    CHECK_FALSE(parse_asr_backend("mlx").has_value());
+    CHECK_FALSE(parse_asr_backend("coreml").has_value());  // a Device, not a backend
+    for (auto b : {AsrBackend::Sherpa, AsrBackend::WhisperCpp})
+        CHECK(parse_asr_backend(to_string(b)) == b);
+}
+
+TEST_CASE("WHISPERX_ASR_BACKEND defaults to sherpa, garbage falls back",
+          "[config]") {
+    ::unsetenv("WHISPERX_ASR_BACKEND");
+    CHECK(load_config().asr_backend == AsrBackend::Sherpa);
+    ::setenv("WHISPERX_ASR_BACKEND", "whispercpp", 1);
+    CHECK(load_config().asr_backend == AsrBackend::WhisperCpp);
+    ::setenv("WHISPERX_ASR_BACKEND", "bogus", 1);
+    CHECK(load_config().asr_backend == AsrBackend::Sherpa);
+    ::unsetenv("WHISPERX_ASR_BACKEND");
+}
+
 TEST_CASE("WHISPERX_ASR_PRECISION defaults to fp16, garbage falls back",
           "[config]") {
     ::unsetenv("WHISPERX_ASR_PRECISION");

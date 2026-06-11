@@ -23,8 +23,10 @@
 #include <nlohmann/json.hpp>
 
 #include "align/wav2vec2_onnx.hpp"
+#include "asr/asr_engine.hpp"     // AsrEngine (backend-neutral handle)
+#include "asr/whisper_cpp.hpp"    // WhisperCpp (impl gated by WHISPERX_WHISPERCPP_BUILD)
 #include "asr/whisper_sherpa.hpp"
-#include "config.hpp"  // Device
+#include "config.hpp"  // Device, AsrBackend
 #include "diarize/diarize_sherpa.hpp"
 
 namespace whisperx::server::models {
@@ -65,17 +67,22 @@ public:
     // GPU throughput, the cost is VRAM per row).
     // asr_precision: Whisper variant on GPU devices (WHISPERX_ASR_PRECISION);
     // Cpu always loads int8-preferred (config.hpp Precision comment).
+    // asr_backend: Stage-1 engine — Sherpa (ONNX/ORT, default) or WhisperCpp (Metal).
+    // ggml_quant / flash_attn apply only to the WhisperCpp backend.
     ModelManager(std::string active, Device device, OnChange on_change = nullptr,
                  DiarizeTuning diarize_tuning = {}, int asr_batch_size = 1,
-                 Precision asr_precision = Precision::Fp16);
+                 Precision asr_precision = Precision::Fp16,
+                 AsrBackend asr_backend = AsrBackend::Sherpa,
+                 std::string ggml_quant = "", bool whispercpp_flash_attn = false);
 
     std::string active();
     json status();
 
-    // Load (or return cached) the WhisperSherpa for `name`; blocks while loading.
+    // Load (or return cached) the ASR engine for `name`; blocks while loading.
     // Throws std::runtime_error if the assets can't be resolved / the model fails.
-    // Returns a shared_ptr so a job holding it survives a device-switch eviction.
-    std::shared_ptr<whisperx::asr::WhisperSherpa> load_asr(const std::string& name);
+    // Returns a shared_ptr (to the AsrEngine base — sherpa or whisper.cpp) so a job
+    // holding it survives a device/backend-switch eviction.
+    std::shared_ptr<whisperx::asr::AsrEngine> load_asr(const std::string& name);
     // Load `name` in a background thread (non-blocking) — boot/active warm.
     void warm(const std::string& name);
     // Set the active model and warm it. Returns status().
@@ -89,10 +96,20 @@ public:
     // shared_ptrs so a racing job stays safe regardless. Returns status().
     json set_device(Device dev);
 
+    // Switch the Stage-1 ASR backend at runtime (sherpa ↔ whisper.cpp). Same
+    // atomic rebuild-then-evict contract as set_device: the active model is rebuilt
+    // on the new backend before the old caches drop, rolling back on failure. Returns
+    // status(). Throws if the target backend isn't available in this build.
+    json set_asr_backend(AsrBackend backend);
+
     // Whether `dev` can be selected in this build/on this machine: Cpu always,
     // Cuda/CoreML per the cached ORT provider probes. The single gate behind
     // /api/device and onboarding (replaces per-endpoint cuda-only checks).
     static bool device_available(Device dev);
+
+    // Whether `backend` can be selected: Sherpa always; WhisperCpp only in a
+    // WHISPERX_WHISPERCPP_BUILD. The gate behind /api/asr_backend.
+    static bool asr_backend_available(AsrBackend backend);
 
     // The shared diarizer, loaded once from local assets, or nullptr if none are
     // available (transcribe + align only — mirrors ensure_diarize returning None).
@@ -112,9 +129,12 @@ private:
     // Whether the CoreML EP is linked in (Apple builds only). Cached probe via
     // whisperx::align::ort_coreml_available(); false everywhere else.
     static bool coreml_available();
-    // Resolve assets + construct a WhisperSherpa for `name` on `dev`. No cache
-    // mutation — shared by load_asr and set_device's atomic rebuild. Throws on failure.
-    std::shared_ptr<whisperx::asr::WhisperSherpa> build_asr_engine(
+    // Whether the whisper.cpp backend is compiled in (WHISPERX_WHISPERCPP_BUILD).
+    static bool whispercpp_available();
+    // Resolve assets + construct the ASR engine for `name` on `dev` with the current
+    // asr_backend_. No cache mutation — shared by load_asr and the set_device /
+    // set_asr_backend atomic rebuilds. Throws on failure.
+    std::shared_ptr<whisperx::asr::AsrEngine> build_asr_engine(
         const std::string& name, Device dev);
 
     struct AlignEntry {
@@ -125,7 +145,7 @@ private:
 
     std::mutex lock_;       // guards the maps / active / status
     std::mutex load_lock_;  // held only during a heavy model load
-    std::map<std::string, std::shared_ptr<whisperx::asr::WhisperSherpa>> asr_;
+    std::map<std::string, std::shared_ptr<whisperx::asr::AsrEngine>> asr_;
     std::set<std::string> loading_;
     std::map<std::string, std::string> errors_;
     std::shared_ptr<whisperx::diarize::SherpaDiarizer> diarize_;
@@ -134,10 +154,13 @@ private:
     std::map<std::string, AlignEntry> align_;
     std::string active_;
     Device device_ = Device::Cpu;  // guarded by lock_; mutated only by set_device
+    AsrBackend asr_backend_ = AsrBackend::Sherpa;  // guarded by lock_; set_asr_backend
     OnChange on_change_;
     DiarizeTuning diarize_tuning_;  // immutable after construction
     int asr_batch_size_ = 1;        // immutable after construction
     Precision asr_precision_ = Precision::Fp16;  // immutable after construction
+    std::string ggml_quant_;        // immutable; whisper.cpp quant suffix
+    bool whispercpp_flash_attn_ = false;  // immutable; whisper.cpp flash-attn
 };
 
 }  // namespace whisperx::server::models

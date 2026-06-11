@@ -48,6 +48,18 @@ std::optional<Precision> parse_precision(const std::string& s);
 // plain unsuffixed ones).
 const char* to_string(Precision p);
 
+// Stage-1 ASR engine (METAL_INTEGRATION.md Route B). Orthogonal to Device: Sherpa is
+// the ONNX/ORT engine (honors the cpu/cuda/coreml provider); WhisperCpp is whisper.cpp
+// on the Metal GPU (ggml .bin assets, its own use_gpu — the Device knob is moot for
+// Stage 1 under it). WhisperCpp is only selectable in a WHISPERX_WHISPERCPP_BUILD.
+enum class AsrBackend { Sherpa, WhisperCpp };
+
+// Parse "sherpa"/"sherpa-onnx" | "whispercpp"/"whisper.cpp"/"whisper-cpp"
+// (case-insensitive); nullopt otherwise.
+std::optional<AsrBackend> parse_asr_backend(const std::string& s);
+// Canonical lowercase name ("sherpa" | "whispercpp").
+const char* to_string(AsrBackend b);
+
 // Load the .env chain into the process environment (real env always wins). Call
 // once at startup before reading any config. `exe_dir` is where the binary lives
 // (for the dev/defaults .env files); pass argv[0]'s directory.
@@ -82,6 +94,14 @@ struct Config {
     // of fp32, tensor cores, WER-equal on the goldens). Cpu ignores this and
     // stays int8-preferred — see the Precision enum comment.
     Precision asr_precision = Precision::Fp16;  // WHISPERX_ASR_PRECISION
+    // Stage-1 ASR engine. Sherpa (ONNX) is the default; WhisperCpp (Metal) is the
+    // Apple-GPU route. Persisted setting wins after first boot (like device).
+    AsrBackend asr_backend = AsrBackend::Sherpa;  // WHISPERX_ASR_BACKEND
+    // whisper.cpp ggml quantization suffix ("" = fp16, "q5_0", "q8_0", …): selects
+    // ggml-<model>-<quant>.bin from the mirror. Decode-throughput lever on Metal.
+    std::string ggml_quant;  // WHISPERX_GGML_QUANT
+    // whisper.cpp flash-attention (faster, slightly more memory). WhisperCpp only.
+    bool whispercpp_flash_attn = false;  // WHISPERX_WHISPERCPP_FLASH_ATTN
     long long_audio_warn_s = 2 * 3600;  // WHISPERX_LONG_AUDIO_WARN_S (pipeline.py:211)
     std::string log_level = "info";     // WHISPERX_LOG_LEVEL
     std::string spa_dir;         // app/static/spa (built SPA); WHISPERX_SPA_DIR override

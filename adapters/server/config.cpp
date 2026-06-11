@@ -154,6 +154,32 @@ const char* to_string(Precision p) {
     return "fp16";
 }
 
+std::optional<AsrBackend> parse_asr_backend(const std::string& s) {
+    std::string v;
+    v.reserve(s.size());
+    for (char ch : s) v.push_back(static_cast<char>(std::tolower(ch)));
+    if (v == "sherpa" || v == "sherpa-onnx") return AsrBackend::Sherpa;
+    if (v == "whispercpp" || v == "whisper.cpp" || v == "whisper-cpp")
+        return AsrBackend::WhisperCpp;
+    return std::nullopt;
+}
+
+const char* to_string(AsrBackend b) {
+    switch (b) {
+        case AsrBackend::Sherpa:     return "sherpa";
+        case AsrBackend::WhisperCpp: return "whispercpp";
+    }
+    return "sherpa";
+}
+
+// "1" | "true" | "yes" | "on" (case-insensitive) → true; everything else false.
+static bool parse_bool(const std::string& s, bool def) {
+    if (s.empty()) return def;
+    std::string v;
+    for (char ch : s) v.push_back(static_cast<char>(std::tolower(ch)));
+    return v == "1" || v == "true" || v == "yes" || v == "on";
+}
+
 Config load_config() {
     Config c;
     c.data_dir = data_dir();
@@ -165,6 +191,11 @@ Config load_config() {
     c.asr_batch_size = env_long("WHISPERX_ASR_BATCH_SIZE", 1);
     c.asr_precision = parse_precision(env_str("WHISPERX_ASR_PRECISION", "fp16"))
                           .value_or(Precision::Fp16);
+    c.asr_backend = parse_asr_backend(env_str("WHISPERX_ASR_BACKEND", "sherpa"))
+                        .value_or(AsrBackend::Sherpa);
+    c.ggml_quant = env_str("WHISPERX_GGML_QUANT", "");
+    c.whispercpp_flash_attn =
+        parse_bool(env_str("WHISPERX_WHISPERCPP_FLASH_ATTN", ""), false);
     c.long_audio_warn_s = env_long("WHISPERX_LONG_AUDIO_WARN_S", 2 * 3600);
     c.log_level = env_str("WHISPERX_LOG_LEVEL", "info");
     c.active_model = env_str("WHISPERX_MODEL", "small");

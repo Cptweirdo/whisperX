@@ -29,6 +29,9 @@ namespace {
 constexpr const char* WHISPER_REPO = "KonstantK/whisper-onnx-sherpa";
 constexpr const char* ALIGN_REPO = "KonstantK/wav2vec2-align-onnx";
 constexpr const char* DIARIZE_REPO = "KonstantK/diarize-onnx-sherpa";
+// whisper.cpp ggml weights — the official upstream repo (METAL_INTEGRATION.md
+// Route B), not a KonstantK mirror: ggml-<model>[-quant].bin live at its root.
+constexpr const char* GGML_WHISPER_REPO = "ggerganov/whisper.cpp";
 
 // sherpa-onnx official release fallbacks (asr_sherpa.py:45 / diarize_sherpa.py:46).
 constexpr const char* SHERPA_WHISPER_RELEASE =
@@ -362,6 +365,22 @@ std::optional<fs::path> ensure_align_dir(const std::string& language) {
     logger()->info("Align '{}' ({}) resolved from mirror {}", language, folder,
                    ALIGN_REPO);
     return onnx->parent_path();
+}
+
+std::optional<fs::path> ensure_ggml_whisper(const std::string& model_name,
+                                            const std::string& quant) {
+    const std::string key = map_model(model_name);  // turbo → large-v3-turbo
+    const std::string fname =
+        "ggml-" + key + (quant.empty() ? "" : "-" + quant) + ".bin";
+    auto path = fetch_file(GGML_WHISPER_REPO, fname);
+    if (!path) {
+        logger()->warn("whisper.cpp ggml '{}' not found in {}", fname,
+                       GGML_WHISPER_REPO);
+        return std::nullopt;
+    }
+    logger()->info("whisper.cpp ggml '{}' resolved from {}", fname,
+                   GGML_WHISPER_REPO);
+    return path;
 }
 
 static std::optional<whisperx::server::models::DiarizeAssets>

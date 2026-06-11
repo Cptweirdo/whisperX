@@ -109,7 +109,7 @@ RunSession make_run_session(whisperx::db::SessionStore& store,
         // --- resident engines (load on demand; shared diarizer/align) --------
         // shared_ptrs held for the whole job: a runtime device switch may evict
         // the manager's caches mid-flight; these refs keep our engines alive.
-        std::shared_ptr<whisperx::asr::WhisperSherpa> asr = manager.load_asr(model);
+        std::shared_ptr<whisperx::asr::AsrEngine> asr = manager.load_asr(model);
         std::shared_ptr<wd::SherpaDiarizer> diarizer = manager.ensure_diarize();
         int num_clusters = 0;
         if (max_speakers)

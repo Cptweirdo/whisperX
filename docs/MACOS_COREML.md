@@ -1,10 +1,13 @@
 # macOS / CoreML — build & benchmark run-book
 
-Companion to `METAL_INTEGRATION.md`. Phases 0–1 of that brief are **speculatively
-implemented** on this branch (written and unit-tested on Linux, never executed on a
-Mac). This is the checklist for the first Apple Silicon session: get a build, get an
-honest CPU baseline, then run the CPU-vs-CoreML side-by-side and decide whether the
-CoreML device is worth keeping.
+Companion to `METAL_INTEGRATION.md`. Phases 0–1 of that brief were written and
+unit-tested on Linux. **Build + test + boot on Apple Silicon now confirmed** (arm64,
+macOS 15 / Darwin 25.5, 2026-06-11): `whisperx_server` links ORT 1.24.4, boots,
+`GET /api/models` reports `coreml_available: true`, and `ctest --preset server-macos`
+is **204/204 green**. Still **not** done on a Mac: the CPU RTF baseline and the
+CPU-vs-CoreML side-by-side. This is the checklist for that: get the honest CPU
+baseline, then run CoreML side-by-side and decide whether the CoreML device is worth
+keeping.
 
 Expectation setting up front: the evidence (sherpa-onnx#2910, ORT dynamic-shape
 issues #14212/#16934, sherpa's legacy `flags=0`/NeuralNetwork append path) predicts
@@ -44,15 +47,30 @@ verbose toggle, short of patching sherpa.
 
 ### Phase 0 — build + CPU baseline
 
-1. Deps: `brew install ffmpeg ninja cmake` (curl/libarchive come with macOS; if
-   CMake can't find them, `brew install curl libarchive`).
+1. Deps: `brew install ffmpeg ninja cmake`. `curl`/`libarchive` are keg-only in
+   Homebrew, so point CMake/pkg-config at them (CURL otherwise resolves to the Xcode
+   SDK tbd, which also works; LibArchive needs the brew prefix):
+   ```bash
+   export PKG_CONFIG_PATH="/opt/homebrew/opt/curl/lib/pkgconfig:/opt/homebrew/opt/libarchive/lib/pkgconfig:$PKG_CONFIG_PATH"
+   export CMAKE_PREFIX_PATH="/opt/homebrew/opt/curl:/opt/homebrew/opt/libarchive:$CMAKE_PREFIX_PATH"
+   ```
 2. ```bash
    cmake --preset server-macos
-   cmake --build --preset server-macos
-   ctest --preset server-macos
+   cmake --build --preset server-macos        # target whisperx_server links cleanly
+   ctest --preset server-macos                 # NOT yet run on a Mac
    ```
-   This is the **first ever macOS build of this tree** — expect small breakage
-   (linker flags, keychain backend, case-sensitive includes) before anything runs.
+   Confirmed (2026-06-11): the server target builds in **one pass** and boots. The
+   one gotcha hit + fixed: `simple-sentencepiece`'s `threadpool.h` uses `std::result_of`
+   (gone in C++20) — libc++ hard-errors where libstdc++ tolerated it, and the failure
+   masquerades as bogus `<filesystem>` "undeclared identifier 'path'" errors. The
+   `CMakeLists.txt` patch that rewrites it to `std::invoke_result_t` now runs right
+   after sherpa's `add_subdirectory` (so the file exists), making it a clean one-pass
+   build. `ctest --preset server-macos` passes 204/204. One macOS-only ASan quirk
+   handled: `detect_container_overflow` fires false positives on the nlohmann::json
+   turn-split path because Apple's system libc++ isn't ASan-instrumented (std::vector
+   annotations break crossing that boundary). The `server-macos` test preset sets
+   `ASAN_OPTIONS=detect_container_overflow=0` for that reason; Linux keeps full
+   detection. No real memory bug — confirmed by the rest of ASan/LSan/UBSan staying on.
 3. Pick 2–3 benchmark clips (suggest: ~1 min speech, ~10 min multi-speaker, one
    noisy/musical) and keep them fixed for every run.
 4. Run each clip through the server on **cpu**. Collect the `stage=… rtf=…` lines
@@ -60,37 +78,71 @@ verbose toggle, short of patching sherpa.
    (warm) numbers. Record machine, model size, clip durations.
    This baseline is multi-threaded NEON/MLAS CPU — the bar CoreML must clear.
 
-### Phase 1 — CoreML side-by-side
+### Phase 1 — CoreML side-by-side — RUN 2026-06-11, **verdict: non-functional**
 
-5. Switch: `POST /api/device {"device":"coreml"}` (or restart with
-   `WHISPERX_DEVICE=coreml` on a fresh data dir). First load pays CoreML model
-   compile — note it, then ignore it (warm runs only).
-6. Same clips, same procedure. Record per-stage RTFs next to the CPU numbers.
-7. Node placement: rerun one clip with `WHISPERX_ORT_VERBOSE=1` and count
-   CoreML-vs-CPU node assignments for the wav2vec2 graph in the log. Mostly-CPU
-   placement explains a wash instantly. (Stages 1 & 3 can't be inspected this way —
-   infer from their RTF deltas.)
-8. Stage 2 variants (cheap, env-only): repeat the align-heavy clip with
-   `WHISPERX_COREML_COMPUTE_UNITS=ALL` and `CPUAndNeuralEngine`.
-9. Parity spot-checks: transcripts should be unchanged (whisper text identical;
-   word timestamps within tolerance); diarization may drift — same caveat as CUDA
-   (embedding drift can flip cluster assignments). Listen-through one
-   multi-speaker clip.
-10. Cache behavior: flip device cpu→coreml→cpu→coreml; the second coreml switch
-    should be fast (compile cache hit in `<data_dir>/coreml-cache`). Stages 1 & 3
-    have no cache dir — if switches are slow, that's why.
+The side-by-side never produced a comparison: **CoreML cannot complete a transcription
+on this stack** (M4, sherpa-onnx v1.13.2, ORT 1.24.4, `large-v3-turbo` exports). Stage 1
+(Whisper) fails in all three precision variants, each differently:
 
-### Decision
+| `WHISPERX_ASR_PRECISION` | Encoder asset | CoreML outcome |
+|---|---|---|
+| `fp16` (the device's auto-default — see bug below) | `turbo-encoder.fp16.onnx` | **load fail** — `graph_utils.cc:30 GetIndexFromName … InsertedPrecisionFreeCast_…/attn_ln/… SimplifiedLayerNormFusion`: ORT's layernorm fusion collides with the fp16 converter's precision-cast nodes under the CoreML EP. |
+| `fp32` | `turbo-encoder.onnx` | **load fail** — `initializer.cc:45 … model_path must not be empty`: CoreML partitioning re-serializes the subgraph and loses the external-weights file path. |
+| `int8` | `turbo-encoder.int8.onnx` | **loads, then the process crashes mid-`transcribing`** — `Context leak detected, CoreAnalytics returned false`, hard abort (CoreML has no int8 kernels → CPU-fallback path that dies). |
 
-- **CoreML ≥ CPU on stage RTFs** → keep the device selectable, document the win.
-- **Wash or regression (predicted)** → record the numbers in `METAL_INTEGRATION.md`,
-  leave the plumbing in (it's inert and gated), and move to Phase 2 — whisper.cpp +
-  Metal for stage 1, the route with the real ROI.
+Because Stage 1 can't run, Stage 2 (wav2vec2 on the MLProgram path we control) and the
+node-placement/compute-unit/cache experiments (steps 7–10 below) were **never reached** —
+the device knob is global, so there's no way to put align on CoreML while Whisper stays
+on CPU. Those steps stay open *iff* Stage 1 is ever made to load.
+
+**Code bug surfaced:** `models/model_manager.cpp:183` picks precision as
+`dev == Cpu ? Int8 : asr_precision_`, lumping CoreML in with CUDA — so CoreML inherits
+the **fp16** default that was tuned for CUDA. On CoreML fp16 doesn't just regress, it
+fails to load. Even fixing the default doesn't rescue CoreML (all three variants fail),
+but the device shouldn't auto-select a variant that hard-crashes.
+
+Steps 7–10 (kept for if/when Stage 1 loads): node placement via `WHISPERX_ORT_VERBOSE=1`
+on the wav2vec2 graph; `WHISPERX_COREML_COMPUTE_UNITS=ALL`/`CPUAndNeuralEngine` variants;
+transcript/diarization parity; compile-cache behavior across cpu↔coreml switches.
+
+### Decision — taken 2026-06-11
+
+CoreML is **worse than the predicted wash — it's broken end-to-end**. Recommendation:
+**do not expose the CoreML device** until the Whisper-asset/EP issues are resolved
+(re-export without the offending fusions / with inline weights, or patch sherpa's EP
+append). The plumbing stays (inert, gated by `coreml_available` + the precision bug
+note). **Move to Phase 2 — whisper.cpp + Metal for Stage 1**, the route with the real
+ROI and no dependence on the ORT CoreML EP. This corroborates `METAL_INTEGRATION.md`
+Route A's low-ROI framing, only more strongly than expected.
+
+## Recorded CPU baseline (Phase 0 step 4)
+
+Apple **M4** (4P+6E, 10-core), 16 GB, macOS 15 / Darwin 25.5; `large-v3-turbo` **int8**
+(the CPU default precision), `threads_for(cpu)=5`. Clip: `samples/russian_2_speaker_trim.m4a`
+(300 s, mono, 2 speakers, Russian, `language=ru`). Warm run (align model resident):
+
+| Stage | elapsed | RTF | share |
+|---|---|---|---|
+| decoding (ffmpeg) | 0.14 s | ~0.000 | — |
+| **transcribing (Stage 1 ASR)** | **70.85 s** | **0.236** | **65%** |
+| aligning (Stage 2 wav2vec2) | 21.33 s | 0.071 | 20% |
+| diarizing (Stage 3, CPU-pinned) | 17.00 s | 0.057 | 16% |
+| **end-to-end** | **~109 s** | **~0.364** | 100% |
+
+This is the bar. **Stage 1 is 65% of wall-clock** → confirms the brief's premise that
+whisper.cpp+Metal (Route B, Stage 1 only) is the real ROI lever; CoreML on stages 2–3
+can only chip at the remaining ~36%, and Stage 3 is CPU-pinned anyway. Cold run (first
+of the session, before align resident) was within noise on the compute stages — only
+`loading_align` differs (18 s cold vs 0 s warm), which is one-time per process.
 
 ## What to bring back (fills METAL_INTEGRATION.md "Unknowns")
 
-- Did `server-macos` build/test cleanly, and what needed fixing?
-- Per-stage RTF table: cpu vs coreml (× compute-unit variants for stage 2).
+- ~~Did `server-macos` build/test cleanly, and what needed fixing?~~ **Done**: builds
+  one-pass, boots, `ctest` 204/204. Needed: keg-only brew env (step 1), the threadpool
+  C++20 patch reorder, and `ASAN_OPTIONS=detect_container_overflow=0` in the macOS test
+  preset (libc++ ASan false positive).
+- ~~CPU RTF baseline~~ **Done** (table above): E2E RTF 0.364 on M4, Stage 1 dominates.
+- Per-stage RTF table: **coreml** vs the cpu baseline (× compute-unit variants for stage 2).
 - wav2vec2 node-assignment fraction under CoreML.
 - Diarization parity verdict.
 - Compile-cache behavior across device switches.

@@ -42,6 +42,12 @@ struct DiarizeAssets {
     std::string embedding;
 };
 
+// A whisper.cpp ggml model file (METAL_INTEGRATION.md Route B) — a parallel asset
+// family to WhisperAssets, one `.bin` instead of the three ONNX files.
+struct GgmlWhisperAssets {
+    std::string model_path;  // <cache>/ggerganov/whisper.cpp/ggml-<model>[-quant].bin
+};
+
 // Mel bin count by Whisper family (FEATURE_DIM in asr_sherpa.py).
 int feature_dim_for(const std::string& model_name);
 
@@ -53,6 +59,14 @@ int feature_dim_for(const std::string& model_name);
 // and still resolve under the fp16 default.
 std::optional<WhisperAssets> resolve_whisper(const std::string& model_name,
                                              Precision precision = Precision::Fp32);
+
+// Resolve a Whisper checkpoint to a whisper.cpp ggml `.bin`, or nullopt. `quant` is
+// the quantization suffix ("" = fp16, "q5_0", "q8_0", …). Local env dirs win over the
+// lazy download from the official ggerganov/whisper.cpp HF repo:
+//   WHISPERX_GGML_MODEL        a single explicit .bin (the active model, dev)
+//   WHISPERX_GGML_MODELS_ROOT  a dir holding ggml-<model>[-quant].bin files
+std::optional<GgmlWhisperAssets> resolve_whisper_ggml(
+    const std::string& model_name, const std::string& quant = "");
 
 // Resolve the wav2vec2 align ONNX + dictionary for a language, or nullopt.
 std::optional<AlignAssets> resolve_align(const std::string& language);

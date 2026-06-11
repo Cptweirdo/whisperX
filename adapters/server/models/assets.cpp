@@ -129,6 +129,34 @@ std::optional<WhisperAssets> resolve_whisper(const std::string& model_name,
     return a;
 }
 
+namespace {
+// ggml-<sherpa-key>[-quant].bin — the official ggerganov/whisper.cpp file naming.
+std::string ggml_filename(const std::string& model_name,
+                          const std::string& quant) {
+    std::string key =
+        whisperx::server::assets::map_model(model_name);  // turbo→large-v3-turbo
+    return "ggml-" + key + (quant.empty() ? "" : "-" + quant) + ".bin";
+}
+}  // namespace
+
+std::optional<GgmlWhisperAssets> resolve_whisper_ggml(
+    const std::string& model_name, const std::string& quant) {
+    std::error_code ec;
+    // 1. an explicit single .bin (dev: the active model)
+    if (auto f = env("WHISPERX_GGML_MODEL")) {
+        if (fs::exists(*f, ec)) return GgmlWhisperAssets{*f};
+    }
+    // 2. a per-model file under a models root
+    if (auto root = env("WHISPERX_GGML_MODELS_ROOT")) {
+        fs::path p = fs::path(*root) / ggml_filename(model_name, quant);
+        if (fs::exists(p, ec)) return GgmlWhisperAssets{p.string()};
+    }
+    // 3. lazy-download from the official ggerganov/whisper.cpp HF repo
+    if (auto p = whisperx::server::assets::ensure_ggml_whisper(model_name, quant))
+        return GgmlWhisperAssets{p->string()};
+    return std::nullopt;
+}
+
 std::optional<AlignAssets> resolve_align(const std::string& language) {
     // 1. a local dir (env): a per-language root, or a single explicit dir.
     if (auto root = env("WHISPERX_ALIGN_ONNX_ROOT")) {

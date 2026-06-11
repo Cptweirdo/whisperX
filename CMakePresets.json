@@ -71,9 +71,10 @@
     },
     {
       "name": "server-macos",
-      "displayName": "Server on macOS (arm64, CoreML EP available)",
-      "description": "Same as 'server' on Apple Silicon. sherpa downloads the official ORT osx-arm64 prebuilt, which already bundles the CoreML EP — no extra flag. See docs/MACOS_COREML.md.",
+      "displayName": "Server on macOS (arm64, CoreML EP + whisper.cpp Metal)",
+      "description": "Same as 'server' on Apple Silicon, plus the whisper.cpp + GGML Metal ASR backend (Route B). sherpa downloads the official ORT osx-arm64 prebuilt (bundles the CoreML EP); WHISPERX_ENABLE_WHISPERCPP pulls whisper.cpp. See docs/MACOS_COREML.md.",
       "inherits": "server",
+      "cacheVariables": { "WHISPERX_ENABLE_WHISPERCPP": "ON" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
     },
     {
@@ -113,7 +114,11 @@
     { "name": "server", "configurePreset": "server",
       "output": { "outputOnFailure": true } },
     { "name": "server-macos", "configurePreset": "server-macos",
-      "output": { "outputOnFailure": true } },
+      "output": { "outputOnFailure": true },
+      "environment": {
+        "_comment": "ASan container-overflow detection is unreliable on macOS: it needs the whole program (incl. libc++) ASan-instrumented, but Apple's system libc++ is not, so std::vector annotations crossing that boundary fire false positives (seen in the nlohmann::json edit/turn-split path). Linux keeps full detection.",
+        "ASAN_OPTIONS": "detect_container_overflow=0"
+      } },
     { "name": "server-cuda", "configurePreset": "server-cuda",
       "output": { "outputOnFailure": true } },
     { "name": "server-vcpkg-cuda", "configurePreset": "server-vcpkg-cuda",

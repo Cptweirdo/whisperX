@@ -48,6 +48,13 @@ std::string map_align_model(const std::string& language);
 // Mirror-only (align has no sherpa release). Returns the dir, or nullopt.
 std::optional<fs::path> ensure_align_dir(const std::string& language);
 
+// Ensure a whisper.cpp ggml `.bin` exists in the cache, pulled from the official
+// ggerganov/whisper.cpp HF repo (ggml-<model>[-quant].bin at the repo root). `quant`
+// is the quantization suffix ("" = fp16, "q5_0", "q8_0", …). Returns the file path,
+// or nullopt on a mirror miss / network failure.
+std::optional<fs::path> ensure_ggml_whisper(const std::string& model_name,
+                                            const std::string& quant = "");
+
 // Ensure the diarization segmentation + embedding ONNX — mirror first, then the
 // sherpa-onnx release (segmentation tarball + embedding file). Returns the paths.
 std::optional<whisperx::server::models::DiarizeAssets> ensure_diarize();

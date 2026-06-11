@@ -19,28 +19,12 @@
 #include <utility>
 #include <vector>
 
+#include "asr/asr_engine.hpp"  // AsrEngine, AsrChunk, strip_blank_audio
 #include "audio/audio_buffer.hpp"
 
 namespace whisperx::asr {
 
-// One transcribed VAD chunk — the text + a best-effort mean token log-prob (the
-// field whisperx/asr.py populates per segment; never load-bearing downstream).
-// blank_audio_removed counts the "[BLANK_AUDIO]" markers stripped from `text`
-// (see strip_blank_audio) so the host can warn once per job.
-struct AsrChunk {
-    std::string text;
-    float avg_logprob = 0.0f;
-    int blank_audio_removed = 0;
-};
-
-// Remove every "[BLANK_AUDIO]" marker (case-insensitive, tolerating inner
-// whitespace e.g. "[ BLANK_AUDIO ]") from `text`, collapse the double space that
-// removal leaves behind, and trim. Returns the count removed. sherpa-onnx Whisper
-// emits this literal text on silent input (the Python faster-whisper path dropped
-// such segments via no_speech_threshold, which sherpa's C-API does not expose).
-int strip_blank_audio(std::string& text);
-
-class WhisperSherpa {
+class WhisperSherpa : public AsrEngine {
  public:
     // encoder/decoder/tokens are the three sherpa Whisper ONNX assets;
     // feature_dim is the mel bin count (80 for tiny…medium/large-v2, 128 for
@@ -76,11 +60,12 @@ class WhisperSherpa {
     std::vector<AsrChunk> transcribe(
         const whisperx::audio::AudioBuffer& audio,
         const std::vector<std::pair<double, double>>& spans,
-        const std::string& language = "", const std::string& task = "");
+        const std::string& language = "", const std::string& task = "") override;
 
     // Whisper language identification over the first 30 s — returns the bare code
     // (e.g. "en"), mirroring FasterWhisperPipeline.detect_language.
-    std::string detect_language(const whisperx::audio::AudioBuffer& audio);
+    std::string detect_language(
+        const whisperx::audio::AudioBuffer& audio) override;
 
  private:
     struct Impl;

@@ -112,7 +112,16 @@ word-onset bias against the wav2vec2 goldens before dropping the align stage.
 
 ### 3. Apple — land Route B: whisper.cpp Metal as a native ASR backend
 
-Own benchmarks already prove the ROI (`MAC_PERFORMANCE.md`); since ASR
+**STATUS: LANDED + measured 2026-06-11 (Apple M4).** whisper.cpp v1.8.6 + GGML
+Metal is a second ASR backend (`AsrBackend::WhisperCpp` /
+`WHISPERX_ASR_BACKEND=whispercpp`, `WHISPERX_ENABLE_WHISPERCPP` build; ggml `.bin`
+from the official `ggerganov/whisper.cpp` repo). Measured on the 300 s Russian clip,
+`large-v3-turbo` fp16: Stage 1 transcribe RTF **0.073** vs the sherpa CPU int8
+baseline **0.236** — **3.2×**; end-to-end RTF **0.199** vs **0.364** — **1.83×**.
+Matches the prediction below; align is now the largest stage. Full write-up in
+`METAL_INTEGRATION.md` Route B.
+
+Own benchmarks already proved the ROI (`MAC_PERFORMANCE.md`); since ASR
 dominates Mac wall-clock, expect ~2× end-to-end. whisper.cpp is C++ and embeds
 cleanly — but it is a **new ASR backend dimension** (ggml `.bin` assets, not
 ONNX), not a `Device`. Align/diarize stay on ORT CPU.

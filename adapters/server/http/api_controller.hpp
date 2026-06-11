@@ -499,6 +499,39 @@ public:
         }
     }
 
+    // Switch the Stage-1 ASR backend (sherpa ↔ whisper.cpp). Mirrors /api/device:
+    // validate, reject if unavailable in this build, 409 on a running job, persist
+    // on success. whisper.cpp runs Stage 1 on Metal — the device knob is moot under it.
+    ENDPOINT("POST", "/api/asr_backend", switch_asr_backend,
+             REQUEST(std::shared_ptr<IncomingRequest>, request)) {
+        json body = http_util::parse_body(request);
+        std::string backend_str = body.value("asr_backend", "");
+        auto backend = parse_asr_backend(backend_str);
+        if (!backend)
+            return jr(Status::CODE_400,
+                      {{"error", "Unknown ASR backend: " + backend_str}});
+        if (!models::ModelManager::asr_backend_available(*backend)) {
+            json st = app_.manager.status();
+            st["error"] = std::string("ASR backend not available in this build: ") +
+                          to_string(*backend);
+            return jr(Status::CODE_400, st);
+        }
+        if (app_.store.has_active_jobs()) {
+            json st = app_.manager.status();
+            st["error"] = "busy";
+            return jr(Status::CODE_409, st);
+        }
+        try {
+            json st = app_.manager.set_asr_backend(*backend);
+            app_.store.set_setting("asr_backend", to_string(*backend));
+            return jr(Status::CODE_200, st);
+        } catch (const std::exception& exc) {
+            json st = app_.manager.status();
+            st["error"] = exc.what();
+            return jr(Status::CODE_400, st);
+        }
+    }
+
     // --- Settings / onboarding (token storage + translation deferred) ----
     json settings_payload() {
         return {

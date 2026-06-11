@@ -98,6 +98,13 @@ int main(int argc, char** argv) {
         ws::parse_device(store.get_setting("device", ws::to_string(cfg.device))
                              .value_or(ws::to_string(cfg.device)))
             .value_or(cfg.device);
+    // ASR backend precedence mirrors device: persisted setting > WHISPERX_ASR_BACKEND
+    // env (already on cfg.asr_backend) > "sherpa".
+    ws::AsrBackend asr_backend =
+        ws::parse_asr_backend(
+            store.get_setting("asr_backend", ws::to_string(cfg.asr_backend))
+                .value_or(ws::to_string(cfg.asr_backend)))
+            .value_or(cfg.asr_backend);
     ws::models::ModelManager manager(
         active, device,
         [&broker](const auto& status) {
@@ -109,7 +116,8 @@ int main(int argc, char** argv) {
             static_cast<float>(cfg.diarize_min_off),
             static_cast<float>(cfg.diarize_merge_threshold),
         },
-        static_cast<int>(cfg.asr_batch_size), cfg.asr_precision);
+        static_cast<int>(cfg.asr_batch_size), cfg.asr_precision, asr_backend,
+        cfg.ggml_quant, cfg.whispercpp_flash_attn);
 
     auto run_session = ws::jobs::make_run_session(store, manager, broker, cfg);
     ws::jobs::JobQueue queue(store, run_session, &broker);
