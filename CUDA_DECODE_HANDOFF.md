@@ -1,6 +1,15 @@
 # CUDA Whisper Decode — Handoff Brief (SPEEDUP_FINDINGS item 1a)
 
-Status: **not started** — this brief hands off the diagnosis + fix of the
+Status: **RESOLVED — superseded by `CUDA_DECODE_FINDINGS.md`** (2026-06-11).
+Root cause: the mirrored `large-v3-turbo` assets are the **int8** export;
+ORT's CUDA EP has no int8 kernels, so the matmuls ran on the CPU EP with one
+thread. The fp32 export hits transcribe RTF **0.036** through the server
+(was 0.443) with zero code changes. The ranked suspects below were each
+profiled/excluded — see the findings ledger. Kept for the workload recipe and
+code anchors.
+
+Original brief (historical):
+this brief hands off the diagnosis + fix of the
 host-bound CUDA decode path discovered while landing item 1 (batched decode).
 Written 2026-06-11 on branch `cpp-core/host-swap-server` (item 1 uncommitted
 on that branch at the time of writing).

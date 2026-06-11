@@ -1,5 +1,6 @@
 #include "models/model_manager.hpp"
 
+#include <filesystem>
 #include <stdexcept>
 #include <thread>
 
@@ -37,12 +38,14 @@ int threads_for(Device d) {
 }  // namespace
 
 ModelManager::ModelManager(std::string active, Device device, OnChange on_change,
-                           DiarizeTuning diarize_tuning, int asr_batch_size)
+                           DiarizeTuning diarize_tuning, int asr_batch_size,
+                           Precision asr_precision)
     : active_(is_known_model(active) ? std::move(active) : std::string("small")),
       device_(device),
       on_change_(std::move(on_change)),
       diarize_tuning_(diarize_tuning),
-      asr_batch_size_(asr_batch_size < 1 ? 1 : asr_batch_size) {}
+      asr_batch_size_(asr_batch_size < 1 ? 1 : asr_batch_size),
+      asr_precision_(asr_precision) {}
 
 std::string ModelManager::active() {
     std::lock_guard<std::mutex> lk(lock_);
@@ -174,7 +177,11 @@ json ModelManager::set_active(const std::string& name) {
 
 std::shared_ptr<wa::WhisperSherpa> ModelManager::build_asr_engine(
     const std::string& name, Device dev) {
-    auto assets = resolve_whisper(name);
+    // Cpu always loads the int8-preferred variant (CPU-optimal; int8 on the
+    // CUDA EP was the original "slow CUDA" bug — CUDA_DECODE_FINDINGS.md).
+    const Precision prec =
+        dev == Device::Cpu ? Precision::Int8 : asr_precision_;
+    auto assets = resolve_whisper(name, prec);
     if (!assets)
         throw std::runtime_error(
             "Whisper assets for '" + name +
@@ -185,8 +192,10 @@ std::shared_ptr<wa::WhisperSherpa> ModelManager::build_asr_engine(
     // cores, so Cpu/CoreML stay serial.
     const int batch = dev == Device::Cuda ? asr_batch_size_ : 1;
     whisperx::server::log::get("models")->info(
-        "Loading whisper model={} on {} (feature_dim={} batch_size={})", name,
-        to_string(dev), assets->feature_dim, batch);
+        "Loading whisper model={} on {} (feature_dim={} batch_size={} "
+        "precision={} encoder={})", name, to_string(dev), assets->feature_dim,
+        batch, to_string(prec),
+        std::filesystem::path(assets->encoder).filename().string());
     return std::make_shared<wa::WhisperSherpa>(
         assets->encoder, assets->decoder, assets->tokens, threads_for(dev),
         assets->feature_dim, /*language=*/"", /*task=*/"transcribe",

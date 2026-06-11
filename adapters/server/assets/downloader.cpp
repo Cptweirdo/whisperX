@@ -212,25 +212,73 @@ std::string map_model(const std::string& whisper_arch) {
     return it == kMap.end() ? whisper_arch : it->second;
 }
 
-std::optional<fs::path> ensure_whisper_dir(const std::string& model_name) {
+namespace {
+
+// The files a precision variant needs, from a contract-v2 meta "variants"
+// block (encoder/decoder + extra "files", e.g. the fp32 encoder's external
+// .weights). nullopt when the meta has no such variant.
+std::optional<std::vector<std::string>> variant_files(const json& m,
+                                                      const char* variant) {
+    auto vit = m.find("variants");
+    if (vit == m.end() || !vit->is_object()) return std::nullopt;
+    auto it = vit->find(variant);
+    if (it == vit->end() || !it->is_object()) return std::nullopt;
+    std::vector<std::string> files;
+    files.push_back(it->at("encoder").get<std::string>());
+    files.push_back(it->at("decoder").get<std::string>());
+    if (auto fit = it->find("files"); fit != it->end() && fit->is_array())
+        for (const auto& f : *fit) files.push_back(f.get<std::string>());
+    return files;
+}
+
+}  // namespace
+
+std::optional<fs::path> ensure_whisper_dir(const std::string& model_name,
+                                           whisperx::server::Precision precision) {
+    using whisperx::server::Precision;
     const std::string name = map_model(model_name);
 
-    // 1. Our sha-pinned mirror: meta.json names the three assets, fetched into the
+    // 1. Our sha-pinned mirror: meta.json names the assets, fetched into the
     //    repo-cache dir alongside it (so the dir holds encoder/decoder/tokens).
     if (auto meta_p = fetch_file(WHISPER_REPO, name + "/meta.json")) {
         try {
             json m = json::parse(std::ifstream(*meta_p));
+
+            // Contract v2: pick the precision variant, falling back in the
+            // same order models/assets.cpp ranks files (fp16→fp32→int8 etc.,
+            // int8 last for the GPU precisions) so the downloaded set matches
+            // what from_whisper_dir() will then pick from the dir.
+            std::vector<const char*> order;
+            switch (precision) {
+                case Precision::Fp16: order = {"fp16", "fp32", "int8"}; break;
+                case Precision::Fp32: order = {"fp32", "fp16", "int8"}; break;
+                case Precision::Int8: order = {"int8", "fp32", "fp16"}; break;
+            }
+            std::vector<std::string> files;
+            const char* chosen = nullptr;
+            for (const char* v : order) {
+                if (auto f = variant_files(m, v)) {
+                    files = std::move(*f);
+                    chosen = v;
+                    break;
+                }
+            }
+            if (!chosen) {  // v1 meta (no variants): the legacy flat keys
+                files = {m.at("encoder").get<std::string>(),
+                         m.at("decoder").get<std::string>()};
+            }
+            files.push_back(m.at("tokens").get<std::string>());
+
             bool all = true;
-            for (const char* k : {"encoder", "decoder", "tokens"}) {
-                std::string f = m.at(k).get<std::string>();
+            for (const auto& f : files) {
                 if (!fetch_file(WHISPER_REPO, name + "/" + f)) {
                     all = false;
                     break;
                 }
             }
             if (all) {
-                logger()->info("Whisper '{}' resolved from mirror {}", name,
-                               WHISPER_REPO);
+                logger()->info("Whisper '{}' ({}) resolved from mirror {}",
+                               name, chosen ? chosen : "v1 meta", WHISPER_REPO);
                 return meta_p->parent_path();
             }
         } catch (const std::exception& e) {

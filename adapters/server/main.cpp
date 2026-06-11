@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
             static_cast<float>(cfg.diarize_min_off),
             static_cast<float>(cfg.diarize_merge_threshold),
         },
-        static_cast<int>(cfg.asr_batch_size));
+        static_cast<int>(cfg.asr_batch_size), cfg.asr_precision);
 
     auto run_session = ws::jobs::make_run_session(store, manager, broker, cfg);
     ws::jobs::JobQueue queue(store, run_session, &broker);

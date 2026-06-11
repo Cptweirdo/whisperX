@@ -29,8 +29,9 @@ Companion briefs: `GPU_INTEGRATION.md` (CUDA, landed), `METAL_INTEGRATION.md`
 
 ### 1. CUDA — batch VAD chunks through ASR (biggest CUDA lever)
 
-**STATUS: implemented + measured 2026-06-11 — NOT a win as-is; blocked on
-device-resident KV caches (see below).**
+**STATUS: implemented + measured 2026-06-11 — batching turned out not to be
+the CUDA lever; the real one was the model variant (item 1a, resolved — see
+below and `CUDA_DECODE_FINDINGS.md`).**
 
 `core/asr/whisper_sherpa.cpp` decodes **one stream per chunk, serially**
 (`SherpaOnnxDecodeOfflineStream` per call; also inside the `decode_capped`
@@ -49,24 +50,25 @@ spans↔chunks **by index** (`whisper_sherpa.cpp:120`). Batch decode preserves
 stream order, so the contract holds, and the parity tests stay green
 (`test_asr_sherpa_parity.py::test_batched_decode_matches_serial`).
 
-**Measured (3080 Ti, large-v3-turbo fp32, 10 min audio, scratch server):**
+**Measured (3080 Ti, large-v3-turbo, 10 min audio, scratch server):**
 batch 8 transcribe RTF **0.526** vs serial **0.443** — 19% *slower*, VRAM
-4.1 → 7.2 GB; serial GPU utilization is a ~20% sawtooth. **Root cause: open.**
-An earlier draft blamed missing IOBinding / per-step KV PCIe round-trips —
-**disproven by reading the code**: sherpa v1.13.2 already device-binds the
-KV caches on CUDA (encoder cross-KV outputs and decoder self-KV outputs stay
-on GPU; cross-KV is a C++ pass-through, not a graph output; only logits come
-back per step — `offline-whisper-model.cc` ForwardEncoder/ForwardDecoder,
-`use_cuda_iobinding_`). Both serial (0.443) and batch are far slower than the
-hardware should allow (whisper.cpp Metal does 0.070 on a *laptop*), so wall
-time is dominated by something host-side that profiling must identify.
+4.1 → 7.2 GB; serial GPU utilization was a ~20% sawtooth.
 
-**Unblock (item 1a): profile, then fix the host-side decode bottleneck** —
-see `CUDA_DECODE_HANDOFF.md` for the full brief (current binding layout,
-measured data, ranked suspects: per-step GPU output allocations / arena
-churn, two stream syncs + fresh IoBinding per token, fp32 unfused encoder).
-Only after that fix does batching get re-evaluated. fp16 (item 4) and fused
-attention (item 5) multiply on top.
+**Root cause found (item 1a, 2026-06-11 — see `CUDA_DECODE_FINDINGS.md`):
+the model, not the decode loop.** The mirrored turbo assets are the **int8**
+export (the only variant sherpa's release tarball ships); ORT's CUDA EP has
+no `MatMulInteger`/`DynamicQuantizeLinear` kernels, so every heavy matmul ran
+on the **CPU EP** — single-threaded (`threads_for(Cuda)=1`) — with Memcpy
+ping-pong around each. "CUDA" was slower than plain CPU mode. The fp32 export
+(csukuangfj/sherpa-onnx-whisper-turbo) gives transcribe RTF **0.036 E2E**
+(12.3×) with zero code changes — `assets.cpp::pick()` already prefers
+non-int8 files. Quality: equal-or-better WER on 5/7 goldens. Remaining work
+is asset plumbing: ship fp32 (or fp16, item 4) turbo in the mirror; int8
+stays correct for CPU. With fp32, batch 4 ≈ serial and batch 8 regresses
+(VRAM pressure), so `WHISPERX_ASR_BATCH_SIZE=1` stays the default and this
+item's batching patch is now a dormant nice-to-have, not a lever. The
+earlier suspects (IOBinding/PCIe, syncs, arena churn) were each profiled or
+code-read and excluded — ledger in `CUDA_DECODE_FINDINGS.md`.
 
 **Corroboration — insanely-fast-whisper's A100 benchmark (150 min of audio):**
 
@@ -118,11 +120,18 @@ Optional Phase 3 on top: whisper.cpp's `WHISPER_COREML` ANE encoder.
 
 ### 4. Reduced-precision model variants — fp16 (CUDA) + INT8 (CPU)
 
-**fp16 on `Device::Cuda`:** insanely-fast-whisper runs fp16 throughout with no
-measurable WER cost — standard for Whisper on tensor cores. Our CUDA path runs
-the fp32 ONNX exports. Cheap experiment: convert the mirrored Whisper/wav2vec2
-models to fp16 offline (ORT supports this; sherpa loads what the file
-contains), gate on parity tolerances. CPU stays fp32 (MLAS has no fp16 win).
+**fp16 on `Device::Cuda` — LANDED for Whisper turbo (2026-06-11):**
+`golden/convert_whisper_fp16.py` converts the fp32 export offline
+(`keep_io_types=True` — sherpa's float32 I/O contract is preserved); the
+mirror now carries int8/fp32/fp16 turbo variants (meta.json contract v2,
+`golden/mirror_whisper_onnx.py --variant`), selected at runtime by
+`WHISPERX_ASR_PRECISION` (default **fp16** on GPU devices; Cpu always loads
+int8). Measured: WER identical to fp32 on all 7 golden clips
+(`scripts/wer_golden.py` gate), RTF 0.029 vs fp32's 0.030 (overhead-bound at
+this point, not FLOPs), half the download/VRAM (1.55 GB vs 3.2 GB).
+Still open here: fp16 for the **wav2vec2 align** models (same converter
+should apply; align is RTF 0.002 on CUDA so the win is VRAM, not speed).
+CPU stays int8/fp32 (MLAS has no fp16 win).
 
 **INT8 on CPU/edge:** sherpa ships `model.int8.onnx` for the embedding
 extractors: ~4× smaller, big CPU speedup, near-lossless for speaker

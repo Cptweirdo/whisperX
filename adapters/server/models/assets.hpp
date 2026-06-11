@@ -19,6 +19,8 @@
 #include <optional>
 #include <string>
 
+#include "config.hpp"  // Precision
+
 namespace whisperx::server::models {
 
 struct WhisperAssets {
@@ -43,9 +45,14 @@ struct DiarizeAssets {
 // Mel bin count by Whisper family (FEATURE_DIM in asr_sherpa.py).
 int feature_dim_for(const std::string& model_name);
 
-// Resolve a Whisper checkpoint to its three sherpa ONNX assets, or nullopt if no
-// local directory holds it (the downloader would handle that case in v2).
-std::optional<WhisperAssets> resolve_whisper(const std::string& model_name);
+// Resolve a Whisper checkpoint to its three sherpa ONNX assets, or nullopt if
+// neither a local directory nor the downloader yields it. `precision` selects
+// the variant with graceful fallback when a dir doesn't carry it (fp16 →
+// [fp16, fp32, int8]; fp32 → [fp32, fp16, int8]; int8 → [int8, fp32, fp16]) —
+// only large-v3-turbo has all three on the mirror; tiny/base/small are fp32-only
+// and still resolve under the fp16 default.
+std::optional<WhisperAssets> resolve_whisper(const std::string& model_name,
+                                             Precision precision = Precision::Fp32);
 
 // Resolve the wav2vec2 align ONNX + dictionary for a language, or nullopt.
 std::optional<AlignAssets> resolve_align(const std::string& language);

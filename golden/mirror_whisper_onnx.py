@@ -42,7 +42,22 @@ SHERPA_RELEASE = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
     "sherpa-onnx-whisper-{model}.tar.bz2"
 )
-CONTRACT_VERSION = 1  # bumped if the published layout (meta.json keys) changes.
+# v1: flat encoder/decoder/tokens keys — what mirror_one still publishes.
+# v2 (additive; the flat v1 keys stay and keep naming the CPU-safe variant):
+# + "variants" {fp32|fp16|int8: {encoder, decoder, files[], source}} and a
+# filename-keyed "sha256" map. `files` lists extra assets a variant needs
+# alongside (e.g. the fp32 encoder's external-data .weights — fp32 large
+# models exceed the 2 GB protobuf limit). The C++ downloader
+# (adapters/server/assets/downloader.cpp) fetches the variant matching
+# WHISPERX_ASR_PRECISION; v1 readers keep using the flat keys.
+CONTRACT_VERSION = 1
+VARIANT_CONTRACT_VERSION = 2  # written by mirror_variant (additive upgrade)
+# Where each variant's files originate (recorded per-variant in meta.json).
+VARIANT_SOURCE = {
+    "fp32": "https://huggingface.co/csukuangfj/sherpa-onnx-whisper-turbo",
+    "fp16": "converted from the fp32 variant by golden/convert_whisper_fp16.py "
+            "(onnxconverter-common, keep_io_types=True)",
+}
 # Mel bin count by Whisper family (the C++ feat_config.feature_dim). large-v3 (and
 # turbo, derived from it) use 128 mels; everything else uses 80.
 FEATURE_DIM = {"large-v3": 128, "large-v3-turbo": 128, "turbo": 128}
@@ -117,14 +132,44 @@ def _download_sherpa(model: str, dest: Path) -> Path:
 
 
 def _self_check(folder: Path, encoder: str, decoder: str, tokens: str,
-                feature_dim: int, model: str) -> bool:
+                feature_dim: int, model: str, provider: str = "cpu") -> bool:
+    """Run _self_check_impl in a fresh subprocess. In-process, huggingface_hub/
+    requests (imported earlier for the remote meta) load Python's own
+    libcrypto/ssl DLLs first and the whisperx_core pyd's dependency chain then
+    binds the wrong copies (0xc0000139 entry-point-not-found on Windows); a
+    child process imports the pyd before anything else."""
+    import subprocess
+    import sys
+
+    payload = json.dumps({
+        "folder": str(folder), "encoder": encoder, "decoder": decoder,
+        "tokens": tokens, "feature_dim": feature_dim, "model": model,
+        "provider": provider,
+    })
+    code = (
+        "import json,sys; from pathlib import Path; "
+        "g = Path(sys.argv[1]); sys.path.insert(0, str(g)); "
+        "sys.path.insert(0, str(g.parent / 'build')); "  # whisperx_core pyd
+        "from mirror_whisper_onnx import _self_check_impl; "
+        "sys.exit(0 if _self_check_impl(**json.loads(sys.argv[2])) else 1)"
+    )
+    r = subprocess.run([sys.executable, "-c", code,
+                        str(Path(__file__).resolve().parent), payload])
+    return r.returncode == 0
+
+
+def _self_check_impl(folder: str, encoder: str, decoder: str, tokens: str,
+                     feature_dim: int, model: str, provider: str = "cpu") -> bool:
     """Load the mirrored assets through the native WhisperSherpa and assert a golden
     clip transcribes to non-empty text + the right language. Skips if whisperx_core
-    isn't built with WHISPERX_CORE_AUDIO or the clip is absent."""
+    isn't built with WHISPERX_CORE_AUDIO or the clip is absent. provider="cuda"
+    is for the big fp32/fp16 variants (turbo fp32 on CPU would crawl)."""
+    folder = Path(folder)
+    _dll_setup()
     try:
         import whisperx_core as wc
-    except ImportError:
-        print("  self-check: whisperx_core not importable — skipped")
+    except ImportError as e:
+        print(f"  self-check: whisperx_core not importable ({e}) — skipped")
         return True
     if not hasattr(wc, "WhisperSherpa"):
         print("  self-check: module built without WHISPERX_CORE_AUDIO — skipped")
@@ -140,6 +185,7 @@ def _self_check(folder: Path, encoder: str, decoder: str, tokens: str,
     m = wc.WhisperSherpa(
         encoder=str(folder / encoder), decoder=str(folder / decoder),
         tokens=str(folder / tokens), num_threads=4, feature_dim=feature_dim,
+        provider=provider,
     )
     audio = load_audio(str(wav))
     lang = m.detect_language(audio[: SAMPLE_RATE * 30])
@@ -163,8 +209,48 @@ def _remote_meta(repo: str, model: str):
 
 def _already_published(repo: str, model: str, src_sha: str) -> bool:
     rmeta = _remote_meta(repo, model)
-    return bool(rmeta) and rmeta.get("contract_version") == CONTRACT_VERSION and \
+    # >=: a v2 (variants) meta still carries the flat v1 keys, so a matching
+    # encoder sha means the legacy publish is present — don't clobber it.
+    return bool(rmeta) and \
+        rmeta.get("contract_version", 0) >= CONTRACT_VERSION and \
         rmeta.get("encoder_sha256") == src_sha
+
+
+def _ensure_hf_token() -> None:
+    """HfApi reads HF_TOKEN from the env; fall back to app/.env (never print it)."""
+    import os
+
+    if os.environ.get("HF_TOKEN"):
+        return
+    dotenv = ROOT / "app" / ".env"
+    if not dotenv.exists():
+        return
+    for line in dotenv.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("HF_TOKEN=") and len(line) > len("HF_TOKEN="):
+            os.environ["HF_TOKEN"] = line.split("=", 1)[1].strip().strip('"')
+            print("  HF_TOKEN loaded from app/.env")
+            return
+
+
+def _dll_setup() -> None:
+    """Windows: make the pyd's CUDA deps loadable (mirrors scripts/bench_cuda_decode.py
+    — ORT's CUDA EP needs cudnn 9, bundled in the venv's torch wheel)."""
+    import os
+
+    if os.name != "nt":
+        return
+    build = ROOT / "build"
+    torch_lib = ROOT / ".venv" / "Lib" / "site-packages" / "torch" / "lib"
+    for d in (build, build / "bin", torch_lib):
+        if d.is_dir():
+            os.add_dll_directory(str(d))
+    if torch_lib.is_dir():
+        import ctypes
+
+        for name in sorted(torch_lib.glob("cudnn*_9.dll"),
+                           key=lambda p: "graph" not in p.name):
+            ctypes.WinDLL(str(name))
 
 
 def mirror_one(model: str, *, repo: str, do_upload: bool, do_check: bool,
@@ -231,12 +317,115 @@ def mirror_one(model: str, *, repo: str, do_upload: bool, do_check: bool,
         print(f"  uploaded -> {repo}/{model}/")
 
 
+def _pick_variant_file(names: list[str], needle: str, variant: str) -> str:
+    """The `variant`'s asset among `names`: fp16 wants the *.fp16.* file, fp32
+    the plain (non-int8, non-fp16) one."""
+    cand = [n for n in names if needle in n and n.endswith(".onnx")]
+    if variant == "fp16":
+        cand = [n for n in cand if "fp16" in n]
+    else:
+        cand = [n for n in cand if "int8" not in n and "fp16" not in n]
+    if not cand:
+        raise FileNotFoundError(f"no {variant} '{needle}.onnx' in {names}")
+    cand.sort(key=len)
+    return cand[0]
+
+
+def mirror_variant(model: str, variant: str, src: Path, *, repo: str,
+                   do_upload: bool, do_check: bool, force: bool,
+                   check_provider: str) -> None:
+    """Publish a precision variant (fp32/fp16) of an already-mirrored model:
+    merge a `variants` block + filename-keyed sha256 map into the remote
+    meta.json (contract v2 — flat v1 keys are left untouched, so v1 readers
+    and the CPU path keep resolving the original int8/fp32 files)."""
+    print(f"\n=== {model} [{variant}] from {src} ===")
+    feature_dim = _feature_dim(model)
+    names = [p.name for p in src.iterdir() if p.is_file()]
+    encoder = _pick_variant_file(names, "encoder", variant)
+    decoder = _pick_variant_file(names, "decoder", variant)
+    tokens = _pick(names, "tokens", ".txt")  # needed for the self-check only
+    # External-data files (fp32 encoders >2 GB store weights outside the graph;
+    # ORT resolves them relative to the .onnx, so they must ship alongside).
+    extras = sorted(n for n in names if n.endswith(".weights"))
+
+    rmeta = _remote_meta(repo, model)
+    if not rmeta:
+        raise SystemExit(f"{repo}/{model}/meta.json not found — publish the "
+                         f"base model first (mirror_one)")
+
+    enc_sha = _sha256(src / encoder)
+    published = (rmeta.get("variants") or {}).get(variant)
+    if do_upload and not force and published and \
+            (rmeta.get("sha256") or {}).get(encoder) == enc_sha:
+        print(f"  variant already published (sha {enc_sha[:12]}) — skip "
+              f"(use --force)")
+        return
+
+    if do_check and not _self_check(src, encoder, decoder, tokens, feature_dim,
+                                    model, provider=check_provider):
+        raise SystemExit(f"self-check FAILED for {model} [{variant}] — "
+                         f"refusing to upload")
+
+    meta = dict(rmeta)
+    meta["contract_version"] = VARIANT_CONTRACT_VERSION
+    variants = dict(meta.get("variants") or {})
+    # Record the flat v1 keys as their own variant so consumers can enumerate.
+    base_kind = "int8" if "int8" in meta["encoder"] else "fp32"
+    variants.setdefault(base_kind, {
+        "encoder": meta["encoder"], "decoder": meta["decoder"], "files": [],
+        "source": meta.get("source", ""),
+    })
+    variants[variant] = {
+        "encoder": encoder, "decoder": decoder, "files": extras,
+        "source": VARIANT_SOURCE.get(variant, ""),
+    }
+    meta["variants"] = variants
+    sha = dict(meta.get("sha256") or {})
+    for f in (encoder, decoder, *extras):
+        sha[f] = enc_sha if f == encoder else _sha256(src / f)
+    # Seed the v1 files into the map too (one place to look things up).
+    for key, legacy in (("encoder", "encoder_sha256"),
+                        ("decoder", "decoder_sha256"),
+                        ("tokens", "tokens_sha256")):
+        if meta.get(legacy):
+            sha.setdefault(meta[key], meta[legacy])
+    meta["sha256"] = sha
+    meta["versions"] = _versions()
+    (src / "meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n")
+    up = [encoder, decoder, *extras]
+    print(f"  variant assets: {' / '.join(up)}  (+meta.json)")
+
+    if not do_upload:
+        print("  --no-upload: kept local only")
+        return
+
+    from huggingface_hub import HfApi
+
+    _ensure_hf_token()
+    api = HfApi()
+    api.upload_folder(
+        repo_id=repo, repo_type="model", folder_path=str(src),
+        path_in_repo=model, allow_patterns=up + ["meta.json"],
+        commit_message=f"add {variant} variant for {model} (sha {enc_sha[:12]})",
+    )
+    print(f"  uploaded -> {repo}/{model}/ [{variant}]")
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", nargs="+", default=["tiny"],
                     help="Whisper model name(s) to mirror (default: tiny)")
     ap.add_argument("--repo", default=REPO_DEFAULT, help="HF model repo to publish to")
+    ap.add_argument("--variant", choices=("fp32", "fp16"),
+                    help="publish a precision variant of one --model from --src "
+                         "(meta.json contract v2) instead of the base mirror")
+    ap.add_argument("--src", type=Path,
+                    help="local dir holding the variant's encoder/decoder "
+                         "(+ .weights, + tokens for the self-check)")
+    ap.add_argument("--check-provider", default="cpu", choices=("cpu", "cuda"),
+                    help="EP for the self-check (use cuda for the big variants)")
     ap.add_argument("--no-upload", action="store_true",
                     help="download + meta + self-check only, do not push")
     ap.add_argument("--no-check", action="store_true",
@@ -244,6 +433,17 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="upload even if the remote sha already matches")
     args = ap.parse_args()
+
+    if not args.no_upload:
+        _ensure_hf_token()
+    if args.variant:
+        if len(args.model) != 1 or not args.src:
+            ap.error("--variant needs exactly one --model and --src")
+        mirror_variant(args.model[0], args.variant, args.src, repo=args.repo,
+                       do_upload=not args.no_upload, do_check=not args.no_check,
+                       force=args.force, check_provider=args.check_provider)
+        print("\ndone.")
+        return
 
     print(f"repo={args.repo}  upload={not args.no_upload}  "
           f"check={not args.no_check}  models={args.model}")

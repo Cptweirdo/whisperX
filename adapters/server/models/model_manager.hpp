@@ -63,8 +63,11 @@ public:
     // asr_batch_size: VAD chunks decoded per sherpa call on the Cuda device
     // (WHISPERX_BATCH_SIZE; Cpu/CoreML always decode serially — the win is
     // GPU throughput, the cost is VRAM per row).
+    // asr_precision: Whisper variant on GPU devices (WHISPERX_ASR_PRECISION);
+    // Cpu always loads int8-preferred (config.hpp Precision comment).
     ModelManager(std::string active, Device device, OnChange on_change = nullptr,
-                 DiarizeTuning diarize_tuning = {}, int asr_batch_size = 1);
+                 DiarizeTuning diarize_tuning = {}, int asr_batch_size = 1,
+                 Precision asr_precision = Precision::Fp16);
 
     std::string active();
     json status();
@@ -134,6 +137,7 @@ private:
     OnChange on_change_;
     DiarizeTuning diarize_tuning_;  // immutable after construction
     int asr_batch_size_ = 1;        // immutable after construction
+    Precision asr_precision_ = Precision::Fp16;  // immutable after construction
 };
 
 }  // namespace whisperx::server::models

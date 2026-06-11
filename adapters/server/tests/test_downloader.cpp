@@ -69,6 +69,61 @@ TEST_CASE("ensure_whisper_dir is a cache hit when fully seeded", "[downloader]")
     REQUIRE(got.has_value());
     REQUIRE(fs::equivalent(*got, dir));
 
+    // A v1 meta has no variants — a fp16 request takes the same legacy path
+    // (cache hit on the flat-key files; no extra fetches to miss on).
+    auto fp16 = dl::ensure_whisper_dir("tiny", whisperx::server::Precision::Fp16);
+    REQUIRE(fp16.has_value());
+    REQUIRE(fs::equivalent(*fp16, dir));
+
+    fs::remove_all(tmp);
+    unsetenv("WHISPERX_SHERPA_CACHE");
+}
+
+TEST_CASE("ensure_whisper_dir fetches the requested v2 variant", "[downloader]") {
+    using whisperx::server::Precision;
+    fs::path tmp = fs::temp_directory_path() /
+                   ("wx-dl-v2-" + std::to_string(::getpid()));
+    fs::remove_all(tmp);
+    setenv("WHISPERX_SHERPA_CACHE", tmp.string().c_str(), 1);
+
+    // Contract-v2 meta (golden/mirror_whisper_onnx.py): flat keys = int8,
+    // variants carry fp32 (with an external .weights extra) and fp16. Only the
+    // fp16 set + tokens are seeded — an fp16 request must be a pure cache hit,
+    // while the int8/fp32 requests would need files that aren't there (and the
+    // offline fetch of a missing file fails) → nullopt-or-tarball-miss, which
+    // proves the right per-variant file list was assembled.
+    fs::path dir = tmp / "KonstantK/whisper-onnx-sherpa" / "large-v3-turbo";
+    write_file(dir / "meta.json", R"({
+        "contract_version": 2,
+        "encoder": "turbo-encoder.int8.onnx",
+        "decoder": "turbo-decoder.int8.onnx",
+        "tokens": "turbo-tokens.txt",
+        "variants": {
+            "int8": {"encoder": "turbo-encoder.int8.onnx",
+                     "decoder": "turbo-decoder.int8.onnx", "files": []},
+            "fp32": {"encoder": "turbo-encoder.onnx",
+                     "decoder": "turbo-decoder.onnx",
+                     "files": ["turbo-encoder.weights"]},
+            "fp16": {"encoder": "turbo-encoder.fp16.onnx",
+                     "decoder": "turbo-decoder.fp16.onnx", "files": []}
+        }})");
+    write_file(dir / "turbo-encoder.fp16.onnx", "x");
+    write_file(dir / "turbo-decoder.fp16.onnx", "x");
+    write_file(dir / "turbo-tokens.txt", "x");
+
+    auto got = dl::ensure_whisper_dir("large-v3-turbo", Precision::Fp16);
+    REQUIRE(got.has_value());
+    REQUIRE(fs::equivalent(*got, dir));
+
+    // fp32 variant: the .weights extra must be part of the fetched set — seed
+    // everything but it offline-misses; with it, cache hit.
+    write_file(dir / "turbo-encoder.onnx", "x");
+    write_file(dir / "turbo-decoder.onnx", "x");
+    write_file(dir / "turbo-encoder.weights", "x");
+    auto fp32 = dl::ensure_whisper_dir("large-v3-turbo", Precision::Fp32);
+    REQUIRE(fp32.has_value());
+    REQUIRE(fs::equivalent(*fp32, dir));
+
     fs::remove_all(tmp);
     unsetenv("WHISPERX_SHERPA_CACHE");
 }

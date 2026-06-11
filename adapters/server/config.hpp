@@ -33,6 +33,21 @@ std::optional<Device> parse_device(const std::string& s);
 // coincide: "cpu"/"cuda"/"coreml").
 const char* to_string(Device d);
 
+// Whisper model precision variant to load on GPU devices (the mirror publishes
+// fp16/fp32/int8 turbo variants — meta.json contract v2, see
+// golden/mirror_whisper_onnx.py and CUDA_DECODE_FINDINGS.md). Cpu always
+// resolves int8-preferred regardless: int8 is the CPU-optimal variant, and
+// int8 on the CUDA EP was the original "slow CUDA" bug (ORT has no CUDA int8
+// matmul kernels — the matmuls silently run on one CPU thread).
+enum class Precision { Fp16, Fp32, Int8 };
+
+// Parse "fp16" | "fp32" | "int8" (case-insensitive); nullopt otherwise.
+std::optional<Precision> parse_precision(const std::string& s);
+// Canonical lowercase name; doubles as the filename needle the asset resolver
+// matches ("fp16"/"int8" appear in the variant filenames; fp32 files are the
+// plain unsuffixed ones).
+const char* to_string(Precision p);
+
 // Load the .env chain into the process environment (real env always wins). Call
 // once at startup before reading any config. `exe_dir` is where the binary lives
 // (for the dev/defaults .env files); pass argv[0]'s directory.
@@ -57,12 +72,16 @@ struct Config {
     long batch_size = 8;         // WHISPERX_BATCH_SIZE (pipeline.py:58)
     // VAD chunks decoded per sherpa Whisper call on the Cuda device (the
     // batched-decode patch in third_party/sherpa-onnx-patches/; Cpu always
-    // decodes serially). Default 1 = off: measured on a 3080 Ti
-    // (large-v3-turbo fp32, 10 min audio) batch 8 was *slower* than serial
-    // (transcribe RTF 0.526 vs 0.443) — cause not yet isolated; see
-    // CUDA_DECODE_HANDOFF.md. Opt-in knob until that's fixed and batch wins;
-    // VRAM also scales with it (~0.5 GB/row on large-v3-turbo fp32).
+    // decodes serially). Default 1 = off, and measured to be the right
+    // default: with fp32 turbo on a 3080 Ti, batch 4 ≈ serial (RTF 0.029 vs
+    // 0.030) and batch 8 regresses (VRAM pressure on 12 GB). The original
+    // "batch loses on CUDA" mystery was the int8 model variant running its
+    // matmuls on one CPU thread — see CUDA_DECODE_FINDINGS.md.
     long asr_batch_size = 1;     // WHISPERX_ASR_BATCH_SIZE
+    // Whisper precision on GPU devices (fp16 default: half the download/VRAM
+    // of fp32, tensor cores, WER-equal on the goldens). Cpu ignores this and
+    // stays int8-preferred — see the Precision enum comment.
+    Precision asr_precision = Precision::Fp16;  // WHISPERX_ASR_PRECISION
     long long_audio_warn_s = 2 * 3600;  // WHISPERX_LONG_AUDIO_WARN_S (pipeline.py:211)
     std::string log_level = "info";     // WHISPERX_LOG_LEVEL
     std::string spa_dir;         // app/static/spa (built SPA); WHISPERX_SPA_DIR override

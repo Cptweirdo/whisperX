@@ -49,10 +49,11 @@ class WhisperSherpa {
     // selects the CUDA EP from this string once the GPU ORT build is present.
     // batch_size > 1 decodes that many VAD chunks per sherpa call — one encoder
     // pass + lockstep greedy decode (our sherpa batched-whisper patch, see
-    // third_party/sherpa-onnx-patches/). NB: measured on CUDA this is currently
-    // *not* a win (3080 Ti, turbo fp32: batch 8 RTF 0.526 vs serial 0.443);
-    // cause not yet isolated — see CUDA_DECODE_HANDOFF.md before turning it
-    // on. VRAM also scales with it (~0.5 GB/row on turbo fp32).
+    // third_party/sherpa-onnx-patches/). NB: measured on CUDA with fp32 turbo,
+    // batch 4 ≈ serial (RTF 0.029 vs 0.030) and batch 8 regresses (VRAM
+    // pressure on 12 GB) — keep it at 1; see CUDA_DECODE_FINDINGS.md. Beware
+    // int8 model exports on CUDA: ORT's CUDA EP has no int8 matmul kernels, so
+    // they silently run on one CPU thread (the original "slow CUDA" bug).
     WhisperSherpa(const std::string& encoder, const std::string& decoder,
                   const std::string& tokens, int num_threads = 1,
                   int feature_dim = 80, const std::string& language = "",

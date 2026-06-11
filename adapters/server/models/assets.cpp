@@ -23,10 +23,31 @@ std::optional<std::string> env(const char* key) {
     return std::nullopt;
 }
 
+// Precision variant a filename carries: "int8"/"fp16" in the name, else fp32
+// (sherpa's plain unsuffixed exports are fp32).
+Precision variant_of(const std::string& name) {
+    if (name.find("int8") != std::string::npos) return Precision::Int8;
+    if (name.find("fp16") != std::string::npos) return Precision::Fp16;
+    return Precision::Fp32;
+}
+
+// Preference rank of a file's variant under the requested precision (lower
+// wins). Fallback keeps models without the requested variant loadable: fp16 →
+// [fp16, fp32, int8]; fp32 → [fp32, fp16, int8]; int8 → [int8, fp32, fp16].
+// int8 ranks last on the GPU precisions deliberately — it was the original
+// "slow CUDA" bug (no CUDA int8 kernels; see CUDA_DECODE_FINDINGS.md).
+int variant_rank(Precision file, Precision want) {
+    if (file == want) return 0;
+    if (file == Precision::Int8) return 2;
+    return 1;
+}
+
 // Pick the asset in `dir` whose filename contains `needle` and has one of the
-// given extensions, preferring the fp32 (non-int8) one (asr_sherpa._pick).
+// given extensions, preferring the `precision` variant (asr_sherpa._pick is
+// the fp32-preferring ancestor of this).
 std::optional<std::string> pick(const fs::path& dir, const std::string& needle,
-                                const std::vector<std::string>& exts) {
+                                const std::vector<std::string>& exts,
+                                Precision precision = Precision::Fp32) {
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) return std::nullopt;
     std::vector<fs::path> matches;
@@ -39,19 +60,22 @@ std::optional<std::string> pick(const fs::path& dir, const std::string& needle,
         matches.push_back(e.path());
     }
     if (matches.empty()) return std::nullopt;
-    std::sort(matches.begin(), matches.end(), [](const auto& a, const auto& b) {
-        bool ai = a.filename().string().find("int8") != std::string::npos;
-        bool bi = b.filename().string().find("int8") != std::string::npos;
-        if (ai != bi) return !ai;  // non-int8 first
-        return a.filename().string().size() < b.filename().string().size();
+    std::sort(matches.begin(), matches.end(),
+              [precision](const auto& a, const auto& b) {
+        const auto an = a.filename().string(), bn = b.filename().string();
+        int ar = variant_rank(variant_of(an), precision);
+        int br = variant_rank(variant_of(bn), precision);
+        if (ar != br) return ar < br;
+        return an.size() < bn.size();
     });
     return matches.front().string();
 }
 
-std::optional<WhisperAssets> from_whisper_dir(const fs::path& dir) {
-    auto enc = pick(dir, "encoder", {".onnx"});
-    auto dec = pick(dir, "decoder", {".onnx"});
-    auto tok = pick(dir, "tokens", {".txt"});
+std::optional<WhisperAssets> from_whisper_dir(const fs::path& dir,
+                                              Precision precision) {
+    auto enc = pick(dir, "encoder", {".onnx"}, precision);
+    auto dec = pick(dir, "decoder", {".onnx"}, precision);
+    auto tok = pick(dir, "tokens", {".txt"}, precision);
     if (!enc || !dec || !tok) return std::nullopt;
     return WhisperAssets{*enc, *dec, *tok, 80};
 }
@@ -83,21 +107,23 @@ int feature_dim_for(const std::string& model_name) {
     return 80;
 }
 
-std::optional<WhisperAssets> resolve_whisper(const std::string& model_name) {
+std::optional<WhisperAssets> resolve_whisper(const std::string& model_name,
+                                             Precision precision) {
     std::optional<WhisperAssets> a;
     // 1. a per-model subdir under the models root
     if (auto root = env("WHISPERX_SHERPA_MODELS_ROOT")) {
-        a = from_whisper_dir(fs::path(*root) / model_name);
+        a = from_whisper_dir(fs::path(*root) / model_name, precision);
     }
     // 2. a single explicit dir (dev: holds the active model)
     if (!a) {
         if (auto dir = env("WHISPERX_SHERPA_WHISPER_DIR"))
-            a = from_whisper_dir(fs::path(*dir));
+            a = from_whisper_dir(fs::path(*dir), precision);
     }
     // 3. lazy-download from the HF mirror / sherpa release into the cache
     if (!a) {
-        if (auto dir = whisperx::server::assets::ensure_whisper_dir(model_name))
-            a = from_whisper_dir(*dir);
+        if (auto dir = whisperx::server::assets::ensure_whisper_dir(model_name,
+                                                                    precision))
+            a = from_whisper_dir(*dir, precision);
     }
     if (a) a->feature_dim = feature_dim_for(model_name);
     return a;

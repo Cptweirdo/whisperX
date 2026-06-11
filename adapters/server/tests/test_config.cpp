@@ -203,6 +203,29 @@ TEST_CASE("to_string(Device) round-trips through parse_device", "[config]") {
     CHECK(std::string(to_string(Device::CoreML)) == "coreml");  // sherpa provider
 }
 
+TEST_CASE("parse_precision accepts fp16/fp32/int8 (any case), rejects junk",
+          "[config]") {
+    CHECK(parse_precision("fp16") == Precision::Fp16);
+    CHECK(parse_precision("FP32") == Precision::Fp32);
+    CHECK(parse_precision("int8") == Precision::Int8);
+    CHECK_FALSE(parse_precision("").has_value());
+    CHECK_FALSE(parse_precision("fp8").has_value());
+    CHECK_FALSE(parse_precision("float16").has_value());
+    for (auto p : {Precision::Fp16, Precision::Fp32, Precision::Int8})
+        CHECK(parse_precision(to_string(p)) == p);
+}
+
+TEST_CASE("WHISPERX_ASR_PRECISION defaults to fp16, garbage falls back",
+          "[config]") {
+    ::unsetenv("WHISPERX_ASR_PRECISION");
+    CHECK(load_config().asr_precision == Precision::Fp16);
+    ::setenv("WHISPERX_ASR_PRECISION", "fp32", 1);
+    CHECK(load_config().asr_precision == Precision::Fp32);
+    ::setenv("WHISPERX_ASR_PRECISION", "bogus", 1);
+    CHECK(load_config().asr_precision == Precision::Fp16);
+    ::unsetenv("WHISPERX_ASR_PRECISION");
+}
+
 TEST_CASE("load_config reads typed knobs from the environment", "[config]") {
     ::setenv("WHISPERX_HOST", "0.0.0.0", 1);
     ::setenv("WHISPERX_PORT", "9090", 1);

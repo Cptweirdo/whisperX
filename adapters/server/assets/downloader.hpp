@@ -31,8 +31,13 @@ std::string map_model(const std::string& whisper_arch);
 
 // Ensure a sherpa Whisper model directory (encoder/decoder/tokens) exists in the
 // cache — mirror first, then the sherpa-onnx release tarball. Returns the dir, or
-// nullopt if neither source yields the model.
-std::optional<fs::path> ensure_whisper_dir(const std::string& model_name);
+// nullopt if neither source yields the model. `precision` selects the mirror
+// variant on contract-v2 metas ("variants" block, see golden/mirror_whisper_onnx.py)
+// with the same fallback order models/assets.cpp uses to pick from the dir
+// afterwards; v1 metas (no variants) keep the legacy flat-keys path.
+std::optional<fs::path> ensure_whisper_dir(
+    const std::string& model_name,
+    whisperx::server::Precision precision = whisperx::server::Precision::Fp32);
 
 // Map a language code to the mirror folder of its default align model
 // (DEFAULT_ALIGN_MODELS_TORCH/_HF with '/' folded to "--", alignment.py:116).
