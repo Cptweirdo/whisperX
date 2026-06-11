@@ -201,6 +201,16 @@ output drift). Expected ROI: high — the only credible 2×+ lever on the domina
 > parity sane (coherent Russian, correct 2-speaker diarization, `ru` auto-detected). ggml +
 > sherpa-onnx ORT coexist cleanly in one macOS binary (the link risk is cleared). The
 > implementation below matches what shipped.
+>
+> **Follow-up — quant + flash-attn measured 2026-06-11 (`SPEEDUP_FINDINGS.md` lever 1,
+> `docs/MACOS_COREML.md` Phase 2b).** Sweeping `WHISPERX_GGML_QUANT` ×
+> `WHISPERX_WHISPERCPP_FLASH_ATTN`: **flash-attention is the lever** (fp16+flash 1.15×),
+> q8_0 alone barely moves Stage 1 (1.02× — turbo's pruned decoder makes the bandwidth-bound
+> decode a small slice), but **q8_0 + flash = 1.26× Stage 1** (RTF 0.073 → 0.050) at 1.1%
+> Russian WER drift. q5_0 breaks the WER gate (4.6–6.2% drift). **Now the Apple default**
+> (`config.cpp`): on `__APPLE__`, `WHISPERX_ASR_BACKEND`/`WHISPERX_GGML_QUANT`/
+> `WHISPERX_WHISPERCPP_FLASH_ATTN` default to `whispercpp`/`q8_0`/`1` (degrades to sherpa
+> if the build lacks `WHISPERX_WHISPERCPP_BUILD`; explicit env/persisted choice wins).
 
 ### Why
 

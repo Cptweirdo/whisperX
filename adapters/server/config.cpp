@@ -191,11 +191,26 @@ Config load_config() {
     c.asr_batch_size = env_long("WHISPERX_ASR_BATCH_SIZE", 1);
     c.asr_precision = parse_precision(env_str("WHISPERX_ASR_PRECISION", "fp16"))
                           .value_or(Precision::Fp16);
-    c.asr_backend = parse_asr_backend(env_str("WHISPERX_ASR_BACKEND", "sherpa"))
+    // Stage-1 ASR backend defaults. On Apple Silicon the measured-best Stage-1
+    // config is whisper.cpp/Metal with q8_0 + flash-attention (SPEEDUP_FINDINGS.md
+    // lever 1 / docs/MACOS_COREML.md Phase 2b: 1.26× Stage 1, 1.1% Russian WER drift),
+    // so that is the platform default. It degrades safely to sherpa if the build lacks
+    // WHISPERX_WHISPERCPP_BUILD (ModelManager::asr_backend_available gate). An explicit
+    // env var, or a persisted /api/asr_backend choice (main.cpp), still wins.
+#if defined(__APPLE__)
+    constexpr const char* kDefaultBackend = "whispercpp";
+    constexpr const char* kDefaultQuant = "q8_0";
+    constexpr const char* kDefaultFlash = "1";
+#else
+    constexpr const char* kDefaultBackend = "sherpa";
+    constexpr const char* kDefaultQuant = "";
+    constexpr const char* kDefaultFlash = "";
+#endif
+    c.asr_backend = parse_asr_backend(env_str("WHISPERX_ASR_BACKEND", kDefaultBackend))
                         .value_or(AsrBackend::Sherpa);
-    c.ggml_quant = env_str("WHISPERX_GGML_QUANT", "");
+    c.ggml_quant = env_str("WHISPERX_GGML_QUANT", kDefaultQuant);
     c.whispercpp_flash_attn =
-        parse_bool(env_str("WHISPERX_WHISPERCPP_FLASH_ATTN", ""), false);
+        parse_bool(env_str("WHISPERX_WHISPERCPP_FLASH_ATTN", kDefaultFlash), false);
     c.long_audio_warn_s = env_long("WHISPERX_LONG_AUDIO_WARN_S", 2 * 3600);
     c.log_level = env_str("WHISPERX_LOG_LEVEL", "info");
     c.active_model = env_str("WHISPERX_MODEL", "small");

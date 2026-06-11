@@ -29,6 +29,115 @@ Companion briefs: `GPU_INTEGRATION.md` (CUDA, landed), `METAL_INTEGRATION.md`
 - **sherpa-onnx as the deployment runtime** — exactly the report's recommended
   execution layer; the foundation is right.
 
+## Apple Silicon — most likely speedups after Route B (2026-06-11)
+
+Route B (whisper.cpp Metal) landed and **flattened the profile**. The Amdahl picture
+is now completely different from when the items below were first ranked, and that
+re-ranks everything.
+
+**New warm profile (M4, 300 s Russian clip, `large-v3-turbo` fp16 ggml, E2E RTF 0.199):**
+
+| Stage | RTF | share | accelerator |
+|---|---|---|---|
+| Stage 1 ASR (whisper.cpp/Metal) | 0.073 | 37% | Metal GPU |
+| Stage 2 align (wav2vec2, ORT) | 0.069 | 35% | **CPU** |
+| Stage 3 diarize (sherpa, ORT) | 0.056 | 28% | **CPU** (pinned) |
+
+No stage dominates. Stage 1 — the old 65% bottleneck — is now fast *and* small.
+**Combined align+diarize = 63%, both CPU.** So the next gains come from removing or
+accelerating the CPU stages, not more Stage-1 work. Every lever is judged against this.
+
+### Most likely, ranked by ROI ÷ cost
+
+**1. Quantized ggml + flash-attention on Metal — MEASURED 2026-06-11 (M4): flash is the
+lever, q8_0 a small bonus, q5_0 rejected.** Both knobs already ship
+(`WHISPERX_GGML_QUANT=q5_0|q8_0`, `WHISPERX_WHISPERCPP_FLASH_ATTN=1`) — this was a
+*measurement*, a boot flag and a one-file download, not an implementation. Swept all six
+quant×flash combos on the 300 s Russian clip (`scripts/bench_whispercpp_metal.sh`),
+WER as drift vs the fp16/flash-off transcript (`bench_whispercpp_wer.py`):
+
+| config | Stage-1 RTF | ×fp16 | WER drift | verdict |
+|---|---|---|---|---|
+| fp16, flash off | 0.063 | 1.00× | 0.000 | baseline |
+| fp16, **flash on** | 0.055 | 1.15× | 0.013 | flash carries it |
+| q8_0, flash off | 0.062 | 1.02× | 0.007 | quant alone ≈ nothing |
+| **q8_0, flash on** | **0.050** | **1.26×** | **0.011** | **winner (under gate)** |
+| q5_0, flash off | 0.057 | 1.11× | 0.046 | over WER gate |
+| q5_0, flash on | 0.050 | 1.26× | 0.062 | over WER gate |
+
+**The prediction inverted.** The lightning-whisper-mlx thesis was *quantization is the
+decode-bandwidth lever* (`LIGHTNING_WHISPER_MLX_ANALYSIS.md` §2); measured on
+`large-v3-turbo`, **q8_0 alone barely moves Stage 1 (1.02×)** — flash-attention is the
+real win (the insanely-fast-whisper FA2 lesson, item 5). Turbo's decoder is pruned to 4
+layers, so autoregressive decode is a small slice and the bandwidth argument has little
+leverage; the compute-bound encoder, which flash-attn accelerates, dominates. q8_0 only
+helps *stacked on* flash (1.15× → 1.26×) and is near-lossless (1.1% drift). **q5_0 breaks
+the gate** — 4.6–6.2% Russian WER drift (it garbles words, e.g. drops "мало"), reject.
+Net: **q8_0 + flash-attn = 1.26× Stage 1** (≈4× over the original sherpa CPU baseline),
+but only **~5% E2E** — exactly the doc's modest ceiling, because Stage 1 is already 37%.
+**Now the Apple default** (`config.cpp::load_config`, 2026-06-11): on `__APPLE__`,
+`WHISPERX_ASR_BACKEND`/`WHISPERX_GGML_QUANT`/`WHISPERX_WHISPERCPP_FLASH_ATTN` default to
+`whispercpp`/`q8_0`/`1` (degrades to sherpa if the build lacks `WHISPERX_WHISPERCPP_BUILD`;
+explicit env/persisted choice still wins). Done — the cheap win is banked and shipped by
+default; the structural levers (2–3) are where the real E2E time still is.
+
+**2. Skip align — "fast timestamps" (item 6), now high-value.** Stage 2 is 35% of
+wall-clock and CPU-bound with **no Mac GPU lever** (CoreML EP is dead; MLAS has no fp16
+win). whisper.cpp already emits token-level DTW timestamps — the Metal backend produces
+the input for free. An opt-in mode that takes word timestamps from whisper.cpp and drops
+the wav2vec2 stage removes ~35% E2E for **all** languages. The quality trade is real
+(attention-DTW boundaries < wav2vec2 forced alignment — the founding premise of
+whisperX), so opt-in, clearly labeled. This was an "optional product idea" when Stage 1
+dominated; post-Route-B it is the single biggest *general-purpose* E2E lever.
+
+**3. GigaAM CTC for Russian (item 2) — biggest structural win for the actual corpus.**
+Compounding: a Conformer-CTC Russian forward is cheaper than Whisper enc/dec, gives ~8%
+WER vs ~25% for large-v3, **and** its CTC logits do forced alignment in the same pass →
+the wav2vec2 align stage (35%) disappears for Russian. Our benchmark corpus *is* Russian,
+so this hits both CPU co-bottlenecks at once. Cost: a per-language ASR-backend routing
+dimension — much cheaper now that the `AsrBackend` plumbing exists (it's just another
+backend; language-detect already routes). Russian-only.
+
+**4. INT8 embedding extractor on CPU (Stage 3, item 4).** sherpa ships int8 embedding
+models — ~4× smaller, big CPU speedup, near-lossless for speaker embeddings. Diarize is
+28% and CPU-pinned by design (the tiny-forward GPU-starvation finding, item 1 / §1,
+applies to Metal too). INT8 is the realistic Mac diarize lever. Gate: DER unchanged on
+the golden dialogs. Size it first by profiling the embedding-vs-segmentation-vs-clustering
+split within the 17 s diarize stage.
+
+### Demoted by the re-ranking
+
+**Batched MLX decode (lightning's headline) — now poor ROI.** The "batched MLX beats
+serial whisper.cpp" argument (`LIGHTNING_WHISPER_MLX_ANALYSIS.md` §1) was compelling when
+Stage 1 was 65% of wall-clock. It no longer is: Stage 1 is 37% and already RTF 0.073.
+Even a 2× from batched decode is ~18% E2E, for a large cost (hand-rolled MLX C++ decode
+loop, a third model-asset family, Apple-only) — while lever 1 captures most of the
+remaining Stage-1 headroom for near-zero cost and levers 2–3 attack the bottleneck MLX
+doesn't touch. **Verdict: watch-list only; re-open solely for a future *streaming*
+feature (`MLX_PORT.md`).**
+
+**WHISPER_COREML ANE encoder (Phase 3) — marginal.** The encoder is a small fraction of
+Stage 1 (autoregressive decode dominates); 3× on a small slice of an already-fast 37%
+stage is noise, for an extra per-model asset. Skip unless profiling shows the encoder is
+unexpectedly large.
+
+**Diarize on ANE/CoreML — uncertain, low priority.** The conv-heavy embedding extractor
+*might* load under the CoreML EP where the Whisper export didn't (different graph: no
+fp16-cast fusion, no external-weights path loss), but the per-call overhead that pins
+diarize to CPU (hundreds of tiny forwards) persists on Metal. Cheap to test, marginal
+expected; INT8-on-CPU (lever 4) is the better-understood diarize lever.
+
+### The one-line answer
+
+Cheapest real win: **`WHISPERX_WHISPERCPP_FLASH_ATTN=1` (+ `WHISPERX_GGML_QUANT=q8_0`)** —
+measured 1.26× Stage 1 / ~5% E2E (lever 1, done; flash is the lever, q8_0 a bonus, q5_0
+rejected). Biggest structural win: **delete the align stage** — fast-timestamps for
+everyone (lever 2) or GigaAM for Russian (lever 3); that's where the E2E time now is.
+Stop ranking Stage-1 batching as a headline — Route B already took that bottleneck off
+the table.
+
+---
+
 ## Open items, ranked
 
 ### 1. CUDA — batch VAD chunks through ASR (biggest CUDA lever)
@@ -126,14 +235,12 @@ dominates Mac wall-clock, expect ~2× end-to-end. whisper.cpp is C++ and embeds
 cleanly — but it is a **new ASR backend dimension** (ggml `.bin` assets, not
 ONNX), not a `Device`. Align/diarize stay on ORT CPU.
 
-**Pre-step (cheap, from `LIGHTNING_WHISPER_MLX_ANALYSIS.md`):** our whisper.cpp
-> MLX ranking compared *serial vs serial*; whisper.cpp has no batched decode,
-MLX does, and lightning's claimed 10× is exactly batched-vs-serial. Before
-committing native work, benchmark Python `lightning-whisper-mlx` (batch 12)
-against whisper.cpp Metal on the 300 s Russian clip from `MAC_PERFORMANCE.md`.
-If batched MLX wins end-to-end at equal quality, Route B's engine choice
-should be revisited — MLX is usable from C++ (`MLX_PORT.md`), and lightning's
-`decoding.py` is a complete reference for a batched KV-cache decode loop.
+**Pre-step (was: benchmark batched MLX before committing) — now moot.** Route B
+shipped with whisper.cpp and measured 3.2× on Stage 1 / 1.83× E2E. The batched-MLX
+question is **demoted**, not pending: with Stage 1 down to 37% and already RTF 0.073,
+a batched-MLX rewrite is poor ROI (full reasoning in §"Apple Silicon — most likely
+speedups after Route B"). MLX stays watch-list, justified only by a future *streaming*
+feature (`MLX_PORT.md`).
 
 The CoreML-EP spike (Route A, landed speculatively in 650d084) stays
 timeboxed: evidence says CoreML EP is a wash or regression for transformer ASR
@@ -163,12 +270,13 @@ extractors: ~4× smaller, big CPU speedup, near-lossless for speaker
 embeddings. For the wav2vec2 aligner, gate on the existing parity tolerances
 (timings ±1 frame, scores ±0.01).
 
-**Quantized ggml on Metal (from lightning-whisper-mlx):** autoregressive
-decode streams the full weight matrix per token — memory-bandwidth-bound on
-Apple unified memory, so weight quantization is a *decode-throughput* lever
-there, not just a size lever. whisper.cpp ships quantized ggml variants
-(`Q5_0`, `Q8_0`) natively; rides item 3, gated on Russian WER vs the fp16
-ggml baseline.
+**Quantized ggml on Metal (from lightning-whisper-mlx) — MEASURED, thesis didn't
+hold for turbo.** The prediction was that decode is memory-bandwidth-bound on Apple
+unified memory, making weight quantization a *decode-throughput* lever. Measured (lever 1
+above): on `large-v3-turbo`, q8_0 alone is **1.02×** — flash-attention, not quant, drives
+Stage 1, because turbo's 4-layer decoder makes decode a small slice. q8_0 stacks a small
+near-lossless bonus on flash (→1.26×); q5_0 is over the Russian WER gate. So q8_0's value
+is mostly the smaller download + a marginal speed bump, not the bandwidth win predicted.
 
 ### 5. CUDA — fused attention in the ONNX graphs
 
@@ -199,7 +307,7 @@ an opt-in speed mode, clearly labeled lower precision. The Metal backend
 | distil-whisper | English-only — our own benchmark caught it mis-transcribing Russian as English (`MAC_PERFORMANCE.md`). `large-v3-turbo` (pruned decoder, multilingual) is the correct analogue and already our default mirror. |
 | PyTorch MPS path on Mac | insanely-fast-whisper's own caveats (batch capped at 4, "way more memory hungry", no benchmark published) confirm it; whisper.cpp Metal (RTF 0.070) stays our Apple route. |
 | Qwen3-ASR / LLM-ForcedAligner | SLLM, VRAM-heavy, no ONNX/sherpa path — wrong fit for a local-first single-binary server. Watch only. The report's RTF/accuracy claims here are unverifiable; treat as marketing. |
-| MLX serial (batch pipeline) | Own benchmarks show whisper.cpp Metal beats *serial* MLX 1.57–2×. `MLX_PORT.md` scopes MLX to a future *streaming* feature — but **batched** MLX is back on the table pending the item 3 pre-step benchmark. |
+| MLX (serial or batched) | whisper.cpp Metal beats *serial* MLX 1.57–2× (`MAC_PERFORMANCE.md`). **Batched** MLX was the open question — now **demoted** post-Route-B: Stage 1 is 37% and RTF 0.073, so a batched-MLX rewrite is poor ROI (see §"most likely speedups after Route B"). Watch-list; `MLX_PORT.md` streaming only. |
 | lightning-whisper-mlx wholesale | Python, stale since 2024-05, blind chunking, seek-rewind dropped, no align/diarize. A source of two ideas (batched MLX decode, quantized weights) and one reference file (`decoding.py`), not a dependency. Speculative decoding advertised there never landed — ignore. |
 | NeMo MSDD / Sortformer | A second CUDA-only stack duplicating sherpa diarization for marginal DER. |
 | Montreal Forced Aligner | Ground-truth/golden tooling only; CPU-bound Viterbi, fails on imperfect transcripts. Never production. |
@@ -208,11 +316,15 @@ an opt-in speed mode, clearly labeled lower precision. The Metal backend
 
 ## Suggested order
 
-**1 → 5 → 3 (pre-step first) → 2 → 4 → 6**: batched CUDA decode first
+This order is **CUDA-centric and partly historical**. For Apple Silicon, item 3
+(Route B) is **done** and re-ranked everything — see §"Apple Silicon — most likely
+speedups after Route B" for the current answer (quant ggml + flash-attn → fast-timestamps
+/ GigaAM → INT8 diarize; MLX demoted).
+
+**CUDA / cross-platform order — 1 → 5 → 3 → 2 → 4 → 6:** batched CUDA decode first
 (cheapest big win, contained in one file), then the fused-attention graph
-check (its multiplier — do it while measuring item 1), the batched-MLX vs
-whisper.cpp benchmark next (one afternoon, decides item 3's engine), then the
-Metal backend, GigaAM (biggest combined win but adds a model-routing
+check (its multiplier — do it while measuring item 1), then the
+Metal backend (now landed), GigaAM (biggest combined win but adds a model-routing
 dimension), reduced precision (incremental: fp16 rides the CUDA work,
 quantized ggml rides Metal, INT8 is CPU/edge), fast-timestamps mode last
 (product call, not pure engineering).

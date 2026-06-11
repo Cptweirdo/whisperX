@@ -135,6 +135,48 @@ can only chip at the remaining ~36%, and Stage 3 is CPU-pinned anyway. Cold run 
 of the session, before align resident) was within noise on the compute stages — only
 `loading_align` differs (18 s cold vs 0 s warm), which is one-time per process.
 
+## Phase 2b — quant + flash-attn on the whisper.cpp/Metal backend (Phase 2 follow-up)
+
+Run 2026-06-11 (M4), same clip. With Route B landed, the next Apple lever
+(`SPEEDUP_FINDINGS.md` lever 1) was a pure measurement — both knobs already ship. Swept
+`WHISPERX_GGML_QUANT` × `WHISPERX_WHISPERCPP_FLASH_ATTN` via
+`scripts/bench_whispercpp_metal.sh`; WER is drift vs the fp16/flash-off transcript
+(`scripts/bench_whispercpp_wer.py`, gate ≤ 0.03). Stage 1 only — align/diarize unchanged.
+
+| quant | flash | Stage-1 RTF | ×fp16 | WER drift | verdict |
+|---|---|---|---|---|---|
+| fp16 | off | 0.063 | 1.00× | 0.000 | baseline |
+| fp16 | **on** | 0.055 | 1.15× | 0.013 | flash is the lever |
+| q8_0 | off | 0.062 | 1.02× | 0.007 | quant alone ≈ nothing |
+| **q8_0** | **on** | **0.050** | **1.26×** | **0.011** | **recommended** |
+| q5_0 | off | 0.057 | 1.11× | 0.046 | over gate — reject |
+| q5_0 | on | 0.050 | 1.26× | 0.062 | over gate — reject |
+
+**Finding:** flash-attention does the work; q8_0 quantization barely speeds Stage 1 alone
+(turbo's 4-layer decoder makes the bandwidth-bound decode a small slice — the
+lightning-whisper-mlx "quant = decode throughput" thesis didn't hold here). q8_0 stacks a
+small near-lossless bonus on flash; q5_0 garbles Russian (drops/swaps words) and breaks
+the WER gate. **Recommended Mac flags: `WHISPERX_WHISPERCPP_FLASH_ATTN=1` +
+`WHISPERX_GGML_QUANT=q8_0`** (1.26× Stage 1, ≈4× over the int8 CPU baseline above), or
+fp16+flash to skip the 874 MB q8_0 download for ~9% less Stage-1 speed. E2E gain is only
+~5% — Stage 1 is now 37%, so the real time is in align+diarize (levers 2–3).
+
+Env knobs (whisper.cpp backend, read at engine-build → set before boot):
+
+| Env | Default (Apple / other) | Meaning |
+|---|---|---|
+| `WHISPERX_ASR_BACKEND` | `whispercpp` / `sherpa` | `sherpa` \| `whispercpp` (Metal Stage 1) |
+| `WHISPERX_GGML_QUANT` | `q8_0` / *(empty = fp16)* | `q8_0` (recommended) \| `q5_0` (rejected, WER) — picks `ggml-<model>[-quant].bin` from `ggerganov/whisper.cpp` |
+| `WHISPERX_WHISPERCPP_FLASH_ATTN` | `1` / off | `1` enables flash-attention — the actual speed lever |
+
+**Now the Apple default (2026-06-11, `config.cpp::load_config`):** on `__APPLE__`,
+`WHISPERX_ASR_BACKEND` / `WHISPERX_GGML_QUANT` / `WHISPERX_WHISPERCPP_FLASH_ATTN` default
+to `whispercpp` / `q8_0` / `1` — so a fresh Mac install runs Stage 1 on whisper.cpp/Metal
+with the measured-best flags out of the box. It degrades safely to sherpa if the build
+lacks `WHISPERX_WHISPERCPP_BUILD` (`asr_backend_available` gate), and any explicit env var
+or persisted `/api/asr_backend` choice still wins. Non-Apple defaults are unchanged
+(sherpa, fp16, no flash).
+
 ## What to bring back (fills METAL_INTEGRATION.md "Unknowns")
 
 - ~~Did `server-macos` build/test cleanly, and what needed fixing?~~ **Done**: builds

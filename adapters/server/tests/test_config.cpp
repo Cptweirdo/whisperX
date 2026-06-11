@@ -230,15 +230,45 @@ TEST_CASE("parse_asr_backend accepts sherpa/whispercpp aliases, rejects junk",
         CHECK(parse_asr_backend(to_string(b)) == b);
 }
 
-TEST_CASE("WHISPERX_ASR_BACKEND defaults to sherpa, garbage falls back",
+TEST_CASE("WHISPERX_ASR_BACKEND default is platform-specific, garbage falls back",
           "[config]") {
+    // Apple defaults to whisper.cpp/Metal (measured best Stage 1, config.cpp);
+    // every other platform defaults to sherpa.
+#if defined(__APPLE__)
+    constexpr AsrBackend kDefault = AsrBackend::WhisperCpp;
+#else
+    constexpr AsrBackend kDefault = AsrBackend::Sherpa;
+#endif
     ::unsetenv("WHISPERX_ASR_BACKEND");
-    CHECK(load_config().asr_backend == AsrBackend::Sherpa);
+    CHECK(load_config().asr_backend == kDefault);
     ::setenv("WHISPERX_ASR_BACKEND", "whispercpp", 1);
     CHECK(load_config().asr_backend == AsrBackend::WhisperCpp);
-    ::setenv("WHISPERX_ASR_BACKEND", "bogus", 1);
+    ::setenv("WHISPERX_ASR_BACKEND", "sherpa", 1);
+    CHECK(load_config().asr_backend == AsrBackend::Sherpa);
+    ::setenv("WHISPERX_ASR_BACKEND", "bogus", 1);  // unparseable -> safe fallback
     CHECK(load_config().asr_backend == AsrBackend::Sherpa);
     ::unsetenv("WHISPERX_ASR_BACKEND");
+}
+
+TEST_CASE("ggml quant / flash-attn defaults are platform-specific", "[config]") {
+    for (const char* k : {"WHISPERX_GGML_QUANT", "WHISPERX_WHISPERCPP_FLASH_ATTN"})
+        ::unsetenv(k);
+    Config d = load_config();
+#if defined(__APPLE__)
+    CHECK(d.ggml_quant == "q8_0");          // measured-best on Apple (config.cpp)
+    CHECK(d.whispercpp_flash_attn == true);
+#else
+    CHECK(d.ggml_quant.empty());            // fp16, no quant elsewhere
+    CHECK(d.whispercpp_flash_attn == false);
+#endif
+    // Env still overrides the platform default.
+    ::setenv("WHISPERX_GGML_QUANT", "q5_0", 1);
+    ::setenv("WHISPERX_WHISPERCPP_FLASH_ATTN", "0", 1);
+    Config c = load_config();
+    CHECK(c.ggml_quant == "q5_0");
+    CHECK(c.whispercpp_flash_attn == false);
+    for (const char* k : {"WHISPERX_GGML_QUANT", "WHISPERX_WHISPERCPP_FLASH_ATTN"})
+        ::unsetenv(k);
 }
 
 TEST_CASE("WHISPERX_ASR_PRECISION defaults to fp16, garbage falls back",
