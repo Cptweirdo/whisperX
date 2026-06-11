@@ -66,9 +66,10 @@ on the **CPU EP** — single-threaded (`threads_for(Cuda)=1`) — with Memcpy
 ping-pong around each. "CUDA" was slower than plain CPU mode. The fp32 export
 (csukuangfj/sherpa-onnx-whisper-turbo) gives transcribe RTF **0.036 E2E**
 (12.3×) with zero code changes — `assets.cpp::pick()` already prefers
-non-int8 files. Quality: equal-or-better WER on 5/7 goldens. Remaining work
-is asset plumbing: ship fp32 (or fp16, item 4) turbo in the mirror; int8
-stays correct for CPU. With fp32, batch 4 ≈ serial and batch 8 regresses
+non-int8 files. Quality: equal-or-better WER on 5/7 goldens. The asset
+plumbing has since **shipped** (item 4): int8/fp32/fp16 turbo variants on
+the mirror + `WHISPERX_ASR_PRECISION` (default fp16 on GPU; Cpu stays
+int8). With fp32/fp16, batch 4 ≈ serial and batch 8 regresses
 (VRAM pressure), so `WHISPERX_ASR_BATCH_SIZE=1` stays the default and this
 item's batching patch is now a dormant nice-to-have, not a lever. The
 earlier suspects (IOBinding/PCIe, syncs, arena churn) were each profiled or
