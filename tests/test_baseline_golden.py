@@ -86,13 +86,13 @@ def _reference(name: str, meta: dict) -> str:
     if meta.get("synthetic"):  # dialogs carry per-turn text in their .json
         side = GOLDEN / meta.get("transcript", f"clips/{name}.json")
         if side.exists():
-            turns = json.loads(side.read_text())["turns"]
+            turns = json.loads(side.read_text(encoding="utf-8"))["turns"]
             return " ".join(t["text"] for t in turns)
     return ""
 
 
 def _clips() -> list[dict]:
-    man = json.loads(MANIFEST.read_text())
+    man = json.loads(MANIFEST.read_text(encoding="utf-8"))
     out = []
     for name, meta in sorted(man["clips"].items()):
         if "rttm" in meta and not meta.get("synthetic"):

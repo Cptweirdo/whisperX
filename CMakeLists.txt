@@ -256,6 +256,21 @@ if(WHISPERX_CORE_AUDIO)
       "if(NOT (CMAKE_VS_PLATFORM_NAME STREQUAL X64 OR CMAKE_VS_PLATFORM_NAME STREQUAL x64\n        OR CMAKE_SYSTEM_PROCESSOR STREQUAL AMD64 OR CMAKE_SYSTEM_PROCESSOR STREQUAL x86_64))"
       _sherpa_gpu_cmake "${_sherpa_gpu_cmake}")
     file(WRITE ${sherpa_onnx_SOURCE_DIR}/cmake/onnxruntime-win-x64-gpu.cmake "${_sherpa_gpu_cmake}")
+    # whisperX batched-whisper patch: sherpa's offline Whisper DecodeStreams is a
+    # serial loop ("batch decoding is not implemented yet"), so true batched
+    # decode (one encoder pass + lockstep greedy decoder over N VAD chunks) is
+    # carried as full-file replacements in third_party/sherpa-onnx-patches/,
+    # copied over the populated checkout each configure (ONLY_IF_DIFFERENT keeps
+    # it idempotent — no spurious sherpa rebuilds). Re-diff these files when
+    # bumping the sherpa GIT_TAG.
+    file(GLOB _wx_sherpa_patch_files
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx-patches/sherpa-onnx/csrc/*)
+    foreach(_wx_patch ${_wx_sherpa_patch_files})
+      get_filename_component(_wx_patch_name ${_wx_patch} NAME)
+      file(COPY_FILE ${_wx_patch}
+        ${sherpa_onnx_SOURCE_DIR}/sherpa-onnx/csrc/${_wx_patch_name}
+        ONLY_IF_DIFFERENT)
+    endforeach()
     add_subdirectory(${sherpa_onnx_SOURCE_DIR} ${sherpa_onnx_BINARY_DIR}
       EXCLUDE_FROM_ALL)
   endif()

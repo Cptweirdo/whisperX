@@ -47,22 +47,31 @@ class WhisperSherpa {
     // large-v3). language/task are defaults ("" language = auto-detect per chunk).
     // provider is the ONNX Runtime execution provider ("cpu" | "cuda"); sherpa
     // selects the CUDA EP from this string once the GPU ORT build is present.
+    // batch_size > 1 decodes that many VAD chunks per sherpa call — one encoder
+    // pass + lockstep greedy decode (our sherpa batched-whisper patch, see
+    // third_party/sherpa-onnx-patches/). NB: measured on CUDA this is currently
+    // *not* a win (3080 Ti, turbo fp32: batch 8 RTF 0.526 vs serial 0.443);
+    // cause not yet isolated — see CUDA_DECODE_HANDOFF.md before turning it
+    // on. VRAM also scales with it (~0.5 GB/row on turbo fp32).
     WhisperSherpa(const std::string& encoder, const std::string& decoder,
                   const std::string& tokens, int num_threads = 1,
                   int feature_dim = 80, const std::string& language = "",
                   const std::string& task = "transcribe",
-                  const std::string& provider = "cpu");
+                  const std::string& provider = "cpu", int batch_size = 1);
     ~WhisperSherpa();
     WhisperSherpa(WhisperSherpa&&) noexcept;
     WhisperSherpa& operator=(WhisperSherpa&&) noexcept;
     WhisperSherpa(const WhisperSherpa&) = delete;
     WhisperSherpa& operator=(const WhisperSherpa&) = delete;
 
-    // Transcribe each VAD span [start_s, end_s) of `audio` (one sherpa offline
-    // stream per span — Whisper pads every chunk to a fixed 30 s mel, so there is
-    // no cross-segment batch-norm hazard; "batch" is a serial loop). `language`
-    // (non-empty) overrides the per-chunk language; "" keeps the construction
-    // default / auto. Returns one AsrChunk per span, in order.
+    // Transcribe each VAD span [start_s, end_s) of `audio` — one sherpa offline
+    // stream per ≤29.5 s decode window, decoded in groups of batch_size
+    // (Whisper pads every chunk to a fixed 30 s mel, so there is no
+    // cross-segment batch-norm hazard). `language`/`task` are pinned on the
+    // recognizer for the call (sherpa's whisper impl reads them from the
+    // recognizer config — per-stream options don't reach it); a non-empty
+    // language also enables the batched decode path. "" language = per-chunk
+    // auto-detect (serial). Returns one AsrChunk per span, in order.
     std::vector<AsrChunk> transcribe(
         const whisperx::audio::AudioBuffer& audio,
         const std::vector<std::pair<double, double>>& spans,

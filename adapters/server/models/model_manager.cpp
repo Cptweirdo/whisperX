@@ -37,11 +37,12 @@ int threads_for(Device d) {
 }  // namespace
 
 ModelManager::ModelManager(std::string active, Device device, OnChange on_change,
-                           DiarizeTuning diarize_tuning)
+                           DiarizeTuning diarize_tuning, int asr_batch_size)
     : active_(is_known_model(active) ? std::move(active) : std::string("small")),
       device_(device),
       on_change_(std::move(on_change)),
-      diarize_tuning_(diarize_tuning) {}
+      diarize_tuning_(diarize_tuning),
+      asr_batch_size_(asr_batch_size < 1 ? 1 : asr_batch_size) {}
 
 std::string ModelManager::active() {
     std::lock_guard<std::mutex> lk(lock_);
@@ -179,13 +180,17 @@ std::shared_ptr<wa::WhisperSherpa> ModelManager::build_asr_engine(
             "Whisper assets for '" + name +
             "' not found locally (set WHISPERX_SHERPA_MODELS_ROOT / "
             "WHISPERX_SHERPA_WHISPER_DIR; the downloader lands in task 7).");
+    // Batched decode is a GPU-throughput lever (one encoder pass + lockstep
+    // greedy decode across the VAD chunks); CPU threads already saturate the
+    // cores, so Cpu/CoreML stay serial.
+    const int batch = dev == Device::Cuda ? asr_batch_size_ : 1;
     whisperx::server::log::get("models")->info(
-        "Loading whisper model={} on {} (feature_dim={})", name, to_string(dev),
-        assets->feature_dim);
+        "Loading whisper model={} on {} (feature_dim={} batch_size={})", name,
+        to_string(dev), assets->feature_dim, batch);
     return std::make_shared<wa::WhisperSherpa>(
         assets->encoder, assets->decoder, assets->tokens, threads_for(dev),
         assets->feature_dim, /*language=*/"", /*task=*/"transcribe",
-        /*provider=*/to_string(dev));
+        /*provider=*/to_string(dev), batch);
 }
 
 json ModelManager::set_device(Device dev) {

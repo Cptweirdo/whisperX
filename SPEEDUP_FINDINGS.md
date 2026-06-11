@@ -29,19 +29,44 @@ Companion briefs: `GPU_INTEGRATION.md` (CUDA, landed), `METAL_INTEGRATION.md`
 
 ### 1. CUDA — batch VAD chunks through ASR (biggest CUDA lever)
 
+**STATUS: implemented + measured 2026-06-11 — NOT a win as-is; blocked on
+device-resident KV caches (see below).**
+
 `core/asr/whisper_sherpa.cpp` decodes **one stream per chunk, serially**
 (`SherpaOnnxDecodeOfflineStream` per call; also inside the `decode_capped`
 sub-window loop). The serial loop is precisely what WhisperX's famous "70×
 realtime" fix removes — a GPU starves on single 30 s streams. The sherpa C API
-exposes `SherpaOnnxDecodeMultipleOfflineStreams`, and the orchestrator already
-holds all VAD chunks up front, so the change is local to the ASR stage.
+exposes `SherpaOnnxDecodeMultipleOfflineStreams` — **but for Whisper it is a
+serial loop inside sherpa** ("batch decoding is not implemented yet",
+`offline-recognizer-whisper-impl.h`; still true upstream as of 2026-06-11). We
+implemented true batching as a sherpa patch
+(`third_party/sherpa-onnx-patches/`): one (N,T,C) encoder pass + lockstep
+batched greedy decoder, opt-in via `WHISPERX_ASR_BATCH_SIZE` (default 1 = off).
+The ONNX exports are batch-ready (dynamic `n_audio` axis everywhere).
 
 Caveat: one-chunk-per-span is load-bearing — orchestrate/align map
 spans↔chunks **by index** (`whisper_sherpa.cpp:120`). Batch decode preserves
-stream order, so the contract holds, but the parity tests must stay green.
+stream order, so the contract holds, and the parity tests stay green
+(`test_asr_sherpa_parity.py::test_batched_decode_matches_serial`).
 
-Expected effect: ASR stage goes from latency-bound to throughput-bound on CUDA.
-On CPU the win is smaller (threads already saturate cores).
+**Measured (3080 Ti, large-v3-turbo fp32, 10 min audio, scratch server):**
+batch 8 transcribe RTF **0.526** vs serial **0.443** — 19% *slower*, VRAM
+4.1 → 7.2 GB; serial GPU utilization is a ~20% sawtooth. **Root cause: open.**
+An earlier draft blamed missing IOBinding / per-step KV PCIe round-trips —
+**disproven by reading the code**: sherpa v1.13.2 already device-binds the
+KV caches on CUDA (encoder cross-KV outputs and decoder self-KV outputs stay
+on GPU; cross-KV is a C++ pass-through, not a graph output; only logits come
+back per step — `offline-whisper-model.cc` ForwardEncoder/ForwardDecoder,
+`use_cuda_iobinding_`). Both serial (0.443) and batch are far slower than the
+hardware should allow (whisper.cpp Metal does 0.070 on a *laptop*), so wall
+time is dominated by something host-side that profiling must identify.
+
+**Unblock (item 1a): profile, then fix the host-side decode bottleneck** —
+see `CUDA_DECODE_HANDOFF.md` for the full brief (current binding layout,
+measured data, ranked suspects: per-step GPU output allocations / arena
+churn, two stream syncs + fresh IoBinding per token, fp32 unfused encoder).
+Only after that fix does batching get re-evaluated. fp16 (item 4) and fused
+attention (item 5) multiply on top.
 
 **Corroboration — insanely-fast-whisper's A100 benchmark (150 min of audio):**
 

@@ -55,6 +55,14 @@ struct Config {
     long max_upload_mb = 5000;   // WHISPERX_MAX_UPLOAD_MB (server.py:87)
     double max_audio_hours = 4;  // WHISPERX_MAX_AUDIO_HOURS (server.py:93)
     long batch_size = 8;         // WHISPERX_BATCH_SIZE (pipeline.py:58)
+    // VAD chunks decoded per sherpa Whisper call on the Cuda device (the
+    // batched-decode patch in third_party/sherpa-onnx-patches/; Cpu always
+    // decodes serially). Default 1 = off: measured on a 3080 Ti
+    // (large-v3-turbo fp32, 10 min audio) batch 8 was *slower* than serial
+    // (transcribe RTF 0.526 vs 0.443) — cause not yet isolated; see
+    // CUDA_DECODE_HANDOFF.md. Opt-in knob until that's fixed and batch wins;
+    // VRAM also scales with it (~0.5 GB/row on large-v3-turbo fp32).
+    long asr_batch_size = 1;     // WHISPERX_ASR_BATCH_SIZE
     long long_audio_warn_s = 2 * 3600;  // WHISPERX_LONG_AUDIO_WARN_S (pipeline.py:211)
     std::string log_level = "info";     // WHISPERX_LOG_LEVEL
     std::string spa_dir;         // app/static/spa (built SPA); WHISPERX_SPA_DIR override

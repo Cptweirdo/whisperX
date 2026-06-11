@@ -60,8 +60,11 @@ public:
     // the server can push live model state over /models/events.
     using OnChange = std::function<void(const json&)>;
 
+    // asr_batch_size: VAD chunks decoded per sherpa call on the Cuda device
+    // (WHISPERX_BATCH_SIZE; Cpu/CoreML always decode serially — the win is
+    // GPU throughput, the cost is VRAM per row).
     ModelManager(std::string active, Device device, OnChange on_change = nullptr,
-                 DiarizeTuning diarize_tuning = {});
+                 DiarizeTuning diarize_tuning = {}, int asr_batch_size = 1);
 
     std::string active();
     json status();
@@ -130,6 +133,7 @@ private:
     Device device_ = Device::Cpu;  // guarded by lock_; mutated only by set_device
     OnChange on_change_;
     DiarizeTuning diarize_tuning_;  // immutable after construction
+    int asr_batch_size_ = 1;        // immutable after construction
 };
 
 }  // namespace whisperx::server::models

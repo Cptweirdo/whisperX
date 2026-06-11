@@ -58,7 +58,7 @@ def _assets_or_skip():
 
 
 def _clips_with_reference():
-    base = json.loads(BASELINE.read_text())["clips"]
+    base = json.loads(BASELINE.read_text(encoding="utf-8"))["clips"]
     return [(name, clip) for name, clip in base.items() if clip.get("reference")]
 
 
@@ -73,7 +73,7 @@ def model():
 @pytest.mark.parametrize("name,clip", _clips_with_reference(),
                          ids=lambda v: v if isinstance(v, str) else "")
 def test_wer_cer_within_baseline_margin(model, name, clip):
-    vad = json.loads((INTER / f"{name}.vad.json").read_text())
+    vad = json.loads((INTER / f"{name}.vad.json").read_text(encoding="utf-8"))
     spans = [(c["start"], c["end"]) for c in vad["merged_chunks"]]
     audio = load_audio(str(ROOT / "golden" / "clips" / f"{name}.wav"))
 
@@ -102,6 +102,66 @@ def test_detect_language_matches(model, name, clip):
     assert detected == clip["lang"], f"{name}: detected {detected!r} != {clip['lang']!r}"
 
 
+def test_detect_language_not_pinned_by_prior_transcribe(model):
+    """A transcribe() pins language on the recognizer (sherpa reads it from the
+    recognizer config); detect_language must reset it or every job after the
+    first would 'detect' the previous job's language."""
+    base = json.loads(BASELINE.read_text(encoding="utf-8"))["clips"]
+    langs = {name: clip["lang"] for name, clip in base.items() if clip.get("reference")}
+    if len(set(langs.values())) < 2:
+        pytest.skip("needs golden clips in two languages")
+    # Pick two clips with different languages; transcribe the first pinned,
+    # then detection on the second must still see its own language.
+    items = sorted(langs.items())
+    n1, l1 = items[0]
+    n2, l2 = next((n, l) for n, l in items if l != l1)
+    vad = json.loads((INTER / f"{n1}.vad.json").read_text(encoding="utf-8"))
+    spans = [(c["start"], c["end"]) for c in vad["merged_chunks"]]
+    audio1 = load_audio(str(ROOT / "golden" / "clips" / f"{n1}.wav"))
+    model.transcribe(audio1, spans, l1, "transcribe")
+
+    audio2 = load_audio(str(ROOT / "golden" / "clips" / f"{n2}.wav"))
+    detected = model.detect_language(audio2[: SAMPLE_RATE * 30])
+    assert detected == l2, f"language leak: detected {detected!r} after {l1!r} job"
+
+
+@pytest.fixture(scope="module")
+def batch_model():
+    enc, dec, tok, feat = _assets_or_skip()
+    return wc.WhisperSherpa(
+        encoder=enc, decoder=dec, tokens=tok, num_threads=4, feature_dim=feat,
+        batch_size=4,
+    )
+
+
+# Batched and serial decode share the model and the greedy search; only argmax
+# ties can flip under batched-GEMM reduction order, so gate by WER between the
+# two hypotheses (not byte equality — decoupled-goldens policy).
+BATCH_VS_SERIAL_WER = 0.05
+
+
+@pytest.mark.parametrize("name,clip", _clips_with_reference(),
+                         ids=lambda v: v if isinstance(v, str) else "")
+def test_batched_decode_matches_serial(model, batch_model, name, clip):
+    """batch_size=4 (one encoder pass + lockstep greedy via the sherpa patch)
+    must transcribe like the serial loop, span-for-span."""
+    vad = json.loads((INTER / f"{name}.vad.json").read_text(encoding="utf-8"))
+    spans = [(c["start"], c["end"]) for c in vad["merged_chunks"]]
+    audio = load_audio(str(ROOT / "golden" / "clips" / f"{name}.wav"))
+
+    serial = model.transcribe(audio, spans, clip["lang"], "transcribe")
+    batched = batch_model.transcribe(audio, spans, clip["lang"], "transcribe")
+    assert len(batched) == len(serial) == len(spans)
+
+    ser_text = " ".join(o["text"].strip() for o in serial).strip()
+    bat_text = " ".join(o["text"].strip() for o in batched).strip()
+    assert bat_text, f"{name}: empty batched hypothesis"
+    wer, _ = wer_cer(ser_text, bat_text)
+    assert wer <= BATCH_VS_SERIAL_WER, (
+        f"{name}: batch-vs-serial WER {wer:.3f} > {BATCH_VS_SERIAL_WER}\n"
+        f"serial:  {ser_text!r}\nbatched: {bat_text!r}")
+
+
 class _StubVad(Vad):
     """Replays a clip's committed raw VAD segments — exercises the real
     SherpaWhisperPipeline.transcribe loop (merge_chunks + glue) torch-free."""
@@ -126,8 +186,8 @@ def test_pipeline_glue_contract_shape(model):
     """The facade pipeline returns {segments:[{text,start,end,avg_logprob}], language}
     with rounded float timings — the SingleSegment contract asr.py produces."""
     name = "en_dialog"
-    clip = json.loads(BASELINE.read_text())["clips"][name]
-    vad = json.loads((INTER / f"{name}.vad.json").read_text())
+    clip = json.loads(BASELINE.read_text(encoding="utf-8"))["clips"][name]
+    vad = json.loads((INTER / f"{name}.vad.json").read_text(encoding="utf-8"))
     audio = load_audio(str(ROOT / "golden" / "clips" / f"{name}.wav"))
 
     pipe = SherpaWhisperPipeline(

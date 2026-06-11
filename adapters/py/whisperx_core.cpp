@@ -754,10 +754,11 @@ void bind_audio(py::module_& m) {
     py::class_<whisperx::asr::WhisperSherpa>(m, "WhisperSherpa")
         .def(py::init<const std::string&, const std::string&,
                       const std::string&, int, int, const std::string&,
-                      const std::string&>(),
+                      const std::string&, const std::string&, int>(),
              py::arg("encoder"), py::arg("decoder"), py::arg("tokens"),
              py::arg("num_threads") = 1, py::arg("feature_dim") = 80,
-             py::arg("language") = "", py::arg("task") = "transcribe")
+             py::arg("language") = "", py::arg("task") = "transcribe",
+             py::arg("provider") = "cpu", py::arg("batch_size") = 1)
         .def(
             "transcribe",
             [](whisperx::asr::WhisperSherpa& self,
