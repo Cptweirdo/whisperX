@@ -22,11 +22,13 @@
   let service = $state("");
   let deviceNote = $state("");
 
+  // Unified compute-target picker. whisper.cpp is its own Stage-1 backend (Metal);
+  // cpu/cuda/coreml are the sherpa backend on that device. switchEngine() routes
+  // each to the right server axis (/api/asr_backend vs /api/device).
   const DEVICES: { id: string; label: string }[] = [
     { id: "cpu", label: "CPU" },
     { id: "cuda", label: "GPU (CUDA)" },
     { id: "coreml", label: "Apple GPU/ANE (CoreML)" },
-    { id: "mlx", label: "Apple GPU (MLX)" },
     { id: "whispercpp", label: "whisper.cpp (Metal)" },
   ];
   function deviceAvailable(id: string): boolean {
@@ -34,7 +36,6 @@
     if (id === "cpu") return true;
     if (id === "cuda") return !!m?.cuda_available;
     if (id === "coreml") return !!m?.coreml_available;
-    if (id === "mlx") return !!m?.mlx_available;
     if (id === "whispercpp") return !!m?.whispercpp_available;
     return false;
   }
@@ -114,7 +115,7 @@
   async function switchDevice(id: string) {
     deviceNote = "";
     try {
-      await models.switchDevice(id);
+      await models.switchEngine(id);
     } catch (e: any) {
       if (e?.status === 409) deviceNote = "Can't switch device while a transcription is queued or running.";
       else notify(e?.message || "Could not switch device.", "danger");
@@ -219,7 +220,7 @@
             <div class="pref__desc">Run transcription on CPU or GPU. Switching takes effect immediately, reloads all models, and is remembered. Blocked while a transcription is in progress.</div>
           </div>
           <div class="pref__control">
-            <sl-select value={models.device} hoist onsl-change={(e: any) => switchDevice(e.target.value)}>
+            <sl-select value={models.engine} hoist onsl-change={(e: any) => switchDevice(e.target.value)}>
               {#each DEVICES as dev (dev.id)}
                 <sl-option value={dev.id} disabled={!deviceAvailable(dev.id)}>
                   {dev.label}{!deviceAvailable(dev.id) ? " · unavailable" : ""}
@@ -228,7 +229,7 @@
             </sl-select>
             {#if deviceNote}<div class="pref__desc frag--err" style="margin-top:8px">{deviceNote}</div>{/if}
             <div class="pref__desc" style="margin-top:8px">
-              Current device: <strong>{DEVICE_LABELS[models.device] ?? models.device}</strong>.
+              Current device: <strong>{DEVICE_LABELS[models.engine] ?? models.engine}</strong>.
             </div>
           </div>
         </div>

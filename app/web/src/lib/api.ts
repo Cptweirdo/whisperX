@@ -156,6 +156,9 @@ class ModelsApi {
   setDevice(device: string) {
     return request<ModelStatus>("POST", "/device", { device });
   }
+  setAsrBackend(asrBackend: string) {
+    return request<ModelStatus>("POST", "/asr_backend", { asr_backend: asrBackend });
+  }
 }
 
 class SettingsApi {

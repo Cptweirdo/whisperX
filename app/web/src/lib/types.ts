@@ -86,10 +86,15 @@ export interface DiarizeVersion {
   vendored_at?: string;
 }
 
+/** Stage-1 ASR engine — orthogonal to Device (sherpa runs on cpu/cuda/coreml;
+ *  whisper.cpp runs on Metal, where the device knob is moot). */
+export type AsrBackend = "sherpa" | "whispercpp";
+
 /** Whisper model-manager status (pipeline.ModelManager.status()). */
 export interface ModelStatus {
   active: ModelName;
   device: Device;
+  asr_backend: AsrBackend;
   cuda_available: boolean;
   coreml_available: boolean;
   mlx_available: boolean;

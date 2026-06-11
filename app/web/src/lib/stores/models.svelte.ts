@@ -24,6 +24,14 @@ class ModelsStore {
   get device(): string {
     return this.status?.device ?? "cpu";
   }
+  get asrBackend(): string {
+    return this.status?.asr_backend ?? "sherpa";
+  }
+  /** The single mutually-exclusive compute-target id shown in the picker:
+   *  whisper.cpp owns Metal, otherwise the sherpa device (cpu/cuda/coreml). */
+  get engine(): string {
+    return this.asrBackend === "whispercpp" ? "whispercpp" : this.device;
+  }
   get deviceLabel(): string {
     return DEVICE_LABELS[this.device] ?? this.device;
   }
@@ -57,6 +65,24 @@ class ModelsStore {
   /** Switch device; throws ApiError (409 body carries `error:"busy"` + status). */
   async switchDevice(device: string) {
     this.setStatus(await api.models.setDevice(device));
+  }
+
+  /** Switch Stage-1 ASR backend (sherpa ↔ whispercpp); 409 like switchDevice. */
+  async switchAsrBackend(backend: string) {
+    this.setStatus(await api.models.setAsrBackend(backend));
+  }
+
+  /** Pick the unified engine target. whisper.cpp is its own backend (Metal);
+   *  cpu/cuda/coreml mean the sherpa backend on that device. Dispatches to the
+   *  right server axis so we never POST a backend id as a device. */
+  async switchEngine(id: string) {
+    if (id === "whispercpp") {
+      await this.switchAsrBackend("whispercpp");
+      return;
+    }
+    // Leaving whisper.cpp: revert to sherpa first, then set the device.
+    if (this.asrBackend === "whispercpp") await this.switchAsrBackend("sherpa");
+    await this.switchDevice(id);
   }
 
   start() {

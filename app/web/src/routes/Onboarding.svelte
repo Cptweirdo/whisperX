@@ -24,19 +24,20 @@
     ["04", "Engine", "Model & backend"],
   ];
 
+  // Unified compute-target picker. whisper.cpp is its own Stage-1 backend (Metal);
+  // cpu/cuda/coreml are the sherpa backend on that device. finish() routes each to
+  // the right server axis (asr_backend vs device) — they are not all "devices".
   const BACKENDS = [
     ["cpu", "CPU", "Runs on any machine — no GPU required. Slowest for long files.", "Universal · int8"],
     ["cuda", "CUDA", "NVIDIA GPUs. Highest throughput using float16 compute.", "NVIDIA · float16"],
     ["coreml", "CoreML", "Apple CoreML execution provider. Experimental — benchmark against CPU first.", "Apple Silicon"],
-    ["mlx", "MLX", "Apple Silicon (M-series). Native on-device acceleration for macOS.", "Apple Silicon"],
-    ["whispercpp", "whisper.cpp", "whisper.cpp via pywhispercpp. Metal on Apple Silicon, CPU elsewhere. Fastest on Mac for large models.", "Metal · CPU"],
+    ["whispercpp", "whisper.cpp", "whisper.cpp on Metal (Apple Silicon). Fastest on Mac for large models — the macOS default.", "Metal"],
   ];
   function available(id: string): boolean {
     const m = data?.models;
     if (id === "cpu") return true;
     if (id === "cuda") return !!m?.cuda_available;
     if (id === "coreml") return !!m?.coreml_available;
-    if (id === "mlx") return !!m?.mlx_available;
     if (id === "whispercpp") return !!m?.whispercpp_available;
     return false;
   }
@@ -50,7 +51,8 @@
     data = await api.onboarding.get();
     token = data.token ?? "";
     model = data.selected_size ?? "";
-    device = data.models?.device ?? "cpu";
+    // Reflect the unified engine target: whisper.cpp backend, else the sherpa device.
+    device = data.models?.asr_backend === "whispercpp" ? "whispercpp" : data.models?.device ?? "cpu";
   });
 
   async function continueAccess() {
@@ -74,8 +76,17 @@
   async function finish() {
     finishing = true;
     try {
-      const r = await api.onboarding.finish({ token: token.trim(), model, device });
+      // The picker is a unified compute target. whisper.cpp is a Stage-1 backend,
+      // not a device — send a real (moot) device to /onboarding, then set the
+      // backend on its own axis. cpu/cuda/coreml imply the sherpa backend.
+      const useCpp = device === "whispercpp";
+      const r = await api.onboarding.finish({
+        token: token.trim(),
+        model,
+        device: useCpp ? "cpu" : device,
+      });
       if (r.ok) {
+        await api.models.setAsrBackend(useCpp ? "whispercpp" : "sherpa");
         await Promise.all([settings.load(), models.load()]);
         router.navigate("/", { replace: true });
       } else {
