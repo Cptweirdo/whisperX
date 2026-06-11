@@ -191,18 +191,28 @@ Config load_config() {
     c.asr_batch_size = env_long("WHISPERX_ASR_BATCH_SIZE", 1);
     c.asr_precision = parse_precision(env_str("WHISPERX_ASR_PRECISION", "fp16"))
                           .value_or(Precision::Fp16);
-    // Stage-1 ASR backend defaults. On Apple Silicon the measured-best Stage-1
-    // config is whisper.cpp/Metal with q8_0 + flash-attention (SPEEDUP_FINDINGS.md
-    // lever 1 / docs/MACOS_COREML.md Phase 2b: 1.26× Stage 1, 1.1% Russian WER drift),
-    // so that is the platform default. It degrades safely to sherpa if the build lacks
-    // WHISPERX_WHISPERCPP_BUILD (ModelManager::asr_backend_available gate). An explicit
-    // env var, or a persisted /api/asr_backend choice (main.cpp), still wins.
+    // Platform defaults for the Stage-1 engine + compute device.
+    //
+    // Apple Silicon: the measured-best Stage 1 is whisper.cpp/Metal with q8_0 +
+    // flash-attention (SPEEDUP_FINDINGS.md lever 1 / docs/MACOS_COREML.md Phase 2b:
+    // 1.26× Stage 1, 1.1% Russian WER drift). whisper.cpp runs on Metal, so the
+    // Device knob is moot — default device is cpu.
+    //
+    // Windows / Linux: sherpa-onnx with the CUDA execution provider when a GPU is
+    // present — so default device is cuda. A box without a usable CUDA GPU degrades
+    // to cpu in the ModelManager ctor (device_available gate), mirroring how the
+    // whisper.cpp backend degrades to sherpa when the build lacks it.
+    //
+    // An explicit env var, or a persisted /api/{device,asr_backend} choice
+    // (main.cpp), still wins over these defaults.
 #if defined(__APPLE__)
     constexpr const char* kDefaultBackend = "whispercpp";
+    constexpr const char* kDefaultDevice = "cpu";
     constexpr const char* kDefaultQuant = "q8_0";
     constexpr const char* kDefaultFlash = "1";
 #else
     constexpr const char* kDefaultBackend = "sherpa";
+    constexpr const char* kDefaultDevice = "cuda";
     constexpr const char* kDefaultQuant = "";
     constexpr const char* kDefaultFlash = "";
 #endif
@@ -214,7 +224,7 @@ Config load_config() {
     c.long_audio_warn_s = env_long("WHISPERX_LONG_AUDIO_WARN_S", 2 * 3600);
     c.log_level = env_str("WHISPERX_LOG_LEVEL", "info");
     c.active_model = env_str("WHISPERX_MODEL", "small");
-    c.device = parse_device(env_str("WHISPERX_DEVICE", "cpu")).value_or(Device::Cpu);
+    c.device = parse_device(env_str("WHISPERX_DEVICE", kDefaultDevice)).value_or(Device::Cpu);
     c.diarize_threshold = env_double("WHISPERX_DIARIZE_THRESHOLD", c.diarize_threshold);
     c.diarize_min_on = env_double("WHISPERX_DIARIZE_MIN_ON", c.diarize_min_on);
     c.diarize_min_off = env_double("WHISPERX_DIARIZE_MIN_OFF", c.diarize_min_off);

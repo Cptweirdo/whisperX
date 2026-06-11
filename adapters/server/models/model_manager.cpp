@@ -42,7 +42,7 @@ ModelManager::ModelManager(std::string active, Device device, OnChange on_change
                            Precision asr_precision, AsrBackend asr_backend,
                            std::string ggml_quant, bool whispercpp_flash_attn)
     : active_(is_known_model(active) ? std::move(active) : std::string("small")),
-      device_(device),
+      device_(device_available(device) ? device : Device::Cpu),
       asr_backend_(asr_backend_available(asr_backend) ? asr_backend
                                                       : AsrBackend::Sherpa),
       on_change_(std::move(on_change)),
@@ -50,7 +50,15 @@ ModelManager::ModelManager(std::string active, Device device, OnChange on_change
       asr_batch_size_(asr_batch_size < 1 ? 1 : asr_batch_size),
       asr_precision_(asr_precision),
       ggml_quant_(std::move(ggml_quant)),
-      whispercpp_flash_attn_(whispercpp_flash_attn) {}
+      whispercpp_flash_attn_(whispercpp_flash_attn) {
+    // The platform default device is cuda off-Apple (config.cpp); a host without a
+    // usable CUDA EP degrades to cpu here rather than failing the first model load.
+    if (device_ != device)
+        log::get("models")->warn(
+            "Requested device '{}' is not available on this host/build; "
+            "falling back to cpu.",
+            to_string(device));
+}
 
 std::string ModelManager::active() {
     std::lock_guard<std::mutex> lk(lock_);

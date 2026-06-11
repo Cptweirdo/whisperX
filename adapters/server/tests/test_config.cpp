@@ -250,6 +250,28 @@ TEST_CASE("WHISPERX_ASR_BACKEND default is platform-specific, garbage falls back
     ::unsetenv("WHISPERX_ASR_BACKEND");
 }
 
+TEST_CASE("WHISPERX_DEVICE default is platform-specific, garbage falls back",
+          "[config]") {
+    // Apple runs Stage 1 on Metal (whisper.cpp) so the device knob is moot ->
+    // cpu; every other platform prefers the CUDA EP (degraded to cpu later by the
+    // ModelManager ctor if no GPU). load_config only resolves the string — the
+    // availability degrade is the ctor's job, so this stays platform-pure.
+#if defined(__APPLE__)
+    constexpr Device kDefault = Device::Cpu;
+#else
+    constexpr Device kDefault = Device::Cuda;
+#endif
+    ::unsetenv("WHISPERX_DEVICE");
+    CHECK(load_config().device == kDefault);
+    ::setenv("WHISPERX_DEVICE", "cpu", 1);
+    CHECK(load_config().device == Device::Cpu);
+    ::setenv("WHISPERX_DEVICE", "cuda", 1);
+    CHECK(load_config().device == Device::Cuda);
+    ::setenv("WHISPERX_DEVICE", "bogus", 1);  // unparseable -> safe fallback to cpu
+    CHECK(load_config().device == Device::Cpu);
+    ::unsetenv("WHISPERX_DEVICE");
+}
+
 TEST_CASE("ggml quant / flash-attn defaults are platform-specific", "[config]") {
     for (const char* k : {"WHISPERX_GGML_QUANT", "WHISPERX_WHISPERCPP_FLASH_ATTN"})
         ::unsetenv(k);
