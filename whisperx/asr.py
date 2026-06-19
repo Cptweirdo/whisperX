@@ -19,6 +19,25 @@ from whisperx.log_utils import get_logger
 logger = get_logger(__name__)
 
 
+def _core_asr_enabled() -> bool:
+    """Whether the native sherpa-onnx Whisper backend (`asr` token) backs this run.
+
+    ``WHISPERX_CORE_STAGES`` carries comma-separated stage tokens; ``asr`` routes
+    ``load_model`` to :func:`whisperx.asr_sherpa.load_sherpa_model` (sherpa Whisper
+    on ONNX Runtime) instead of faster-whisper, which stays the default + WER/CER
+    oracle (strangler-fig). ``hasattr``-guarded on the audio-stage symbol so a module
+    built without ``WHISPERX_CORE_AUDIO`` degrades cleanly to faster-whisper.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "asr" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "WhisperSherpa")
+
+
 def find_numeral_symbol_tokens(tokenizer):
     numeral_symbol_tokens = []
     for i in range(tokenizer.eot):
@@ -356,6 +375,25 @@ def load_model(
     Returns:
         A Whisper pipeline.
     """
+
+    if _core_asr_enabled():
+        # Native sherpa-onnx Whisper backend (ONNX Runtime), gated by the `asr`
+        # token. Same transcribe() contract, so the downstream align/diarize stages
+        # are unchanged; faster-whisper stays the default + WER/CER oracle.
+        from whisperx.asr_sherpa import load_sherpa_model
+
+        return load_sherpa_model(
+            whisper_arch,
+            device=device,
+            asr_options=asr_options,
+            language=language,
+            vad_model=vad_model,
+            vad_method=vad_method,
+            vad_options=vad_options,
+            task=task,
+            download_root=download_root,
+            threads=threads,
+        )
 
     if device == "mlx":
         # Apple Silicon GPU backend. ASR runs on MLX; the VAD torch model runs on

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import uuid
@@ -84,8 +85,31 @@ logger = logging.getLogger("app")
 # spools the upload to a temp file (not RAM), so a large cap is safe on the dev
 # server. Override via WHISPERX_MAX_UPLOAD_MB.
 MAX_UPLOAD_MB = int(os.environ.get("WHISPERX_MAX_UPLOAD_MB", "5000"))
+# Hard ceiling on input *duration* (hours). The native CPU sherpa pipeline holds the
+# whole decoded waveform resident and runs the full chain on CPU, so multi-hour inputs
+# mean multi-hour runtime and OOM risk — reject upfront with a readable error instead
+# of failing mid-job. 0 disables. The advisory log warning (pipeline.LONG_AUDIO_WARN_S)
+# covers the band below this.
+MAX_AUDIO_HOURS = float(os.environ.get("WHISPERX_MAX_AUDIO_HOURS", "4"))
 # paths.data_dir() already honors WHISPERX_DATA_DIR (see app/paths.py).
 DATA_DIR = str(paths.data_dir())
+
+
+def _probe_duration_seconds(path: str) -> float | None:
+    """Audio duration in seconds from the container header — in-process via the
+    native core (libav*, no decode, no subprocess). None if the core isn't built or
+    the container has no usable duration, in which case callers skip the check."""
+    try:
+        import whisperx_core
+    except ImportError:
+        return None
+    if not hasattr(whisperx_core, "probe_duration"):
+        return None
+    try:
+        dur = whisperx_core.probe_duration(path)
+    except Exception:
+        return None
+    return dur if dur and dur > 0 else None
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
@@ -867,7 +891,22 @@ def api_create_session():
     ext = os.path.splitext(safe_name)[1] or ".bin"
     audio_filename = f"audio{ext}"
     os.makedirs(_sessions.session_dir(session_id), exist_ok=True)
-    file.save(os.path.join(_sessions.session_dir(session_id), audio_filename))
+    saved_path = os.path.join(_sessions.session_dir(session_id), audio_filename)
+    file.save(saved_path)
+
+    # Reject over-long audio upfront (header probe, no decode) so the user gets a
+    # readable error now instead of a multi-hour run or an OOM mid-job.
+    if MAX_AUDIO_HOURS > 0:
+        dur = _probe_duration_seconds(saved_path)
+        if dur is not None and dur > MAX_AUDIO_HOURS * 3600:
+            shutil.rmtree(_sessions.session_dir(session_id), ignore_errors=True)
+            return jsonify({
+                "error": (f"Audio is {dur / 3600:.1f} h, over the "
+                          f"{MAX_AUDIO_HOURS:g} h limit. Split it into shorter "
+                          f"files and upload each."),
+                "duration_hours": round(dur / 3600, 2),
+                "max_hours": MAX_AUDIO_HOURS,
+            }), 413
 
     display_name = (request.form.get("name") or "").strip() or file.filename
     _sessions.create(

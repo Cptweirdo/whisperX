@@ -1,0 +1,23 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "whisperx-core",
+  "version-string": "0.0.0",
+  "description": "WhisperX C++ engine core — ONNX Runtime + sherpa-onnx reimplementation of the WhisperX pipeline (see docs/cpp-core-handoff.md).",
+  "dependencies": [
+    "nlohmann-json",
+    "pybind11",
+    "catch2",
+    "benchmark",
+    "eigen3",
+    "sqlitecpp",
+    "curl",
+    "libarchive",
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": ["avcodec", "avformat", "swresample"],
+      "$comment": "LGPL build (no gpl/nonfree, native AAC, no fdk-aac) for the Phase-2B in-process libav* decode; trim demux/decode to what we load."
+    }
+  ],
+  "$notes": "sherpa-onnx is not in the vcpkg registry; it is vendored / built from source via CMake FetchContent for the silero VAD (Phase 2B) and the ASR/diarize stages (Phase 4) — it brings its own ONNX Runtime. Phase 2B's in-process audio decode links ffmpeg's libav* (declared here for the production toolchain; the dev build / CI use the matching system ffmpeg-dev via pkg-config, which CMake's WHISPERX_CORE_AUDIO path finds either way). The light deps (nlohmann-json, pybind11, catch2) are also pulled via CMake FetchContent so a fresh checkout builds without a vcpkg bootstrap; pass the vcpkg toolchain file to resolve them (and the heavy deps) from vcpkg instead."
+}

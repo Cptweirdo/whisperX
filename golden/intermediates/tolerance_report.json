@@ -1,0 +1,18 @@
+{
+  "clip": "en_libri",
+  "segment": 0,
+  "emission_shape": [
+    146,
+    30
+  ],
+  "model": "WAV2VEC2_ASR_BASE_960H",
+  "onnx_opset": 17,
+  "torch_vs_golden_max": 0.0029125213623046875,
+  "ort_vs_golden_max": 0.0023097991943359375,
+  "ort_vs_golden_mean": 0.00023442343808710575,
+  "ort_vs_torch_max": 0.0027980804443359375,
+  "ort_vs_torch_mean": 0.0002252891572425142,
+  "torch": "2.8.0+cu128",
+  "onnxruntime": "1.26.0",
+  "recommended_emission_atol": 0.006
+}

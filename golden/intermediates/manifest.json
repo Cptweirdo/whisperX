@@ -1,0 +1,314 @@
+{
+  "config": {
+    "model": "tiny",
+    "device": "cpu",
+    "compute_type": "int8",
+    "vad_method": "silero",
+    "diarize": true,
+    "whisperx": "3.8.6",
+    "faster_whisper": "1.2.1",
+    "torch": "2.8.0+cu128",
+    "generated_utc": "2026-06-07T07:42:28Z"
+  },
+  "tolerances": {
+    "emission_atol": 0.006,
+    "trellis_atol": 0.006,
+    "time_frames": 1,
+    "score_atol": 0.01,
+    "exact": [
+      "tokens",
+      "path",
+      "char_segments",
+      "merged_chunks",
+      "speaker_labels"
+    ],
+    "_measured": {
+      "ort_vs_torch_max": 0.0027980804443359375,
+      "source": "golden/measure_ort_tolerance.py",
+      "onnxruntime": "1.26.0"
+    }
+  },
+  "clips": {
+    "de_dialog": {
+      "lang": "de",
+      "audio_s": 65.152,
+      "n_transcript_segments": 3,
+      "n_align_segments": 3,
+      "n_words": 97,
+      "multispeaker": true,
+      "artifacts": {
+        "transcript": {
+          "file": "de_dialog.transcript.json",
+          "sha256": "98ef4b0c650f7b3b8a27d46eae11c4393b9640035aa8e9bb8e3191b3c6a09ae1"
+        },
+        "vad": {
+          "file": "de_dialog.vad.json",
+          "sha256": "c9462ab87689dd2ca7aeb35b7cb47b83c59c7ea2b5a675377805d170876ef661"
+        },
+        "align": {
+          "file": "de_dialog.align.json",
+          "sha256": "1fb63426eda7300387787b026d3fe505f21255b5fb5c8bb4a81cfc9849a1cebc"
+        },
+        "words": {
+          "file": "de_dialog.words.json",
+          "sha256": "37893004991b4136612fbb609b7dac5c9f59cb34c6d60effbbdd11808cdadebc"
+        },
+        "tensors": {
+          "file": "de_dialog.tensors.npz",
+          "sha256": "7604fc705f21cfb67c55d0e38ba32ff28d4ab62cf40565cefc8ef69b1d58a410",
+          "arrays": [
+            "seg0_emission",
+            "seg1_emission",
+            "seg2_emission"
+          ]
+        },
+        "assign": {
+          "file": "de_dialog.assign.json",
+          "sha256": "43338a7fb56c6d82a38cf0931313f79014e87eec4db76c274312ff727cc7126e"
+        }
+      }
+    },
+    "en_dialog": {
+      "lang": "en",
+      "audio_s": 60.76,
+      "n_transcript_segments": 2,
+      "n_align_segments": 2,
+      "n_words": 108,
+      "multispeaker": true,
+      "artifacts": {
+        "transcript": {
+          "file": "en_dialog.transcript.json",
+          "sha256": "7b69513023f125f04a5f672d48e44920ccc185e86ae1af51b5374cb1650b5b56"
+        },
+        "vad": {
+          "file": "en_dialog.vad.json",
+          "sha256": "077640505a1ee20b6e7f7881a0afd426a9a38fd38f1fed2a3b52afb6adfe38e5"
+        },
+        "align": {
+          "file": "en_dialog.align.json",
+          "sha256": "f15408347bf5ae271b7080fd6018a83d7dca5b2b419876b6f0ae925893cc9a4d"
+        },
+        "words": {
+          "file": "en_dialog.words.json",
+          "sha256": "fe0e4cab4b1ea99941f89401d94da04d30013f9565c9ccc025f9aacf25a944c5"
+        },
+        "tensors": {
+          "file": "en_dialog.tensors.npz",
+          "sha256": "58317c5f5701e0fa05899c55d5b26ac16bb51069adc91fe16f02436915e6bee2",
+          "arrays": [
+            "seg0_emission",
+            "seg1_emission"
+          ]
+        },
+        "assign": {
+          "file": "en_dialog.assign.json",
+          "sha256": "361f0e155e81f677acc91721c9e9cfeba76de909b555a037587bcc43642ff201"
+        }
+      }
+    },
+    "en_libri": {
+      "lang": "en",
+      "audio_s": 3.505,
+      "n_transcript_segments": 1,
+      "n_align_segments": 1,
+      "n_words": 8,
+      "multispeaker": false,
+      "artifacts": {
+        "transcript": {
+          "file": "en_libri.transcript.json",
+          "sha256": "00eb1e644c52bde8076b15aff60136bc514cb9052d5a67e5eac64ba1f9dc8e71"
+        },
+        "vad": {
+          "file": "en_libri.vad.json",
+          "sha256": "3044d3d8b72e73f9aede3929b8118c56e168fd3a9a51d0159eb2c02cf067f4b5"
+        },
+        "align": {
+          "file": "en_libri.align.json",
+          "sha256": "057e0d6021e4707b44bded7755ed031620c084f3886dd95512356331e9e4957b"
+        },
+        "words": {
+          "file": "en_libri.words.json",
+          "sha256": "8c3a556f4b89f438635f8dc609b807b074dd8f45185519df140f1cf0f7b2d1e7"
+        },
+        "tensors": {
+          "file": "en_libri.tensors.npz",
+          "sha256": "4bbeebdeb5e2e3749507e5609420a58bb86f6bc1089f25bc0cac121ebca6aaa1",
+          "arrays": [
+            "seg0_emission"
+          ]
+        }
+      }
+    },
+    "ru_cv_71085": {
+      "lang": "ru",
+      "audio_s": 8.388,
+      "n_transcript_segments": 1,
+      "n_align_segments": 1,
+      "n_words": 12,
+      "multispeaker": false,
+      "artifacts": {
+        "transcript": {
+          "file": "ru_cv_71085.transcript.json",
+          "sha256": "7b23a3b92a48fa05742da7dc04ea72853d873b884d3d3fe67eefb2f02a2a496b"
+        },
+        "vad": {
+          "file": "ru_cv_71085.vad.json",
+          "sha256": "3e1bb103907f98612234d5a7f78e93c7344743f5c0ef66aa628b50b21a5f7a60"
+        },
+        "align": {
+          "file": "ru_cv_71085.align.json",
+          "sha256": "5105568952667f276ef4867d12c6b30138456f11db69bf985fac9ab150f1a1c9"
+        },
+        "words": {
+          "file": "ru_cv_71085.words.json",
+          "sha256": "3ddcf965b98199b1afde75b86e8958263c935d55ccf5068a429b07ca76911e73"
+        },
+        "tensors": {
+          "file": "ru_cv_71085.tensors.npz",
+          "sha256": "fa891d40ddc24f50748c4ebced22846cf1eb27b42ed37cac7a763eda6e2466c9",
+          "arrays": [
+            "seg0_emission"
+          ]
+        }
+      }
+    },
+    "ru_cv_71379": {
+      "lang": "ru",
+      "audio_s": 8.208,
+      "n_transcript_segments": 1,
+      "n_align_segments": 1,
+      "n_words": 19,
+      "multispeaker": false,
+      "artifacts": {
+        "transcript": {
+          "file": "ru_cv_71379.transcript.json",
+          "sha256": "30fb408803c8b7be59e0a38fd52a8d48f8e59bd520bef18dfb48803815edafdb"
+        },
+        "vad": {
+          "file": "ru_cv_71379.vad.json",
+          "sha256": "431c591b60f61301cc4a3982bbd5a160185d0ceb1917e9251a390c834dff115b"
+        },
+        "align": {
+          "file": "ru_cv_71379.align.json",
+          "sha256": "df274a4960d7dbcfbe5edf45ce3ecd8d6d309fc593d46ad403597136f1352d86"
+        },
+        "words": {
+          "file": "ru_cv_71379.words.json",
+          "sha256": "cfe027d14765749449b8791f9b7de6600467d2e262a4ef85f1968630f4ba805d"
+        },
+        "tensors": {
+          "file": "ru_cv_71379.tensors.npz",
+          "sha256": "5d5b0cfc45c195810ccb58c7b9aa739d584f7209cf2900420411b15961744321",
+          "arrays": [
+            "seg0_emission"
+          ]
+        }
+      }
+    },
+    "ru_cv_71606": {
+      "lang": "ru",
+      "audio_s": 9.108,
+      "n_transcript_segments": 1,
+      "n_align_segments": 1,
+      "n_words": 16,
+      "multispeaker": false,
+      "artifacts": {
+        "transcript": {
+          "file": "ru_cv_71606.transcript.json",
+          "sha256": "ed708bdc9bc41f5af75b0e21fa84e49835bdeb815c69c81a6803f583979d623c"
+        },
+        "vad": {
+          "file": "ru_cv_71606.vad.json",
+          "sha256": "dad7b10dc4f13a8e4fa27fc9ca5419c86d2997daeb0c4709a27b8638dc64d64c"
+        },
+        "align": {
+          "file": "ru_cv_71606.align.json",
+          "sha256": "6b7914cf1b6d1b89a11d528b76618835b23cb0babe4ac8c8831c455f4211d458"
+        },
+        "words": {
+          "file": "ru_cv_71606.words.json",
+          "sha256": "a08516a00358d9534f3e73a3d8dd0c4719fec3252a6178713d61dd4a2d3ce915"
+        },
+        "tensors": {
+          "file": "ru_cv_71606.tensors.npz",
+          "sha256": "519b2c357398a900891a88fbb3421d862c6b18efad851ffc480cefb19e4b7cbf",
+          "arrays": [
+            "seg0_emission"
+          ]
+        }
+      }
+    },
+    "ru_cv_79125": {
+      "lang": "ru",
+      "audio_s": 8.208,
+      "n_transcript_segments": 1,
+      "n_align_segments": 1,
+      "n_words": 15,
+      "multispeaker": false,
+      "artifacts": {
+        "transcript": {
+          "file": "ru_cv_79125.transcript.json",
+          "sha256": "33666bc3b6d976cf0fbed4ddc191701082cb328446ec8218d454578609eeda0a"
+        },
+        "vad": {
+          "file": "ru_cv_79125.vad.json",
+          "sha256": "e2888e9e8a60fadcf80528f0b6a23704f5cbf16463a399a6bfb2e69bf6554eeb"
+        },
+        "align": {
+          "file": "ru_cv_79125.align.json",
+          "sha256": "312b12e4a7dfbb2955dbed838e9c7c83f4ac6d52af7cdad55c0e6396b27cec2f"
+        },
+        "words": {
+          "file": "ru_cv_79125.words.json",
+          "sha256": "5a80e7409a1e795487460d9313bbeae981588575120f9a9ac0aff79ca65a94a3"
+        },
+        "tensors": {
+          "file": "ru_cv_79125.tensors.npz",
+          "sha256": "357e45088f243c7dae1c25700d9f901c5a0adb5ab9d7976977aead45b88e63c0",
+          "arrays": [
+            "seg0_emission"
+          ]
+        }
+      }
+    },
+    "ru_dialog": {
+      "lang": "ru",
+      "audio_s": 66.7,
+      "n_transcript_segments": 3,
+      "n_align_segments": 3,
+      "n_words": 112,
+      "multispeaker": true,
+      "artifacts": {
+        "transcript": {
+          "file": "ru_dialog.transcript.json",
+          "sha256": "308d10f54c4344288b2d32fd5aac4942cc972345b26d21c0d549e517bd5c6305"
+        },
+        "vad": {
+          "file": "ru_dialog.vad.json",
+          "sha256": "7556f4435a795a3f7df87cd662014e960c3cabc071bebfbb0cf1174c64dd2ef6"
+        },
+        "align": {
+          "file": "ru_dialog.align.json",
+          "sha256": "1776e058cd2073385e43824885c9b59fd739a39547817c1b2533159c8d606eb5"
+        },
+        "words": {
+          "file": "ru_dialog.words.json",
+          "sha256": "90a785089f14e01db47351971397fd399d32fde0efbf39aebf8cd08799258c06"
+        },
+        "tensors": {
+          "file": "ru_dialog.tensors.npz",
+          "sha256": "de70a2c7fddcc43ce921f74a1c59d987f0059be1c796207ebbd218d131352506",
+          "arrays": [
+            "seg0_emission",
+            "seg1_emission",
+            "seg2_emission"
+          ]
+        },
+        "assign": {
+          "file": "ru_dialog.assign.json",
+          "sha256": "ffe59b3c6d71e13ace5c478659635bc4b1a2f536040537104ccc8c03d93d8649"
+        }
+      }
+    }
+  }
+}

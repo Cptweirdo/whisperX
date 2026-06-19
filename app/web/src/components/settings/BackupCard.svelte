@@ -6,7 +6,8 @@
   let { onboarding = false }: { onboarding?: boolean } = $props();
 
   const s = $derived(backup.status);
-  const state = $derived(s?.state ?? "disabled");
+  const cardState = $derived(s?.state ?? "disabled");
+  const sRemote = $derived(s?.remote ?? null);
   let folder = $state("");
   let busy = $state("");
   let restoreModal: any = $state(null);
@@ -45,20 +46,20 @@
 </script>
 
 <div id="backup-card">
-  {#if state === "disabled"}
+  {#if cardState === "disabled"}
     <div class="pref__desc">
       Cloud backup isn't enabled on this server. Set
       <span class="ob__code">WHISPERX_BACKUP_BACKEND</span> (and the Google credentials for
       Drive) in your <span class="ob__code">.env</span>, then restart. See
       <span class="ob__code">app/.env.example</span> for the keys.
     </div>
-  {:else if state === "conflict" || s?.remote?.exists}
-    <div class="pref__title">A backup already exists on {s.provider_label}</div>
+  {:else if cardState === "conflict" || s?.remote?.exists}
+    <div class="pref__title">A backup already exists on {s?.provider_label}</div>
     <div class="pref__desc" style="margin-top:6px">
-      {#if s.remote}
-        {s.remote.entries} item{s.remote.entries === 1 ? "" : "s"}
-        {#if s.remote.size_human}· {s.remote.size_human}{/if}
-        {#if s.remote.created_at}· saved {s.remote.created_at}{/if}.
+      {#if sRemote}
+        {sRemote.entries} item{sRemote.entries === 1 ? "" : "s"}
+        {#if sRemote.size_human}· {sRemote.size_human}{/if}
+        {#if sRemote.created_at}· saved {sRemote.created_at}{/if}.
       {/if}
       Choose how to start:
     </div>
@@ -80,28 +81,28 @@
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_tabindex -->
     <div
       class="backup__provider backup__provider--on"
-      role={state === "backing_up" || state === "restoring" ? undefined : "button"}
-      tabindex={state === "backing_up" || state === "restoring" ? undefined : 0}
-      onclick={() => state !== "backing_up" && state !== "restoring" && openRestore()}
+      role={cardState === "backing_up" || cardState === "restoring" ? undefined : "button"}
+      tabindex={cardState === "backing_up" || cardState === "restoring" ? undefined : 0}
+      onclick={() => cardState !== "backing_up" && cardState !== "restoring" && openRestore()}
     >
       <div class="backup__ico">
-        <sl-icon name={state === "error" ? "cloud-slash" : "cloud-check"}></sl-icon>
+        <sl-icon name={cardState === "error" ? "cloud-slash" : "cloud-check"}></sl-icon>
       </div>
       <div class="backup__meta">
         <div class="backup__name">{s.provider_label}</div>
         <div class="backup__sub">
-          {#if state === "backing_up"}Syncing…
-          {:else if state === "restoring"}Restoring…
-          {:else if state === "error"}Last backup failed
+          {#if cardState === "backing_up"}Syncing…
+          {:else if cardState === "restoring"}Restoring…
+          {:else if cardState === "error"}Last backup failed
           {:else if s.dirty}Changes not backed up yet
           {:else if s.last_human}Up to date · last backup {s.last_human}
           {:else}Up to date{/if}
           {#if s.folder} · folder <strong>{s.folder}</strong>{/if}
         </div>
       </div>
-      {#if state === "backing_up" || state === "restoring"}
+      {#if cardState === "backing_up" || cardState === "restoring"}
         <sl-spinner></sl-spinner>
-      {:else if state === "error"}
+      {:else if cardState === "error"}
         <span class="chip chip--err">● FAILED</span>
         <sl-icon class="backup__chev" name="chevron-right"></sl-icon>
       {:else}
@@ -110,13 +111,13 @@
       {/if}
     </div>
 
-    {#if state === "error" && s.last_error}
+    {#if cardState === "error" && s.last_error}
       <div class="frag frag--err" style="margin-top:10px">
         <sl-icon name="exclamation-triangle"></sl-icon> {s.last_error}
       </div>
     {/if}
 
-    {#if state !== "backing_up" && state !== "restoring"}
+    {#if cardState !== "backing_up" && cardState !== "restoring"}
       <div class="backup__actions">
         <sl-button size="small" variant="primary" loading={busy === "now"}
           onclick={() => run("now", () => backup.now())}>
@@ -163,7 +164,7 @@
         <div class="frag"><sl-spinner></sl-spinner> Checking the backup…</div>
       {:else if remote?.exists}
         <div class="backup__detail">
-          <div class="backup__detail-row"><span>Source</span><strong>{s.provider_label}</strong></div>
+          <div class="backup__detail-row"><span>Source</span><strong>{s?.provider_label}</strong></div>
           {#if remote.created_at}<div class="backup__detail-row"><span>Last backup</span><strong>{remote.created_at}</strong></div>{/if}
           <div class="backup__detail-row"><span>Contents</span><strong>{remote.entries} item{remote.entries === 1 ? "" : "s"}</strong></div>
           {#if remote.size_human}<div class="backup__detail-row"><span>Download size</span><strong>{remote.size_human}</strong></div>{/if}

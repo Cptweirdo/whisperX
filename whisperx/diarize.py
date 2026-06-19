@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 from pyannote.audio import Pipeline
@@ -9,6 +10,44 @@ from whisperx.schema import TranscriptionResult, AlignedTranscriptionResult, Pro
 from whisperx.log_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _core_assign_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` speaker-assignment glue backs this run.
+
+    ``WHISPERX_CORE_STAGES`` carries comma-separated stage tokens; ``assign`` routes
+    ``assign_word_speakers`` (the IntervalTree + dominant-overlap labelling) to the
+    native port. The pyannote diarization model still produces the turns in Python
+    (strangler) — only the pure assignment glue crosses the seam. ``hasattr``-guarded
+    so a module built without it degrades to the Python oracle.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "assign" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "assign_word_speakers")
+
+
+def _core_diarize_enabled() -> bool:
+    """Whether the native sherpa-onnx diarization model backs this run.
+
+    ``diarize`` in ``WHISPERX_CORE_STAGES`` routes ``DiarizationPipeline`` to the
+    sherpa-onnx backend (pyannote-seg-3.0 + CAM++ + FastClustering) instead of the
+    Python pyannote ``community-1`` pipeline (the default oracle). A/B, not parity —
+    the produced turns feed the same ``assign_word_speakers``. ``hasattr``-guarded so
+    a module built without the audio stage degrades to pyannote.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "diarize" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "SherpaDiarizer")
 
 
 class IntervalTree:
@@ -96,6 +135,17 @@ class DiarizationPipeline:
         device: Optional[Union[str, torch.device]] = "cpu",
         cache_dir=None,
     ):
+        # Native sherpa-onnx diarization backend (the `diarize` token). A/B with
+        # pyannote community-1 (the default oracle) — same DataFrame contract, so
+        # callers and assign_word_speakers are untouched.
+        self._impl = None
+        if _core_diarize_enabled():
+            from whisperx.diarize_sherpa import load_sherpa_diarize_model
+
+            self._impl = load_sherpa_diarize_model(download_root=cache_dir)
+            logger.info("Diarization backend: sherpa-onnx (diarize token)")
+            return
+
         if isinstance(device, str):
             device = torch.device(device)
         model_config = model_name or "pyannote/speaker-diarization-community-1"
@@ -128,6 +178,16 @@ class DiarizationPipeline:
             Otherwise:
                 Just the diarization dataframe
         """
+        if self._impl is not None:
+            return self._impl(
+                audio,
+                num_speakers=num_speakers,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+                return_embeddings=return_embeddings,
+                progress_callback=progress_callback,
+            )
+
         if isinstance(audio, str):
             audio = load_audio(audio)
         audio_data = {
@@ -183,6 +243,62 @@ class DiarizationPipeline:
 
 
 def assign_word_speakers(
+    diarize_df: pd.DataFrame,
+    transcript_result: Union[AlignedTranscriptionResult, TranscriptionResult],
+    speaker_embeddings: Optional[dict[str, list[float]]] = None,
+    fill_nearest: bool = False,
+) -> Union[AlignedTranscriptionResult, TranscriptionResult]:
+    """Assign speakers to words/segments — facade over the Python oracle and the
+    native C++ glue (the ``assign`` token). Both mutate ``transcript_result`` in
+    place **and** return it (callers rely on either)."""
+    if _core_assign_enabled():
+        return _core_assign_word_speakers(
+            diarize_df, transcript_result, speaker_embeddings, fill_nearest)
+    return _py_assign_word_speakers(
+        diarize_df, transcript_result, speaker_embeddings, fill_nearest)
+
+
+def _core_assign_word_speakers(
+    diarize_df: pd.DataFrame,
+    transcript_result: Union[AlignedTranscriptionResult, TranscriptionResult],
+    speaker_embeddings: Optional[dict[str, list[float]]] = None,
+    fill_nearest: bool = False,
+) -> Union[AlignedTranscriptionResult, TranscriptionResult]:
+    """Native ``assign`` path: extract the pyannote DataFrame to (start, end,
+    speaker) turns, run the C++ IntervalTree + dominant-overlap labelling, then
+    write the resulting speaker labels back into the original seg/word dicts **in
+    place** (the C++ returns fresh dicts; callers that ignore the return value —
+    dump_goldens / test_baseline_golden — depend on in-place mutation)."""
+    import whisperx_core
+
+    transcript_segments = transcript_result.get("segments", [])
+    # Same trivial-case guard as the Python path (no embeddings attached on
+    # early-out, matching the oracle's control flow).
+    if not transcript_segments or diarize_df is None or len(diarize_df) == 0:
+        return transcript_result
+
+    turns = [
+        (float(row["start"]), float(row["end"]), row["speaker"])
+        for _, row in diarize_df.iterrows()
+    ]
+    updated = whisperx_core.assign_word_speakers(
+        turns, transcript_segments, fill_nearest)
+
+    for seg, new_seg in zip(transcript_segments, updated):
+        if "speaker" in new_seg:
+            seg["speaker"] = new_seg["speaker"]
+        if "words" in seg and "words" in new_seg:
+            for word, new_word in zip(seg["words"], new_seg["words"]):
+                if "speaker" in new_word:
+                    word["speaker"] = new_word["speaker"]
+
+    if speaker_embeddings is not None:
+        transcript_result["speaker_embeddings"] = speaker_embeddings
+
+    return transcript_result
+
+
+def _py_assign_word_speakers(
     diarize_df: pd.DataFrame,
     transcript_result: Union[AlignedTranscriptionResult, TranscriptionResult],
     speaker_embeddings: Optional[dict[str, list[float]]] = None,

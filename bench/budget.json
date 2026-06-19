@@ -1,0 +1,6 @@
+{
+  "_comment": "Phase-6 per-stage RTF (stage_seconds / audio_seconds) ceilings for the native run_job, checked by bench/check_budget.py against bench_run_job --mode timing. Ceilings are ~4-5x the observed local sherpa-Whisper-tiny CPU medians (transcribing 0.078, aligning 0.116, diarizing 0.107 on en_dialog 60.8s) — headroom for a slower 2-core CI runner plus regression margin, so shared-runner noise never flakes the gate while a gross slowdown still trips it. Tighten once the first green CI run reveals the runner's absolute numbers. decoding/loading_align are not gated: decode is trivially fast (RTF ~0.0015), loading_align ~0 with resident models.",
+  "transcribing": 0.35,
+  "aligning": 0.45,
+  "diarizing": 0.45
+}

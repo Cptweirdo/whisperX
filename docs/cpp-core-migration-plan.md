@@ -96,7 +96,10 @@ merely "the same schema on paper." Sourced from `app/store.py`, `app/paths.py`,
   (canonical result). Overlays written **atomically (tmp + rename)**:
   `transcript.edits.json`, `transcript.translation.<lang>.json`. Exports:
   `transcript.{srt,vtt,txt,json}`. **The writers must stay byte-identical** —
-  enforced by a golden test (§3).
+  enforced by a golden test (§3). *(Landed: the edits/undo overlay + translation
+  files, and the `app/edits.py` turn algorithms behind them, are ported to the C++
+  store under the `edits` token — see the Phase 1 brief; the rich translation v2
+  payload shape stays Python. Exports/writers remain Phase 5.)*
 
 **Backup / restore**
 - Must keep working: **SQLite Online Backup API** for `snapshot_db` (never copy
@@ -193,7 +196,7 @@ libs**.
 | `ffmpeg` **subprocess** (`audio.py:44`) | **ffmpeg *libraries*** (`libav*`), linked in-process (Option B) | one universal decode path (incl. M4A/AAC/MP4/video); decode to float in-memory; **no subprocess**; LGPL build |
 | `numpy` arrays · `torch.stft` mel (`audio.py:112`) | **Eigen** (or **xtensor** for an n-d, numpy-feel API) + KissFFT/pocketfft | the mel can also be baked into the ORT graph |
 | `pandas` DataFrames (`alignment.py:325,395`; `diarize.py:170`) | **plain structs + std loops** | DataFrames are incidental scaffolding, not needed |
-| `nltk` punkt (`alignment.py:189`) | **ICU** sentence/word break (or a small rule-based splitter) | |
+| `nltk` punkt (`alignment.py:189`) | **native rule-based splitter + Moses `nonbreaking_prefixes`** (landed, 3A — ICU/FreeLing/punkt-port evaluated + rejected) | reproduces punkt on the golden transcripts; dep-free |
 | `sqlite3` (`store.py`) | **SQLiteCpp** | same on-disk format, RAII (see §2) |
 | `json` stdlib | **nlohmann/json** | header-only, STL-native |
 | `pytest` | **Catch2 v3** (+ CTest) | parity + unit (see §3) |
@@ -255,9 +258,9 @@ briefs** (context · goals · validation · unknowns) live in
 | Phase | Goal | Exit criteria |
 |---|---|---|
 | 0 | scaffold + golden generator + **decision gate** | `whisperx_core` importable; goldens dumped for the **EN/DE/RU** clip set (pinned lib + model revisions, transcript stored separately); ASan/LSan + CMake + Ninja + vcpkg + CTest + Catch2 green |
-| 1 | DB layer (SQLiteCpp) **replacing** `store.py` | full `store.py` API parity; round-trips a **real pre-existing** `sessions.db`; migrations idempotent; backup snapshot/swap pass |
-| 2 | decode-once (ffmpeg libs) + VAD / `merge_chunks` | C++ chunks == golden; per-stage bench RTF recorded |
-| 3 | **alignment** — batched wav2vec2 (ORT) + Viterbi — *highest risk, early* | word-timing parity within tolerance; trellis path exact (fed Python ASR text) |
+| 1 | full `store.py` in C++ (SQLiteCpp): the SQLite layer (`db`) **+** the file-backed edits/undo + translation sidecars & `app/edits.py` algorithms (`edits`) | full `store.py` API parity; round-trips a **real pre-existing** `sessions.db` + `transcript.edits.json`; migrations idempotent; backup snapshot/swap pass; the two stage tokens compose |
+| 2 | decode-once (ffmpeg libs) + VAD / `merge_chunks` | **Landed.** 2A: `merge_chunks` in C++ behind the `vad` token; chunks == golden on a *fixed* raw-segment input (decoupled — see briefs). 2B: in-process `libav*` decode + ORT silero (sherpa-onnx) behind the `decode` token (`WHISPERX_CORE_AUDIO` build); PCM sample-parity (wavs bit-exact, m4a ≤2 LSB) + VAD smoke + bench RTF, token-matrix green |
+| 3 | **alignment** — wav2vec2 (ORT) + Viterbi — *highest risk, early* | **3A landed.** Native Viterbi (`get_trellis`/`backtrack`/`merge_repeats`) + char→word→sentence assembly + the punkt→native sentence splitter (Moses prefixes), behind the `align` token (emission as fixed input — model forward stays Python): trellis **path + char_segments exact** vs golden, words within ±1 frame, splitter pinned to a punkt baseline, token-matrix green. **3B pending:** the ONNX wav2vec2 forward (batched + masked) |
 | 4a | **ASR backends** (sherpa-onnx ORT first; whisper.cpp/GGML follow-on) | each backend gated by **WER/CER** (not byte-equality); `device` selection wired |
 | 4b | **diarize + `assign_word_speakers`** | assign glue exact on fixed turn sets; diarization quality A/B |
 | 5 | writers + end-to-end | writers byte-identical **on a fixed transcript**; `run_job` per-stage parity |

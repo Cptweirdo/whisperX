@@ -1,7 +1,25 @@
+import os
 from typing import Optional
 
 import pandas as pd
 from pyannote.core import Annotation, Segment
+
+
+def _core_vad_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` VAD algorithms back this run.
+
+    ``WHISPERX_CORE_STAGES`` carries comma-separated stage tokens (``db`` /
+    ``edits`` / ``vad`` / …); ``vad`` routes ``Vad.merge_chunks`` to the C++ port,
+    with the pure-Python ``_py_merge_chunks`` kept as the live parity oracle.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    return "vad" in {s.strip() for s in raw.split(",") if s.strip()}
+
+
+def _core():
+    """Import the built C++ module (lazily; opt-in build path)."""
+    import whisperx_core
+    return whisperx_core
 
 
 class Vad:
@@ -21,6 +39,26 @@ class Vad:
                      chunk_size,
                      onset: float,
                      offset: Optional[float]):
+        """Merge operation described in paper (facade: routes to C++ under `vad`)."""
+        if _core_vad_enabled():
+            tuples = [
+                (float(s.start), float(s.end),
+                 None if s.speaker is None else str(s.speaker))
+                for s in segments
+            ]
+            merged = _core().merge_chunks(tuples, chunk_size, onset, offset)
+            # C++ emits inner [start, end] lists; restore tuples so the result is
+            # byte-identical to the Python oracle (seg_idxs are (start, end) tuples).
+            for m in merged:
+                m["segments"] = [tuple(p) for p in m["segments"]]
+            return merged
+        return Vad._py_merge_chunks(segments, chunk_size, onset, offset)
+
+    @staticmethod
+    def _py_merge_chunks(segments,
+                         chunk_size,
+                         onset: float,
+                         offset: Optional[float]):
         """
          Merge operation described in paper
          """

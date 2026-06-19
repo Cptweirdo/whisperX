@@ -1,0 +1,509 @@
+# WhisperX C++ engine core — Phase 0 scaffold (see docs/cpp-core-handoff.md).
+#
+# Builds:
+#   * whisperx_core_lib   — static lib of pure, ported algorithms (core/)
+#   * whisperx_core       — pybind11 Python module (adapters/py/), the oracle
+#   * whisperx_core_tests — Catch2 + CTest, built with ASan/LeakSanitizer
+#
+# Dependencies: light deps (pybind11, Catch2, nlohmann/json) are pulled via
+# FetchContent so a fresh checkout builds with no extra setup. The production
+# toolchain is **vcpkg** (see vcpkg.json) — pass its toolchain file and the same
+# find_package() calls resolve against vcpkg instead (FIND_PACKAGE_ARGS below).
+# The heavy runtime deps (ONNX Runtime, sherpa-onnx, SQLiteCpp, Eigen, Google
+# Benchmark) are declared in vcpkg.json and wired in as their stages land.
+cmake_minimum_required(VERSION 3.24)
+# C is enabled for SQLiteCpp's bundled SQLite amalgamation (sqlite3.c).
+project(whisperx_core LANGUAGES CXX C VERSION 0.0.0)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+# MSVC/clang-cl don't expose M_PI/M_LN2/etc. without this (they're POSIX, not
+# ISO C); define it globally so every FetchContent dep sees it.
+if(WIN32)
+  add_compile_definitions(_USE_MATH_DEFINES)
+endif()
+# Emit build/compile_commands.json — drives the `cppcheck` static-analysis
+# target below (and clang-tidy / IDEs / clangd).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
+endif()
+
+option(WHISPERX_CORE_SANITIZE "Build native tests with ASan + LeakSanitizer" ON)
+option(WHISPERX_CORE_PYMODULE "Build the pybind11 Python module" ON)
+option(WHISPERX_CORE_TESTS "Build the Catch2 test suite" ON)
+# Phase 2B: in-process libav* decode + ORT silero VAD. OFF by default so the
+# dep-free Phase-0/1/2A build (and the fast CI lane) need no ffmpeg/ORT/sherpa.
+# ON pulls system ffmpeg (pkg-config) + a vendored sherpa-onnx (FetchContent).
+option(WHISPERX_CORE_AUDIO "Build the audio decode + VAD stage (ffmpeg + sherpa-onnx)" OFF)
+# Host swap: the native oat++ HTTP/SSE server (adapters/server/) that replaces the
+# Python Flask app/. Links whisperx_core_audio directly (no pybind/Python), so it
+# requires WHISPERX_CORE_AUDIO. OFF by default — the pybind/dep-free lanes (and CI)
+# are unaffected. Pulls oatpp + spdlog via FetchContent (the light-dep pattern).
+option(WHISPERX_BUILD_SERVER "Build the native oat++ HTTP/SSE server (adapters/server/)" OFF)
+# GPU: build against sherpa-onnx's CUDA ONNX Runtime so the inference stages can run
+# on the CUDA execution provider (the runtime cpu/cuda device switch). OFF = the CPU
+# ORT (the only build that works without a CUDA toolkit + GPU). Drives
+# SHERPA_ONNX_ENABLE_GPU below and the WHISPERX_GPU_BUILD compile define (which gates
+# the wav2vec2 CUDA-EP append + the cuda_available() probe). Requires the audio chain.
+option(WHISPERX_ENABLE_GPU "Build with the CUDA ONNX Runtime EP (sherpa GPU ORT)" OFF)
+if(WHISPERX_ENABLE_GPU AND NOT WHISPERX_CORE_AUDIO)
+  message(FATAL_ERROR "WHISPERX_ENABLE_GPU requires WHISPERX_CORE_AUDIO (the GPU "
+                      "provider only matters for the ASR/align/diarize compute chain).")
+endif()
+# whisper.cpp + GGML Metal as a second ASR backend (METAL_INTEGRATION.md Route B).
+# A separate engine dimension (ggml .bin assets, not ONNX), orthogonal to the Device
+# enum — selected at runtime by AsrBackend / WHISPERX_ASR_BACKEND. OFF by default; ON
+# pulls whisper.cpp via FetchContent and defines WHISPERX_WHISPERCPP_BUILD (which gates
+# the WhisperCpp engine + the whispercpp_available probe). Requires the audio chain.
+option(WHISPERX_ENABLE_WHISPERCPP "Build the whisper.cpp + GGML Metal ASR backend" OFF)
+if(WHISPERX_ENABLE_WHISPERCPP AND NOT WHISPERX_CORE_AUDIO)
+  message(FATAL_ERROR "WHISPERX_ENABLE_WHISPERCPP requires WHISPERX_CORE_AUDIO (it is "
+                      "an alternate Stage-1 ASR engine in the compute chain).")
+endif()
+
+# sherpa-onnx FORCE-writes BUILD_SHARED_LIBS=ON into the CMake *cache* (its own
+# CMakeLists), which would silently flip the early deps below (utf8proc) to
+# shared on every configure after the first. Pin the default with a normal
+# directory-scoped variable — it shadows the cache entry; the audio block flips
+# it ON for sherpa only and the server block sets it back OFF.
+set(BUILD_SHARED_LIBS OFF)
+
+include(FetchContent)
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json
+  GIT_TAG v3.11.3
+  FIND_PACKAGE_ARGS NAMES nlohmann_json)
+FetchContent_MakeAvailable(nlohmann_json)
+
+# SQLiteCpp — RAII wrapper over the genuine SQLite C API (Phase 1 DB layer).
+# Bundles the SQLite amalgamation (SQLITECPP_INTERNAL_SQLITE, default ON) so the
+# on-disk file format + WAL + Online Backup API are guaranteed identical to what
+# Python's sqlite3 produced, with no system-SQLite dependency.
+set(SQLITECPP_INTERNAL_SQLITE ON CACHE BOOL "" FORCE)
+set(SQLITECPP_RUN_CPPLINT OFF CACHE BOOL "" FORCE)
+set(SQLITECPP_RUN_CPPCHECK OFF CACHE BOOL "" FORCE)
+set(SQLITECPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SQLITECPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  SQLiteCpp
+  GIT_REPOSITORY https://github.com/SRombauts/SQLiteCpp
+  GIT_TAG 3.3.2
+  FIND_PACKAGE_ARGS NAMES SQLiteCpp)
+FetchContent_MakeAvailable(SQLiteCpp)
+
+# utf8proc — simple 1:1 Unicode lowercase (utf8proc_tolower) for the native align
+# char-cleaner (core/align/char_clean.cpp), replacing Python str.lower() on arbitrary
+# script. Small, MIT, established (Julia/Neovim); the heavy ICU dep is rejected (as
+# for the sentence splitter). PIC so it links into the shared pybind module.
+set(UTF8PROC_INSTALL OFF CACHE BOOL "" FORCE)
+set(UTF8PROC_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  utf8proc
+  GIT_REPOSITORY https://github.com/JuliaStrings/utf8proc
+  GIT_TAG v2.9.0
+  FIND_PACKAGE_ARGS NAMES utf8proc)
+FetchContent_MakeAvailable(utf8proc)
+if(TARGET utf8proc)
+  set_target_properties(utf8proc PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
+# --- generated: embed the vendored Moses non-breaking-prefix lists -----------
+# The native sentence splitter (core/text/sentence_split.cpp, replacing nltk
+# punkt) needs the per-language abbreviation lists at runtime; embed them as
+# string literals at configure time so there's no install-path file lookup.
+set(_pfx_dir ${CMAKE_CURRENT_SOURCE_DIR}/core/text/data/nonbreaking_prefixes)
+set(_pfx_hdr ${CMAKE_BINARY_DIR}/generated/whisperx_nonbreaking_prefixes.hpp)
+file(GLOB _pfx_files ${_pfx_dir}/nonbreaking_prefix.*)
+set(_pfx_body "// GENERATED by CMakeLists.txt from core/text/data/nonbreaking_prefixes/.\n")
+string(APPEND _pfx_body "#pragma once\n#include <string_view>\n#include <utility>\n")
+string(APPEND _pfx_body "namespace whisperx::text::data {\n")
+string(APPEND _pfx_body "inline constexpr std::pair<std::string_view, std::string_view> kPrefixFiles[] = {\n")
+foreach(_f ${_pfx_files})
+  get_filename_component(_ext ${_f} EXT)        # ".en"
+  string(SUBSTRING ${_ext} 1 -1 _lang)          # "en"
+  file(READ ${_f} _raw)
+  string(APPEND _pfx_body "  {\"${_lang}\", R\"PFXDATA(${_raw})PFXDATA\"},\n")
+endforeach()
+string(APPEND _pfx_body "};\n}  // namespace whisperx::text::data\n")
+file(WRITE ${_pfx_hdr} "${_pfx_body}")
+
+# --- pure core library -------------------------------------------------------
+add_library(whisperx_core_lib STATIC
+  core/text/edit_distance.cpp
+  core/text/sequence_matcher.cpp
+  core/text/sentence_split.cpp
+  core/edits/edits.cpp
+  core/db/session_row.cpp
+  core/db/session_store.cpp
+  core/vad/merge_chunks.cpp
+  core/align/trellis.cpp
+  core/align/align.cpp
+  core/align/char_clean.cpp
+  core/align/emission_post.cpp
+  core/diarize/interval_tree.cpp
+  core/diarize/assign_speakers.cpp
+  core/diarize/merge_clusters.cpp
+  core/writers/writers.cpp
+  core/orchestrate/orchestrate.cpp
+  core/asr/blank_audio.cpp
+  core/build_info.cpp)
+target_include_directories(whisperx_core_lib PUBLIC core ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(whisperx_core_lib PUBLIC
+  nlohmann_json::nlohmann_json SQLiteCpp utf8proc)
+target_compile_options(whisperx_core_lib PRIVATE -Wall -Wextra)
+set_target_properties(whisperx_core_lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# edits.cpp's gap-interpolation borrow arithmetic must match CPython's
+# never-fused IEEE-754 doubles bit-for-bit (the parity tests assert exact ==).
+# Disable FP contraction (FMA) on this TU only; guard to GCC/Clang.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(core/edits/edits.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  # align.cpp's ratio/mean/round timing arithmetic — no FMA so the assembly
+  # matches Python's never-fused doubles (timings are ±1-frame gated, not bit-
+  # exact, but keep contraction off for determinism, as with edits.cpp).
+  set_source_files_properties(core/align/align.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  # emission_post.cpp's log_softmax is a new fp32 parity surface vs torch — keep
+  # FMA off so it tracks torch's never-fused reductions within emission_atol.
+  set_source_files_properties(core/align/emission_post.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  # assign_speakers.cpp's overlap/midpoint arithmetic — no FMA so the dominant-
+  # speaker sums + argmin midpoints track Python's never-fused doubles exactly
+  # (speaker labels are an exact-== parity gate).
+  set_source_files_properties(core/diarize/assign_speakers.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+  set_source_files_properties(core/diarize/interval_tree.cpp
+    PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
+
+# --- audio decode + VAD stage (Phase 2B, opt-in heavy deps) -------------------
+# Kept in its own static lib (not whisperx_core_lib) so the dep-free lib + its
+# ASan/UBSan tests never pull ffmpeg/sherpa. Linked by the pybind module + bench.
+if(WHISPERX_CORE_AUDIO)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+    libavformat libavcodec libswresample libavutil)
+
+  # sherpa-onnx (ORT silero VAD) — vendored from source, trimmed to the VAD
+  # path: no python/tests/portaudio/websocket/binaries/TTS (TTS pulls espeak-ng).
+  # sherpa downloads its own ONNX Runtime, so no separate ORT wiring is needed.
+  set(SHERPA_ONNX_ENABLE_PYTHON OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_CHECK OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_PORTAUDIO OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_GPU ${WHISPERX_ENABLE_GPU} CACHE BOOL "" FORCE)
+  # When the GPU ORT is enabled, advertise it to our code: gates the wav2vec2 direct
+  # CUDA-EP append (make_options) and the cuda_available() runtime probe
+  # (ort_cuda_available). Applies to targets declared after this point — the core libs
+  # + server. CPU build leaves it undefined so cuda_available() is compile-time false.
+  if(SHERPA_ONNX_ENABLE_GPU)
+    add_compile_definitions(WHISPERX_GPU_BUILD)
+  endif()
+  # Never let sherpa "find" a system/vcpkg ORT: its find_library would pick a
+  # different version than the headers it vendors (a vcpkg 1.23 import lib under
+  # 1.24 headers aborts at startup with an ORT API-version mismatch). Its own
+  # downloaded ORT always matches its headers.
+  set(SHERPA_ONNX_USE_PRE_INSTALLED_ONNXRUNTIME_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_BINARY OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_JNI OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_C_API ON CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_TTS OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_BUILD_C_API_EXAMPLES OFF CACHE BOOL "" FORCE)
+  # Build sherpa + ONNX Runtime as SHARED so ORT's C++ internals (it uses
+  # std::regex for device discovery) stay behind libonnxruntime.so's C API.
+  # The static ORT archive is compiled against an older (glibc2_17) libstdc++;
+  # linking it into our system-libstdc++ binary corrupts std::regex/heap
+  # (free(): invalid pointer in DeviceDiscovery). Shared = one clean C boundary.
+  # NB: a directory-scoped (non-cache) set so only sherpa — declared below —
+  # turns shared; our explicit-STATIC libs and the earlier SQLiteCpp/json (above)
+  # are unaffected, and nothing leaks into the cache for audio-off reconfigures.
+  set(BUILD_SHARED_LIBS ON)
+  # On Windows, DLL symbols must be explicitly exported. Without this, sherpa's
+  # sub-deps (e.g. ssentencepiece_core) build as DLLs with empty import libs.
+  if(WIN32)
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  endif()
+  FetchContent_Declare(
+    sherpa_onnx
+    GIT_REPOSITORY https://github.com/k2-fsa/sherpa-onnx
+    GIT_TAG v1.13.2)
+  # sherpa bundles its own nlohmann_json (v3.12) and unconditionally
+  # add_subdirectory()s it — which collides with our nlohmann_json target.
+  # Populate manually and guard that one line so sherpa reuses ours.
+  FetchContent_GetProperties(sherpa_onnx)
+  if(NOT sherpa_onnx_POPULATED)
+    FetchContent_Populate(sherpa_onnx)
+    file(READ ${sherpa_onnx_SOURCE_DIR}/cmake/json.cmake _sherpa_json_cmake)
+    string(REPLACE
+      "add_subdirectory(\${json_SOURCE_DIR} \${json_BINARY_DIR} EXCLUDE_FROM_ALL)"
+      "if(NOT TARGET nlohmann_json)\n    add_subdirectory(\${json_SOURCE_DIR} \${json_BINARY_DIR} EXCLUDE_FROM_ALL)\n  endif()"
+      _sherpa_json_cmake "${_sherpa_json_cmake}")
+    file(WRITE ${sherpa_onnx_SOURCE_DIR}/cmake/json.cmake "${_sherpa_json_cmake}")
+    # CMAKE_VS_PLATFORM_NAME is only set by VS generators; Ninja leaves it empty.
+    # Patch the GPU cmake guard to also accept CMAKE_SYSTEM_PROCESSOR=AMD64.
+    file(READ ${sherpa_onnx_SOURCE_DIR}/cmake/onnxruntime-win-x64-gpu.cmake _sherpa_gpu_cmake)
+    string(REPLACE
+      "if(NOT (CMAKE_VS_PLATFORM_NAME STREQUAL X64 OR CMAKE_VS_PLATFORM_NAME STREQUAL x64))"
+      "if(NOT (CMAKE_VS_PLATFORM_NAME STREQUAL X64 OR CMAKE_VS_PLATFORM_NAME STREQUAL x64\n        OR CMAKE_SYSTEM_PROCESSOR STREQUAL AMD64 OR CMAKE_SYSTEM_PROCESSOR STREQUAL x86_64))"
+      _sherpa_gpu_cmake "${_sherpa_gpu_cmake}")
+    file(WRITE ${sherpa_onnx_SOURCE_DIR}/cmake/onnxruntime-win-x64-gpu.cmake "${_sherpa_gpu_cmake}")
+    # whisperX batched-whisper patch: sherpa's offline Whisper DecodeStreams is a
+    # serial loop ("batch decoding is not implemented yet"), so true batched
+    # decode (one encoder pass + lockstep greedy decoder over N VAD chunks) is
+    # carried as full-file replacements in third_party/sherpa-onnx-patches/,
+    # copied over the populated checkout each configure (ONLY_IF_DIFFERENT keeps
+    # it idempotent — no spurious sherpa rebuilds). Re-diff these files when
+    # bumping the sherpa GIT_TAG.
+    file(GLOB _wx_sherpa_patch_files
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sherpa-onnx-patches/sherpa-onnx/csrc/*)
+    foreach(_wx_patch ${_wx_sherpa_patch_files})
+      get_filename_component(_wx_patch_name ${_wx_patch} NAME)
+      file(COPY_FILE ${_wx_patch}
+        ${sherpa_onnx_SOURCE_DIR}/sherpa-onnx/csrc/${_wx_patch_name}
+        ONLY_IF_DIFFERENT)
+    endforeach()
+    add_subdirectory(${sherpa_onnx_SOURCE_DIR} ${sherpa_onnx_BINARY_DIR}
+      EXCLUDE_FROM_ALL)
+    # simple-sentencepiece (a sherpa sub-dep, fetched by the add_subdirectory above)
+    # uses std::result_of, removed in C++20. libstdc++ tolerates it; macOS libc++
+    # hard-errors (and derails the include into spurious <filesystem> errors). Patch
+    # the file now — it exists post-populate, and ninja only reads it at build time,
+    # so this fixes a clean one-pass build. Idempotent: the REPLACE no-ops once done.
+    set(_sp_threadpool
+      "${CMAKE_BINARY_DIR}/_deps/simple-sentencepiece-src/ssentencepiece/csrc/threadpool.h")
+    if(EXISTS "${_sp_threadpool}")
+      file(READ "${_sp_threadpool}" _sp_tp)
+      string(REPLACE
+        "typename std::result_of<F(Args...)>::type"
+        "std::invoke_result_t<F, Args...>"
+        _sp_tp "${_sp_tp}")
+      file(WRITE "${_sp_threadpool}" "${_sp_tp}")
+    endif()
+  endif()
+
+  # whisper.cpp + GGML (Route B Stage-1 engine). Vendored from source like sherpa;
+  # ggml brings the Metal backend (default on Apple). EMBED_LIBRARY bakes the Metal
+  # shader into the binary so there is no runtime .metallib lookup. BUILD_SHARED_LIBS
+  # is ON here (sherpa block) — whisper/ggml follow it; no ORT symbol overlap (ggml is
+  # a separate runtime), but the macOS link is verified in the build.
+  set(_wx_whispercpp_src "")
+  set(_wx_whispercpp_lib "")
+  if(WHISPERX_ENABLE_WHISPERCPP)
+    set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+    set(GGML_METAL ${APPLE} CACHE BOOL "" FORCE)
+    set(GGML_METAL_EMBED_LIBRARY ${APPLE} CACHE BOOL "" FORCE)
+    set(GGML_ACCELERATE ${APPLE} CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+      whisper_cpp
+      GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp
+      GIT_TAG v1.8.6)
+    FetchContent_MakeAvailable(whisper_cpp)
+    list(APPEND _wx_whispercpp_src core/asr/whisper_cpp.cpp)
+    list(APPEND _wx_whispercpp_lib whisper)
+  endif()
+
+  add_library(whisperx_core_audio STATIC
+    core/audio/decode.cpp
+    core/audio/vad_silero.cpp
+    core/align/wav2vec2_onnx.cpp
+    core/align/align_driver.cpp
+    core/asr/whisper_sherpa.cpp
+    core/diarize/diarize_sherpa.cpp
+    ${_wx_whispercpp_src})
+  target_include_directories(whisperx_core_audio PUBLIC core)
+  # ORT C++ headers (onnxruntime_cxx_api.h) reach wav2vec2_onnx.cpp transitively via
+  # sherpa-onnx-c-api's interface includes; the shared libonnxruntime.so is linked by
+  # its full path (`location_onnxruntime`, sherpa's global find_library cache var) —
+  # sherpa's `onnxruntime` IMPORTED target is scoped to its own subdir, not visible
+  # here. Shared (not the static archive) per the 2B heap-corruption finding.
+  target_link_libraries(whisperx_core_audio PUBLIC
+    whisperx_core_lib nlohmann_json::nlohmann_json PkgConfig::FFMPEG
+    sherpa-onnx-c-api ${location_onnxruntime} ${_wx_whispercpp_lib})
+  target_compile_definitions(whisperx_core_audio PUBLIC WHISPERX_CORE_AUDIO)
+  # PUBLIC so consumers (model_manager.cpp's backend branch + status probe) also see it.
+  if(WHISPERX_ENABLE_WHISPERCPP)
+    target_compile_definitions(whisperx_core_audio PUBLIC WHISPERX_WHISPERCPP_BUILD)
+  endif()
+  target_compile_options(whisperx_core_audio PRIVATE -Wall -Wextra)
+  set_target_properties(whisperx_core_audio PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+  # decode + VAD RTF bench (chrono-based, no Google Benchmark dep).
+  add_executable(bench_audio bench/bench_audio.cpp)
+  target_link_libraries(bench_audio PRIVATE whisperx_core_audio)
+
+  # Phase 6: end-to-end native run_job bench (per-stage RTF + RSS-over-N-jobs).
+  # Drives the real orchestrate::run_job over the native engines; same chrono /
+  # no-Google-Benchmark style. nlohmann_json for the meta.json read + JSON emit.
+  # Linux-only: RSS sampling reads /proc/self/statm + sysconf(_SC_PAGESIZE).
+  if(NOT WIN32)
+    add_executable(bench_run_job bench/bench_run_job.cpp)
+    target_link_libraries(bench_run_job PRIVATE
+      whisperx_core_audio nlohmann_json::nlohmann_json)
+  endif()
+endif()
+
+# --- pybind11 oracle module --------------------------------------------------
+if(WHISPERX_CORE_PYMODULE)
+  FetchContent_Declare(
+    pybind11
+    GIT_REPOSITORY https://github.com/pybind/pybind11
+    GIT_TAG v2.13.6
+    FIND_PACKAGE_ARGS NAMES pybind11)
+  FetchContent_MakeAvailable(pybind11)
+  pybind11_add_module(whisperx_core adapters/py/whisperx_core.cpp)
+  target_link_libraries(whisperx_core PRIVATE whisperx_core_lib)
+  if(WHISPERX_CORE_AUDIO)
+    target_link_libraries(whisperx_core PRIVATE whisperx_core_audio)
+    target_compile_definitions(whisperx_core PRIVATE WHISPERX_CORE_AUDIO)
+  endif()
+endif()
+
+# --- Catch2 tests (CTest) ----------------------------------------------------
+if(WHISPERX_CORE_TESTS)
+  FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2
+    GIT_TAG v3.7.1
+    FIND_PACKAGE_ARGS NAMES Catch2)
+  FetchContent_MakeAvailable(Catch2)
+
+  enable_testing()
+  add_executable(whisperx_core_tests
+    core/tests/test_edit_distance.cpp
+    core/tests/test_session_store.cpp
+    core/tests/test_sequence_matcher.cpp
+    core/tests/test_edits.cpp
+    core/tests/test_merge_chunks.cpp
+    core/tests/test_trellis.cpp
+    core/tests/test_sentence_split.cpp
+    core/tests/test_emission_post.cpp
+    core/tests/test_char_clean.cpp
+    core/tests/test_assign_speakers.cpp
+    core/tests/test_merge_clusters.cpp
+    core/tests/test_writers.cpp
+    core/tests/test_orchestrate.cpp
+    core/tests/test_blank_audio.cpp)
+  target_link_libraries(whisperx_core_tests
+    PRIVATE whisperx_core_lib Catch2::Catch2WithMain)
+
+  # ASan + LeakSanitizer on the native test target from the first build (the
+  # memory-safety gate). The pybind module is left clean: ASan inside a dlopened
+  # Python extension needs libasan LD_PRELOAD'd, which we avoid here.
+  # No sanitizers on Windows: link options go straight to lld-link, which does
+  # not understand -fsanitize=..., and UBSan has no clang-cl runtime.
+  if(WHISPERX_CORE_SANITIZE AND NOT WIN32)
+    target_compile_options(whisperx_core_tests PRIVATE
+      -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+    target_link_options(whisperx_core_tests PRIVATE
+      -fsanitize=address,undefined)
+  endif()
+
+  list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
+  include(Catch)
+  catch_discover_tests(whisperx_core_tests)
+endif()
+
+# --- native oat++ HTTP/SSE server (host swap) --------------------------------
+# Replaces the Python Flask app/ host. Links whisperx_core_audio directly (the
+# whole compute chain + SessionStore + writers are already native), adds oat++
+# (HTTP/SSE) + spdlog (logging). Pure C++ runtime — no Python. See
+# docs/cpp-core-spa-architecture.md §3 + docs/api-reference.md (the contract).
+if(WHISPERX_BUILD_SERVER)
+  if(NOT WHISPERX_CORE_AUDIO)
+    message(FATAL_ERROR
+      "WHISPERX_BUILD_SERVER requires WHISPERX_CORE_AUDIO=ON (the server links "
+      "the native compute chain in whisperx_core_audio).")
+  endif()
+
+  # The sherpa block above flipped BUILD_SHARED_LIBS ON (directory-scoped) for
+  # the ORT/libstdc++ boundary; the server deps were always meant to be static.
+  # On Windows this is load-bearing: a shared oatpp can't resolve its static
+  # data members (Status::CODE_*) through WINDOWS_EXPORT_ALL_SYMBOLS, which only
+  # thunks functions, not data.
+  set(BUILD_SHARED_LIBS OFF)
+
+  # spdlog — fast logging (console + rotating file). Compiled (not header-only)
+  # to keep server TUs lean; same FetchContent + FIND_PACKAGE_ARGS pattern.
+  set(SPDLOG_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+  # fmt >= 10 makes FMT_STRING consteval; clang-cl rejects it with runtime args.
+  # SPDLOG_USE_STD_FORMAT routes spdlog through std::format (C++20) instead.
+  set(SPDLOG_USE_STD_FORMAT ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    spdlog
+    GIT_REPOSITORY https://github.com/gabime/spdlog
+    GIT_TAG v1.14.1
+    FIND_PACKAGE_ARGS NAMES spdlog)
+  FetchContent_MakeAvailable(spdlog)
+
+  # oat++ — HTTP + Server-Sent Events. Builds the `oatpp` static lib.
+  set(OATPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(OATPP_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    oatpp
+    GIT_REPOSITORY https://github.com/oatpp/oatpp
+    GIT_TAG 1.3.0
+    FIND_PACKAGE_ARGS NAMES oatpp)
+  FetchContent_MakeAvailable(oatpp)
+
+  # libcurl — HTTPS for the HF-mirror model downloader + HF token verify. System
+  # lib (ubiquitous on Linux/macOS); vcpkg supplies it for the prod toolchain.
+  find_package(CURL REQUIRED)
+
+  # libarchive — extracts sherpa-onnx's .tar.bz2 release tarballs so every Whisper
+  # model lazy-downloads (the mirror only publishes a subset). System lib.
+  find_package(LibArchive REQUIRED)
+
+  # keychain — OS secret store (macOS Keychain / Windows Cred / Linux libsecret),
+  # CMake-native so it slots into the same FetchContent pattern. Stores the HF token.
+  set(BUILD_TESTS OFF CACHE BOOL "" FORCE)  # keychain's test toggle
+  FetchContent_Declare(
+    keychain
+    GIT_REPOSITORY https://github.com/hrantzsch/keychain
+    GIT_TAG v1.3.1
+    FIND_PACKAGE_ARGS NAMES keychain)
+  FetchContent_MakeAvailable(keychain)
+  # keychain adds -pedantic -Werror for non-MSVC compilers but clang-cl has ID
+  # "Clang" and rejects -pedantic. Its option list is a genex split across list
+  # items, so filtering elements corrupts it — drop the warning options wholesale.
+  if(WIN32 AND TARGET keychain)
+    set_target_properties(keychain PROPERTIES COMPILE_OPTIONS "")
+  endif()
+
+  add_subdirectory(adapters/server)
+endif()
+
+# --- cppcheck static analysis ------------------------------------------------
+# `cmake --build build --target cppcheck` runs cppcheck over our own code only
+# (core/ + adapters/), reading build/compile_commands.json for the exact
+# includes/defines per TU. FetchContent deps (build/_deps/*) are suppressed —
+# we don't own them, and SQLiteCpp already disables its own cppcheck hook.
+# The target only exists when cppcheck is on PATH; otherwise it's a no-op so a
+# fresh checkout still configures without the tool installed.
+find_program(CPPCHECK_EXE NAMES cppcheck)
+if(CPPCHECK_EXE)
+  add_custom_target(cppcheck
+    COMMAND ${CPPCHECK_EXE}
+      --project=${CMAKE_BINARY_DIR}/compile_commands.json
+      --enable=warning,performance,portability
+      --inline-suppr
+      --std=c++20
+      --error-exitcode=1
+      --suppress=missingIncludeSystem
+      --suppress=*:${CMAKE_BINARY_DIR}/_deps/*
+      --suppress=*:${CMAKE_BINARY_DIR}/generated/*
+      -i ${CMAKE_BINARY_DIR}/_deps
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Running cppcheck over core/ + adapters/"
+    VERBATIM)
+else()
+  message(STATUS "cppcheck not found — `cppcheck` build target unavailable")
+endif()

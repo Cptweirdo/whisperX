@@ -1,0 +1,127 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+      }
+    },
+    {
+      "name": "vcpkg",
+      "hidden": true,
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+    },
+    {
+      "name": "windows-clang",
+      "hidden": true,
+      "description": "Use clang-cl on Windows so the parity flags (-ffp-contract=off, -Wall/-Wextra) are honored — MSVC cl silently drops them, risking numeric drift.",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Core (dep-free, fast lane)",
+      "description": "Pure ported algorithms + pybind oracle + Catch2 tests. No ffmpeg/ORT/server. Builds on a fresh checkout with zero system deps.",
+      "inherits": "base",
+      "cacheVariables": {
+        "WHISPERX_CORE_AUDIO": "OFF",
+        "WHISPERX_BUILD_SERVER": "OFF",
+        "WHISPERX_CORE_PYMODULE": "ON",
+        "WHISPERX_CORE_TESTS": "ON",
+        "WHISPERX_CORE_SANITIZE": "ON"
+      }
+    },
+    {
+      "name": "audio",
+      "displayName": "Audio (+ ffmpeg + sherpa-onnx VAD/ASR/align/diarize)",
+      "description": "Adds the in-process libav* decode + ONNX Runtime compute chain. Needs system ffmpeg dev libs.",
+      "inherits": "base",
+      "cacheVariables": {
+        "WHISPERX_CORE_AUDIO": "ON",
+        "WHISPERX_BUILD_SERVER": "OFF",
+        "WHISPERX_CORE_TESTS": "ON"
+      }
+    },
+    {
+      "name": "server",
+      "displayName": "Server (full native oat++ HTTP/SSE host)",
+      "description": "The C++ replacement for the Python Flask app/. Audio + oat++ + curl + libarchive + keychain.",
+      "inherits": "base",
+      "cacheVariables": {
+        "WHISPERX_CORE_AUDIO": "ON",
+        "WHISPERX_BUILD_SERVER": "ON",
+        "WHISPERX_CORE_TESTS": "ON"
+      }
+    },
+    {
+      "name": "server-vcpkg",
+      "displayName": "Server via vcpkg (Windows / hermetic deps)",
+      "description": "Same as 'server' but resolves ffmpeg/curl/libarchive/onnxruntime from vcpkg. Requires VCPKG_ROOT.",
+      "inherits": ["server", "vcpkg"]
+    },
+    {
+      "name": "server-macos",
+      "displayName": "Server on macOS (arm64, CoreML EP + whisper.cpp Metal)",
+      "description": "Same as 'server' on Apple Silicon, plus the whisper.cpp + GGML Metal ASR backend (Route B). sherpa downloads the official ORT osx-arm64 prebuilt (bundles the CoreML EP); WHISPERX_ENABLE_WHISPERCPP pulls whisper.cpp. See docs/MACOS_COREML.md.",
+      "inherits": "server",
+      "cacheVariables": { "WHISPERX_ENABLE_WHISPERCPP": "ON" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "server-cuda",
+      "displayName": "Server + CUDA ONNX Runtime EP (native, Linux/native CUDA)",
+      "description": "'server' built with the GPU ORT (WHISPERX_ENABLE_GPU). Needs a CUDA toolkit + GPU. System heavy deps (gcc/clang honor the parity flags).",
+      "inherits": "server",
+      "cacheVariables": { "WHISPERX_ENABLE_GPU": "ON" }
+    },
+    {
+      "name": "server-vcpkg-cuda",
+      "displayName": "Server + CUDA via vcpkg + clang-cl (the Windows GPU path)",
+      "description": "GPU ORT build resolving heavy deps from vcpkg and using clang-cl on Windows. Requires VCPKG_ROOT + CUDA toolkit + cuDNN. See docs/WINDOWS_CUDA.md.",
+      "inherits": ["server", "vcpkg", "windows-clang"],
+      "cacheVariables": { "WHISPERX_ENABLE_GPU": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev",          "configurePreset": "dev" },
+    { "name": "audio",        "configurePreset": "audio" },
+    { "name": "server",       "configurePreset": "server",
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
+    { "name": "server-vcpkg", "configurePreset": "server-vcpkg",
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
+    { "name": "server-macos", "configurePreset": "server-macos",
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
+    { "name": "server-cuda", "configurePreset": "server-cuda",
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] },
+    { "name": "server-vcpkg-cuda", "configurePreset": "server-vcpkg-cuda",
+      "targets": ["whisperx_server", "whisperx_server_tests", "whisperx_core_tests"] }
+  ],
+  "testPresets": [
+    { "name": "dev",    "configurePreset": "dev",
+      "output": { "outputOnFailure": true } },
+    { "name": "audio",  "configurePreset": "audio",
+      "output": { "outputOnFailure": true } },
+    { "name": "server", "configurePreset": "server",
+      "output": { "outputOnFailure": true } },
+    { "name": "server-macos", "configurePreset": "server-macos",
+      "output": { "outputOnFailure": true },
+      "environment": {
+        "_comment": "ASan container-overflow detection is unreliable on macOS: it needs the whole program (incl. libc++) ASan-instrumented, but Apple's system libc++ is not, so std::vector annotations crossing that boundary fire false positives (seen in the nlohmann::json edit/turn-split path). Linux keeps full detection.",
+        "ASAN_OPTIONS": "detect_container_overflow=0"
+      } },
+    { "name": "server-cuda", "configurePreset": "server-cuda",
+      "output": { "outputOnFailure": true } },
+    { "name": "server-vcpkg-cuda", "configurePreset": "server-vcpkg-cuda",
+      "output": { "outputOnFailure": true } }
+  ]
+}

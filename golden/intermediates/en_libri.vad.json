@@ -1,0 +1,21 @@
+{
+  "segments": [
+    {
+      "start": 0.578,
+      "end": 3.505,
+      "speaker": "UNKNOWN"
+    }
+  ],
+  "merged_chunks": [
+    {
+      "start": 0.578,
+      "end": 3.505,
+      "n_segments": 1
+    }
+  ],
+  "params": {
+    "chunk_size": 30,
+    "onset": 0.5,
+    "offset": 0.363
+  }
+}

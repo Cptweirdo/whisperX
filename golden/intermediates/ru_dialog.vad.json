@@ -1,0 +1,101 @@
+{
+  "segments": [
+    {
+      "start": 1.218,
+      "end": 7.742,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 10.146,
+      "end": 14.622,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 15.618,
+      "end": 16.734,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 17.41,
+      "end": 18.334,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 21.762,
+      "end": 24.222,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 25.89,
+      "end": 27.998,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 28.802,
+      "end": 30.27,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 31.682,
+      "end": 34.91,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 35.97,
+      "end": 38.206,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 41.858,
+      "end": 43.294,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 43.842,
+      "end": 44.638,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 46.594,
+      "end": 53.534,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 56.162,
+      "end": 59.326,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 59.426,
+      "end": 64.222,
+      "speaker": "UNKNOWN"
+    },
+    {
+      "start": 64.514,
+      "end": 65.758,
+      "speaker": "UNKNOWN"
+    }
+  ],
+  "merged_chunks": [
+    {
+      "start": 1.218,
+      "end": 30.27,
+      "n_segments": 7
+    },
+    {
+      "start": 31.682,
+      "end": 59.326,
+      "n_segments": 6
+    },
+    {
+      "start": 59.426,
+      "end": 65.758,
+      "n_segments": 2
+    }
+  ],
+  "params": {
+    "chunk_size": 30,
+    "onset": 0.5,
+    "offset": 0.363
+  }
+}

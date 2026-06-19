@@ -2,39 +2,35 @@
 // reassign, and translation (live SSE). Ports transcript.html's controllers into
 // reactive state. The audio player + word highlight live in components and read
 // the `viewTurns`/`words` derived from here.
-import { api, urls } from "../api";
+import { api, ApiError, urls } from "../api";
 import { openSSE } from "../sse";
 import { notify } from "./toast.svelte";
 import { settings } from "./settings.svelte";
+import type {
+  ReassignBody,
+  SessionDetail,
+  TranscriptPayload,
+  Translations,
+  Turn,
+} from "../types";
 
-export interface TurnWord {
-  text: string;
-  start?: number;
-  end?: number;
-  stale?: boolean;
-}
-export interface Turn {
-  index: number;
-  speaker: string | null;
-  label: string;
-  start: number | null;
-  end: number | null;
-  words: TurnWord[];
-  text: string;
-}
+// Re-exported for the transcript components that render turns.
+export type { Turn, TurnWord } from "../types";
 
 class SessionStore {
   id = $state("");
-  row = $state<any>(null);
+  row = $state<SessionDetail | null>(null);
   turns = $state<Turn[]>([]);
   canUndo = $state(false);
   speakerNames = $state<Record<string, string>>({});
-  translations = $state<Record<string, any>>({});
+  translations = $state<Translations>({});
   formats = $state<string[]>([]);
 
   // Translation view: null = Original, else a language code with its own turns.
   activeLang = $state<string | null>(null);
   translationTurns = $state<Turn[]>([]);
+  // Edit mode: gates the select→right-click→reassign passage flow (Original only).
+  editMode = $state(false);
   #es: EventSource | null = null;
 
   get loaded() {
@@ -45,6 +41,10 @@ class SessionStore {
   }
   get readonly(): boolean {
     return this.activeLang !== null;
+  }
+  // Edit mode is meaningful only on the Original (editable) transcript.
+  get editing(): boolean {
+    return this.editMode && !this.readonly;
   }
   get googleKeySet(): boolean {
     return !!settings.data?.google_key?.key_set;
@@ -89,7 +89,7 @@ class SessionStore {
   async load(id: string) {
     this.reset();
     this.id = id;
-    const data = await api.get(`/sessions/${id}`);
+    const data = await api.sessions.get(id);
     this.row = data;
     this.turns = data.turns ?? [];
     this.canUndo = !!data.can_undo;
@@ -106,39 +106,44 @@ class SessionStore {
     this.translationTurns = [];
     this.turns = [];
     this.row = null;
+    this.editMode = false;
+  }
+
+  toggleEditMode() {
+    this.editMode = !this.editMode;
   }
 
   // --- editing -------------------------------------------------------------
-  #applyPayload(p: any) {
+  #applyPayload(p: TranscriptPayload) {
     this.turns = p.turns;
     this.canUndo = !!p.can_undo;
   }
 
   async editTurn(index: number, text: string) {
     try {
-      this.#applyPayload(await api.post(`/sessions/${this.id}/turns/${index}`, { text }));
+      this.#applyPayload(await api.sessions.editTurn(this.id, index, text));
     } catch {
       notify("Could not save the edit.", "danger");
     }
   }
 
   async undo() {
-    this.#applyPayload(await api.post(`/sessions/${this.id}/undo`));
+    this.#applyPayload(await api.sessions.undo(this.id));
   }
 
   async renameRecording(name: string) {
-    const r = await api.post(`/sessions/${this.id}/rename`, { name });
+    const r = await api.sessions.rename(this.id, name);
     if (this.row) this.row.name = r.filename;
     return r.filename;
   }
 
   // --- speakers ------------------------------------------------------------
   speakers() {
-    return api.get(`/sessions/${this.id}/speakers`);
+    return api.sessions.speakers(this.id);
   }
 
   async renameSpeaker(key: string, name: string) {
-    const r = await api.post(`/sessions/${this.id}/speakers`, { speaker: key, name });
+    const r = await api.sessions.renameSpeaker(this.id, key, name);
     if (name) this.speakerNames[key] = name;
     else delete this.speakerNames[key];
     // Patch labels in both views without a full reload.
@@ -148,8 +153,8 @@ class SessionStore {
     return r.label;
   }
 
-  async reassign(turn: number, params: { speaker?: string; name?: string }) {
-    const r = await api.post(`/sessions/${this.id}/turns/${turn}/speaker`, params);
+  async reassign(turn: number, params: ReassignBody) {
+    const r = await api.sessions.reassign(this.id, turn, params);
     // The POST re-rendered the Original; apply it there.
     this.turns = r.turns;
     this.canUndo = !!r.can_undo;
@@ -157,9 +162,37 @@ class SessionStore {
     if (this.activeLang) await this.selectTranslation(this.activeLang);
   }
 
+  /** Reassign a selected passage inside a turn (the edit-mode flow): the turn
+   *  splits in three, the `[start,end)` middle moving to `target`. Waits for the
+   *  server and applies its `TranscriptPayload`; no optimistic update. Failures
+   *  surface as a toast and leave turns unchanged. */
+  async splitReassign(
+    turnIndex: number,
+    sel: { start: number; end: number },
+    target: { speaker?: string; name?: string },
+  ) {
+    if (sel.end <= sel.start) return;
+    try {
+      this.#applyPayload(
+        await api.sessions.splitReassign(this.id, turnIndex, {
+          start: sel.start,
+          end: sel.end,
+          speaker: target.speaker,
+          name: target.name,
+        }),
+      );
+      if (this.activeLang) await this.selectTranslation(this.activeLang);
+    } catch (e) {
+      const msg = e instanceof ApiError && typeof e.body?.error === "string"
+        ? e.body.error
+        : "Could not reassign the selection.";
+      notify(msg, "danger");
+    }
+  }
+
   // --- translation ---------------------------------------------------------
   async startTranslation(code: string) {
-    const out = await api.post(`/sessions/${this.id}/translate`, { target_language: code });
+    const out = await api.sessions.translate(this.id, code);
     this.translations[code] = { status: out.status, service: out.service };
     this.activeLang = code; // auto-switch once SSE 'done' arrives
     this.#ensureStream();
@@ -168,7 +201,7 @@ class SessionStore {
 
   async selectTranslation(code: string) {
     try {
-      const data = await api.get(`/sessions/${this.id}/translation/${code}`);
+      const data = await api.sessions.translation(this.id, code);
       this.translationTurns = data.turns;
       this.activeLang = code;
     } catch {

@@ -2,6 +2,7 @@
 Forced Alignment with Whisper
 C. Max Bain
 """
+import os
 from dataclasses import dataclass
 from typing import Iterable, Optional, Union, List
 
@@ -28,6 +29,115 @@ from whisperx.log_utils import get_logger
 logger = get_logger(__name__)
 
 LANGUAGES_WITHOUT_SPACES = ["ja", "zh"]
+
+
+def _core_align_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` aligner backs this run (Phase 3A).
+
+    ``WHISPERX_CORE_STAGES`` carries comma-separated stage tokens; ``align`` routes
+    the per-segment trellis + char→word→sentence assembly (the body below `trellis
+    = get_trellis(...)`) to the native ``align_assemble`` — which also replaces nltk
+    punkt with the C++ sentence splitter. The Python path stays the live oracle. The
+    model forward + char-cleaning + wildcard extension always stay in Python; only
+    the fixed extended emission + tokens cross the seam. ``hasattr``-guarded so a
+    module built without the aligner degrades cleanly.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "align" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "align_assemble")
+
+
+ALIGN_ONNX_REPO = "KonstantK/wav2vec2-align-onnx"
+
+
+def _core_align_onnx_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` runs the wav2vec2 **forward** under ONNX
+    Runtime (Phase 3B), replacing the torch model forward at lines 278-285.
+
+    Gated on the ``align_onnx`` token in ``WHISPERX_CORE_STAGES``. Self-contained:
+    when on, ``load_align_model`` pulls the parity-pinned ``.onnx`` from the mirror
+    and ``align`` runs forward → ``align_emission_post`` (log_softmax + wildcard +
+    tokenize) → ``align_assemble`` fully native (torch-free for mirror languages).
+    Needs the audio-stage module (``WHISPERX_CORE_AUDIO``); ``hasattr``-guarded so a
+    module built without it degrades to the torch path.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "align_onnx" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "Wav2Vec2Onnx") and \
+        hasattr(whisperx_core, "align_emission_post")
+
+
+def _core_align_driver_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` runs the **whole** ``align()`` body (Phase 5).
+
+    Gated on the ``align_driver`` token in ``WHISPERX_CORE_STAGES``. When on, and the
+    loaded model is the native ``Wav2Vec2Onnx`` (an ``align_onnx``-resolved mirror
+    model), ``align()`` delegates char-cleaning + the gather/forward loop +
+    ``emission_post``/``align_assemble`` to ``whisperx_core.align_run`` in one call —
+    no Python re-entry (the prerequisite for the native orchestrator). Torch models
+    keep the Python body. ``hasattr``-guarded; needs the audio-stage module.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "align_driver" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "align_run")
+
+
+def _load_align_onnx(language_code: str, model_name: Optional[str]):
+    """Try to load the native ORT align model from the mirror for this language.
+
+    Returns ``(Wav2Vec2Onnx, metadata)`` — metadata mirroring the torch path's shape
+    plus ``type="onnx"`` and the ``batchable`` flag (False for group_norm models, so
+    the C++ runs them per-segment) — or ``None`` to fall back to torch (model not on
+    the mirror, or no network)."""
+    import json
+
+    import whisperx_core
+    from huggingface_hub import hf_hub_download
+
+    resolved = model_name or DEFAULT_ALIGN_MODELS_TORCH.get(language_code) \
+        or DEFAULT_ALIGN_MODELS_HF.get(language_code)
+    if resolved is None:
+        return None
+    folder = resolved.replace("/", "--")
+    try:
+        meta_path = hf_hub_download(ALIGN_ONNX_REPO, f"{folder}/meta.json")
+        onnx_path = hf_hub_download(ALIGN_ONNX_REPO, f"{folder}/model.onnx")
+    except Exception as e:
+        logger.info(f"align_onnx: {resolved} not on the mirror ({e}); using torch")
+        return None
+    meta = json.loads(open(meta_path, encoding="utf-8").read())
+    # ORT intra-op threads for the wav2vec2 forward. The ctor defaults to 1 (single
+    # core) — without this the matmul-bound align stage pegs one CPU while the rest
+    # idle. wav2vec2 forwards are big GEMMs that scale well intra-op, and the native
+    # orchestrator emits few/long segments (one per VAD chunk), so threading *within*
+    # each forward beats running segments concurrently (which would also multiply the
+    # peak RSS we cap in wav2vec2_onnx.cpp). Override with WHISPERX_ALIGN_THREADS.
+    threads = int(os.environ.get("WHISPERX_ALIGN_THREADS", "0")) or (os.cpu_count() or 4)
+    model = whisperx_core.Wav2Vec2Onnx(onnx_path, num_threads=threads)
+    logger.info("align_onnx: %s, %d ORT intra-op threads",
+                os.path.basename(onnx_path), threads)
+    metadata = {
+        "language": language_code,
+        "dictionary": meta["dictionary"],
+        "type": "onnx",
+        "batchable": bool(meta.get("batchable", False)),
+    }
+    return model, metadata
 
 DEFAULT_ALIGN_MODELS_TORCH = {
     "en": "WAV2VEC2_ASR_BASE_960H",
@@ -78,6 +188,13 @@ DEFAULT_ALIGN_MODELS_HF = {
 
 
 def load_align_model(language_code: str, device: str, model_name: Optional[str] = None, model_dir=None, model_cache_only: bool = False):
+    # Phase 3B: native ORT forward from the parity-pinned mirror, when the
+    # `align_onnx` token is on and the model is published there (else torch below).
+    if _core_align_onnx_enabled():
+        onnx = _load_align_onnx(language_code, model_name)
+        if onnx is not None:
+            return onnx
+
     if model_name is None:
         # use default model
         if language_code in DEFAULT_ALIGN_MODELS_TORCH:
@@ -142,6 +259,26 @@ def align(
     model_dictionary = align_model_metadata["dictionary"]
     model_lang = align_model_metadata["language"]
     model_type = align_model_metadata["type"]
+    use_onnx = model_type == "onnx"  # Phase 3B: native ORT forward
+
+    # Phase 5: when the `align_driver` token is on and the model is the native ONNX
+    # aligner, hand the *whole* body to C++ — char-cleaning + gather/forward +
+    # emission_post + assembly, no Python re-entry. Torch models fall through to the
+    # Python body below (their forward can't run under ORT).
+    if use_onnx and _core_align_driver_enabled():
+        import whisperx_core
+        audio_np = np.ascontiguousarray(audio[0].cpu().numpy(), dtype=np.float32)
+        return whisperx_core.align_run(
+            list(transcript), model, model_dictionary, audio_np, model_lang,
+            bool(align_model_metadata.get("batchable", False)),
+            interpolate_method, return_char_alignments, progress_callback,
+        )
+
+    # blank/pad id — model-constant, used by every segment (alignment.py:289-292).
+    blank_id = 0
+    for char, code in model_dictionary.items():
+        if char == '[pad]' or char == '<pad>':
+            blank_id = code
 
     # 1. Preprocess to keep only characters in dictionary
     total_segments = len(transcript)
@@ -204,6 +341,28 @@ def align(
 
     aligned_segments: List[SingleAlignedSegment] = []
 
+    # Phase 3B: one native ORT forward over **all** alignable segments before the
+    # per-segment loop (the `alignment.py:267` batched-inference TODO). batchable
+    # (layer_norm) models pack padded+masked batches in C++; group_norm models run
+    # per-segment (padding would corrupt them — see the mirror exporter). The raw
+    # logits feed align_emission_post + align_assemble per segment below.
+    onnx_logits: dict[int, np.ndarray] = {}
+    if use_onnx:
+        gather_idx, gather_wav = [], []
+        for sdx, segment in enumerate(transcript):
+            if len(segment_data[sdx]["clean_char"]) == 0:
+                continue
+            if segment["start"] >= MAX_DURATION:
+                continue
+            f1 = int(segment["start"] * SAMPLE_RATE)
+            f2 = int(segment["end"] * SAMPLE_RATE)
+            gather_idx.append(sdx)
+            gather_wav.append(audio[0, f1:f2].cpu().numpy().astype(np.float32))
+        if gather_wav:
+            raw = model.forward(
+                gather_wav, batched=bool(align_model_metadata.get("batchable", False)))
+            onnx_logits = {sdx: raw[k] for k, sdx in enumerate(gather_idx)}
+
     # 2. Get prediction matrix from alignment model & align
     for sdx, segment in enumerate(transcript):
 
@@ -242,45 +401,70 @@ def align(
         f1 = int(t1 * SAMPLE_RATE)
         f2 = int(t2 * SAMPLE_RATE)
 
-        # TODO: Probably can get some speedup gain with batched inference here
-        waveform_segment = audio[:, f1:f2]
-        # Handle the minimum input length for wav2vec2 models
-        if waveform_segment.shape[-1] < 400:
-            lengths = torch.as_tensor([waveform_segment.shape[-1]]).to(device)
-            waveform_segment = torch.nn.functional.pad(
-                waveform_segment, (0, 400 - waveform_segment.shape[-1])
-            )
+        if use_onnx:
+            # Phase 3B: raw logits came from the batched ORT forward above; apply the
+            # (torch-free) log_softmax + wildcard + tokenize in C++. `emission` is the
+            # extended (T, V') float32 array align_assemble consumes.
+            import whisperx_core
+            emission, tokens = whisperx_core.align_emission_post(
+                onnx_logits[sdx], int(blank_id), text_clean, model_dictionary)
         else:
-            lengths = None
-
-        with torch.inference_mode():
-            if model_type == "torchaudio":
-                emissions, _ = model(waveform_segment.to(device), lengths=lengths)
-            elif model_type == "huggingface":
-                emissions = model(waveform_segment.to(device)).logits
+            # TODO: Probably can get some speedup gain with batched inference here
+            waveform_segment = audio[:, f1:f2]
+            # Handle the minimum input length for wav2vec2 models
+            if waveform_segment.shape[-1] < 400:
+                lengths = torch.as_tensor([waveform_segment.shape[-1]]).to(device)
+                waveform_segment = torch.nn.functional.pad(
+                    waveform_segment, (0, 400 - waveform_segment.shape[-1])
+                )
             else:
-                raise NotImplementedError(f"Align model of type {model_type} not supported.")
-            emissions = torch.log_softmax(emissions, dim=-1)
+                lengths = None
 
-        emission = emissions[0].cpu().detach()
+            with torch.inference_mode():
+                if model_type == "torchaudio":
+                    emissions, _ = model(waveform_segment.to(device), lengths=lengths)
+                elif model_type == "huggingface":
+                    emissions = model(waveform_segment.to(device)).logits
+                else:
+                    raise NotImplementedError(f"Align model of type {model_type} not supported.")
+                emissions = torch.log_softmax(emissions, dim=-1)
 
-        blank_id = 0
-        for char, code in model_dictionary.items():
-            if char == '[pad]' or char == '<pad>':
-                blank_id = code
+            emission = emissions[0].cpu().detach()
 
-        # Build tokens, mapping unknown chars to a wildcard column
-        has_wildcard = any(c not in model_dictionary for c in text_clean)
-        if has_wildcard:
-            # Extend emission with a wildcard column: max non-blank score per frame
-            non_blank_mask = torch.ones(emission.size(1), dtype=torch.bool)
-            non_blank_mask[blank_id] = False
-            wildcard_col = emission[:, non_blank_mask].max(dim=1).values
-            emission = torch.cat([emission, wildcard_col.unsqueeze(1)], dim=1)
-            wildcard_id = emission.size(1) - 1
-            tokens = [model_dictionary.get(c, wildcard_id) for c in text_clean]
-        else:
-            tokens = [model_dictionary[c] for c in text_clean]
+            # Build tokens, mapping unknown chars to a wildcard column
+            has_wildcard = any(c not in model_dictionary for c in text_clean)
+            if has_wildcard:
+                # Extend emission with a wildcard column: max non-blank score per frame
+                non_blank_mask = torch.ones(emission.size(1), dtype=torch.bool)
+                non_blank_mask[blank_id] = False
+                wildcard_col = emission[:, non_blank_mask].max(dim=1).values
+                emission = torch.cat([emission, wildcard_col.unsqueeze(1)], dim=1)
+                wildcard_id = emission.size(1) - 1
+                tokens = [model_dictionary.get(c, wildcard_id) for c in text_clean]
+            else:
+                tokens = [model_dictionary[c] for c in text_clean]
+
+        # Native aligner: hand the fixed extended emission + tokens to the C++
+        # trellis + char→word→sentence assembly (native sentence splitter in place of
+        # punkt). Always on for the ONNX forward (3B); for the torch path it's the
+        # `align` token. Replaces the Python body below.
+        if use_onnx or _core_align_enabled():
+            import whisperx_core
+            emi = emission if use_onnx else np.ascontiguousarray(emission.numpy(), dtype=np.float32)
+            res = whisperx_core.align_assemble(
+                emi, list(tokens), int(blank_id), text_clean, text,
+                list(segment_data[sdx]["clean_cdx"]), float(t1), float(t2),
+                model_lang, interpolate_method, return_char_alignments,
+                None if avg_logprob is None else float(avg_logprob),
+            )
+            if not res["ok"]:
+                logger.warning(f'Failed to align segment ("{segment["text"]}"): backtrack failed, resorting to original')
+                aligned_segments.append(aligned_seg)
+                continue
+            aligned_segments += res["subsegments"]
+            if progress_callback is not None:
+                progress_callback(((sdx + 1) / total_segments) * 100)
+            continue
 
         trellis = get_trellis(emission, tokens, blank_id)
         path = backtrack(trellis, emission, tokens, blank_id)

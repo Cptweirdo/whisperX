@@ -182,15 +182,17 @@ OUTPUT_FORMATS = ("srt", "vtt", "txt", "json")
 WRITER_OPTIONS = {"max_line_width": None, "max_line_count": None, "highlight_words": False}
 
 # Rough per-stage wall-time ≈ RTF × audio seconds, used only for a UI ETA hint.
-# Calibrated on a CPU run of the 'small' model over a 191 s clip (transcribe 42 s,
-# align 36 s, diarize ~97 s net of the one-time model download). GPU runs are far
+# Measured (not guessed) from `bench/bench_run_job --mode timing` on the native
+# sherpa run_job — CPU medians on en_dialog (60.8 s): transcribing 0.078,
+# aligning 0.116, diarizing 0.107 (Whisper tiny). Rounded up for headroom so a
+# larger CPU model / slower box still lands under the estimate; GPU runs are far
 # faster, so treat these as loose upper bounds, not promises. Stages without an
-# entry (decoding, loading_align) are skipped: too fast or download-dominated to
-# estimate meaningfully.
+# entry (decoding ≈ RTF 0.0015, loading_align ≈ 0 with resident models) are
+# skipped: too fast to estimate meaningfully. Bench gate: bench/budget.json.
 STAGE_RTF = {
-    "transcribing": 0.22,
-    "aligning": 0.19,
-    "diarizing": 0.51,
+    "transcribing": 0.10,
+    "aligning": 0.15,
+    "diarizing": 0.15,
 }
 
 
@@ -200,6 +202,26 @@ def eta_seconds(stage: str, duration: Optional[float]) -> Optional[float]:
     if rtf is None or not duration:
         return None
     return rtf * duration
+
+
+# Past this, warn once: the native CPU sherpa path holds the whole decoded waveform
+# resident (~SAMPLE_RATE×4 B/s ≈ 0.23 GB/h) and runs the full chain on CPU, so wall
+# time climbs to hours and diarization clustering scales ~O(n²) in segment count.
+# Override with WHISPERX_LONG_AUDIO_WARN_S; 0 disables.
+LONG_AUDIO_WARN_S = int(os.environ.get("WHISPERX_LONG_AUDIO_WARN_S", str(2 * 3600)))
+
+
+def _warn_if_long(duration: Optional[float]) -> None:
+    """Log a heads-up for very long inputs (multi-hour runtime / high memory)."""
+    if not duration or LONG_AUDIO_WARN_S <= 0 or duration < LONG_AUDIO_WARN_S:
+        return
+    logger.warning(
+        "Long audio: %.1f h (~%.1f GB decoded, held resident). The native CPU "
+        "pipeline runs the whole chain on CPU — expect multi-hour runtime and high "
+        "memory; diarization clustering scales worst. Consider splitting the file, "
+        "or the GPU path (WHISPERX_NO_CORE=1).",
+        duration / 3600.0, duration * SAMPLE_RATE * 4 / 1e9,
+    )
 
 
 @dataclass
@@ -503,6 +525,101 @@ class ModelManager:
         }
 
 
+def _core_orchestrate_enabled() -> bool:
+    """Whether the native C++ ``whisperx_core.run_job`` orchestrator backs this run.
+
+    ``orchestrate`` in ``WHISPERX_CORE_STAGES`` routes :func:`run_job`'s whole
+    compute chain (decode → silero VAD → sherpa ASR → align → diarize → assign) to
+    the native, decode-once orchestrator — but only when the active ASR is the
+    sherpa backend (it needs a native ``WhisperSherpa`` handle). ``hasattr``-guarded
+    so a module built without the audio stage degrades to the Python staged path.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    if "orchestrate" not in {s.strip() for s in raw.split(",") if s.strip()}:
+        return False
+    try:
+        import whisperx_core
+    except ImportError:
+        return False
+    return hasattr(whisperx_core, "run_job")
+
+
+def _try_native_run_job(
+    bundle: ModelBundle,
+    audio_path: str,
+    stage: Callable[[str], None],
+    on_duration: Optional[Callable[[float], None]],
+    language: Optional[str],
+    min_speakers: Optional[int],
+    max_speakers: Optional[int],
+) -> Optional[tuple[dict, float]]:
+    """Delegate the compute chain to ``whisperx_core.run_job`` when every stage is
+    native-capable, returning ``(result, duration)``; else ``None`` (the caller runs
+    the Python staged path).
+
+    Engages only when the ASR is the native sherpa backend **and** any diarizer is
+    the native sherpa one (a Python pyannote diarizer can't run inside the no-Python
+    -re-entry orchestrator → fall back). The align model is resolved via a Python
+    callback at the loading_align boundary (HF download stays Python I/O).
+    """
+    import whisperx_core
+
+    asr = bundle.asr
+    asr_model = getattr(asr, "model", None)
+    if not isinstance(asr_model, whisperx_core.WhisperSherpa):
+        return None  # faster-whisper / mlx / whispercpp -> staged path
+
+    # A diarizer, if present, must be the native sherpa one.
+    diarizer = None
+    num_clusters = 0
+    if bundle.diarize is not None:
+        impl = getattr(bundle.diarize, "_impl", None)
+        dmodel = getattr(impl, "model", None) if impl is not None else None
+        if not isinstance(dmodel, whisperx_core.SherpaDiarizer):
+            return None  # pyannote (Python) diarizer -> staged path
+        diarizer = dmodel
+        # run_job has no num_speakers; map the range onto the single num_clusters
+        # target (max → min → auto), matching diarize_sherpa's precedence.
+        if max_speakers:
+            num_clusters = int(max_speakers)
+        elif min_speakers:
+            num_clusters = int(min_speakers)
+
+    from whisperx.vads.silero import _silero_model_path
+
+    vad = getattr(asr, "_vad_params", {}) or {}
+
+    captured: dict = {}
+
+    def _on_dur(d: float) -> None:
+        captured["duration"] = d
+        if on_duration is not None:
+            on_duration(d)
+
+    def resolve_align(lang: str):
+        model, meta = bundle.align_model(lang)
+        return (model, meta["dictionary"], bool(meta.get("batchable", False)))
+
+    result = whisperx_core.run_job(
+        audio_path,
+        asr_model,
+        _silero_model_path(),
+        float(vad.get("vad_onset", 0.5)),
+        float(vad.get("vad_offset", 0.363)),
+        float(vad.get("chunk_size", 30)),
+        language or "",
+        getattr(asr, "task", "transcribe") or "transcribe",
+        resolve_align,
+        "nearest",
+        False,
+        diarizer,
+        num_clusters,
+        stage,
+        _on_dur,
+    )
+    return result, float(captured.get("duration", 0.0))
+
+
 def run_job(
     bundle: ModelBundle,
     audio_path: str,
@@ -534,16 +651,59 @@ def run_job(
         if progress is not None:
             progress(name)
 
+    # Native decode-once orchestrator (the `orchestrate` token): when the whole
+    # compute chain is native-capable, run_job, align, diarize + assign all happen
+    # in C++ over one AudioBuffer (no per-stage Python re-entry). _stage still fires
+    # every progress event + the stage-boundary cancellation. Falls through to the
+    # Python staged path below when the ASR/diarizer aren't native.
+    if _core_orchestrate_enabled():
+        native = _try_native_run_job(
+            bundle, audio_path, _stage, on_duration,
+            language, min_speakers, max_speakers,
+        )
+        if native is not None:
+            result, duration = native
+            _warn_if_long(duration)
+            removed = result.pop("blank_audio_removed", 0)
+            if removed:
+                logger.warning(
+                    "Stripped %d [BLANK_AUDIO] marker(s) the sherpa Whisper "
+                    "backend emitted for silent audio (no no_speech filter in "
+                    "the native path).", removed)
+            result["duration"] = duration
+            result["num_segments"] = len(result.get("segments", []))
+            artifacts = {}
+            name_stem = os.path.join(output_dir, artifact_basename)
+            for fmt in OUTPUT_FORMATS:
+                writer = get_writer(fmt, output_dir)
+                writer(result, name_stem, WRITER_OPTIONS)
+                artifacts[fmt] = os.path.join(output_dir, f"{artifact_basename}.{fmt}")
+            result["artifacts"] = artifacts
+            logger.info("Job complete (native orchestrator): %d segments",
+                        result["num_segments"])
+            return result
+
     _stage("decoding")
     logger.info("Decoding audio: %s", audio_path)
     audio = whisperx.load_audio(audio_path)  # 16kHz mono float32, decoded once
     duration = len(audio) / SAMPLE_RATE
+    _warn_if_long(duration)
     if on_duration is not None:
         on_duration(duration)  # report early so later stages can be ETA'd live
 
     _stage("transcribing")
     logger.info("Transcribing (batch_size=%d)", BATCH_SIZE)
     result = bundle.asr.transcribe(audio, batch_size=BATCH_SIZE, language=language)
+
+    # Best-effort: the native sherpa ASR strips "[BLANK_AUDIO]" markers and tags
+    # each segment with the count; warn once if the facade propagated it (the text
+    # is already clean regardless, so this is informational only).
+    removed = sum(int(seg.get("blank_audio_removed", 0))
+                  for seg in result.get("segments", []))
+    if removed:
+        logger.warning(
+            "Stripped %d [BLANK_AUDIO] marker(s) the sherpa Whisper backend "
+            "emitted for silent audio (no no_speech filter).", removed)
 
     lang = result["language"]
     _stage("loading_align")  # bundle.align_model may download/load a ~1.26 GB model

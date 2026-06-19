@@ -438,6 +438,63 @@ body, body * { font-kerning: normal; }
 .seg.is-active { background: rgba(26,26,24,0.075); box-shadow: inset 0 -2px 0 0 var(--primary); color: var(--on-surface); }
 .tr__empty { font-family: var(--mono); font-size: 14px; color: var(--on-surface-faint); }
 
+/* ===== EDIT MODE — select a passage → right-click → reassign (3-way split) ===== */
+.editmode {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--mono); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--on-surface-variant); background: var(--surface-container-lowest);
+  border: 1px solid var(--outline-variant); border-radius: var(--radius);
+  padding: 7px 13px; cursor: pointer; transition: color .15s, border-color .15s, background .15s;
+}
+.editmode:hover { border-color: var(--on-surface-variant); color: var(--on-surface); }
+.editmode sl-icon { font-size: 14px; }
+.editmode.is-on { color: var(--rubric); border-color: rgba(164,64,47,0.4); background: var(--rubric-soft); }
+.editmode__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--rubric); }
+
+.edit-hint {
+  display: flex; align-items: center; gap: 13px; margin: 22px 0 4px;
+  border: 1px solid rgba(164,64,47,0.28); background: var(--rubric-soft); border-radius: var(--radius);
+  padding: 13px 18px; font-family: var(--mono); font-size: 12.5px; color: var(--on-surface-variant); line-height: 1.5;
+}
+.edit-hint b { color: var(--rubric); font-weight: 600; }
+.edit-hint svg { width: 16px; height: 16px; color: var(--rubric); flex: 0 0 16px; }
+
+/* selectable text affordance while editing */
+.turn__text.is-selectable { cursor: text; }
+.turn__text.is-selectable .seg { cursor: text; }
+.turn__text.is-selectable ::selection { background: rgba(164,64,47,0.24); color: var(--on-surface); }
+.turn__text.is-selectable::selection { background: rgba(164,64,47,0.24); color: var(--on-surface); }
+
+/* custom right-click context menu */
+.ctx-scrim { position: fixed; inset: 0; z-index: 55; }
+.ctx-menu {
+  position: fixed; z-index: 60; width: 268px;
+  background: var(--surface-container-lowest); border: 1px solid var(--outline-variant);
+  border-radius: var(--radius); box-shadow: 0 20px 54px rgba(0,0,0,0.18); overflow: hidden;
+  animation: ctxin .12s ease;
+}
+@keyframes ctxin { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
+.ctx-menu__preview { padding: 13px 16px; border-bottom: 1px solid var(--outline-soft); background: var(--surface-container-low); }
+.ctx-menu__plabel { font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--on-surface-faint); }
+.ctx-menu__ptext { font-family: var(--serif); font-size: 13.5px; line-height: 1.45; color: var(--on-surface); margin-top: 7px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ctx-item {
+  display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer;
+  font-family: var(--mono); font-size: 13px; color: var(--on-surface); border-bottom: 1px solid var(--outline-soft);
+  background: none; border-left: 0; border-right: 0; border-top: 0; width: 100%; text-align: left;
+}
+.ctx-item:last-child { border-bottom: 0; }
+.ctx-item:hover { background: var(--surface-container-low); }
+.ctx-item svg { width: 15px; height: 15px; color: var(--on-surface-variant); flex: 0 0 15px; }
+.ctx-item sl-icon { font-size: 15px; color: var(--on-surface-variant); flex: 0 0 15px; }
+.ctx-item--primary { font-weight: 600; }
+.ctx-item--primary svg { color: var(--rubric); }
+.ctx-item__chev { margin-left: auto; color: var(--on-surface-faint); display: flex; }
+.ctx-item__chev sl-icon { font-size: 14px; }
+.ctx-menu__back { display: flex; align-items: center; gap: 9px; padding: 11px 16px; cursor: pointer; border-bottom: 1px solid var(--outline-soft); font-family: var(--mono); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--on-surface-variant); background: none; border-top: 0; border-left: 0; border-right: 0; width: 100%; text-align: left; }
+.ctx-menu__back sl-icon { font-size: 13px; }
+.ctx-menu__back:hover { background: var(--surface-container-low); color: var(--on-surface); }
+.ctx-menu .spk-add { border-top: 1px solid var(--outline-soft); }
+
 /* ===== TRANSLATION LAYER =====
    rubrication red — the manuscript tradition of red marginal annotation. */
 :root { --rubric: #a4402f; --rubric-soft: rgba(164,64,47,0.08); }

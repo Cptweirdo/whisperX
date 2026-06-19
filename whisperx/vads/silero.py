@@ -1,11 +1,14 @@
+import os
 from io import IOBase
 from pathlib import Path
 from typing import Mapping, Text
 from typing import Optional
 from typing import Union
 
+import numpy as np
 import torch
 
+from whisperx.audio import _core_decode_enabled
 from whisperx.diarize import Segment as SegmentX
 from whisperx.vads.vad import Vad
 from whisperx.log_utils import get_logger
@@ -13,6 +16,18 @@ from whisperx.log_utils import get_logger
 logger = get_logger(__name__)
 
 AudioFile = Union[Text, Path, IOBase, Mapping]
+
+
+def _silero_model_path() -> str:
+    """Pinned silero ONNX for the C++ (sherpa-onnx / ORT) VAD path.
+
+    Override with ``WHISPERX_SILERO_ONNX``; defaults to the vendored
+    ``models/silero_vad.onnx`` at the repo root.
+    """
+    env = os.environ.get("WHISPERX_SILERO_ONNX")
+    if env:
+        return env
+    return str(Path(__file__).resolve().parents[2] / "models" / "silero_vad.onnx")
 
 
 class Silero(Vad):
@@ -38,6 +53,21 @@ class Silero(Vad):
         sample_rate = audio["sample_rate"]
         if sample_rate != 16000:
             raise ValueError("Only 16000Hz sample rate is allowed")
+
+        # Facade: route to the C++ ORT silero VAD under the `decode` token
+        # (decoupled — smoke/loose, not byte-parity with torch silero).
+        if _core_decode_enabled():
+            import whisperx_core
+            if hasattr(whisperx_core, "silero_segments"):
+                wav = audio["waveform"]
+                if hasattr(wav, "cpu"):
+                    wav = wav.cpu().numpy()
+                samples = np.ascontiguousarray(
+                    np.asarray(wav, dtype=np.float32).reshape(-1))
+                segs = whisperx_core.silero_segments(
+                    samples, _silero_model_path(), sample_rate,
+                    self.vad_onset, self.chunk_size)
+                return [SegmentX(s, e, spk) for (s, e, spk) in segs]
 
         timestamps = self.get_speech_timestamps(audio["waveform"],
                                                 model=self.vad_pipeline,

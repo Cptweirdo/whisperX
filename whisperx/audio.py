@@ -22,6 +22,19 @@ FRAMES_PER_SECOND = exact_div(SAMPLE_RATE, HOP_LENGTH)  # 10ms per audio frame
 TOKENS_PER_SECOND = exact_div(SAMPLE_RATE, N_SAMPLES_PER_TOKEN)  # 20ms per audio token
 
 
+def _core_decode_enabled() -> bool:
+    """Whether the C++ ``whisperx_core`` in-process decode backs this run.
+
+    ``WHISPERX_CORE_STAGES`` carries comma-separated stage tokens (``db`` /
+    ``edits`` / ``vad`` / ``decode`` / …); ``decode`` routes ``load_audio`` to
+    the C++ libav* decode, keeping the subprocess ``_py_load_audio`` as the
+    parity oracle. Only takes effect if the module was built with the audio
+    stage (``WHISPERX_CORE_AUDIO=ON``) — otherwise we fall back transparently.
+    """
+    raw = os.environ.get("WHISPERX_CORE_STAGES", "")
+    return "decode" in {s.strip() for s in raw.split(",") if s.strip()}
+
+
 def load_audio(file: str, sr: int = SAMPLE_RATE) -> np.ndarray:
     """
     Open an audio file and read as mono waveform, resampling as necessary
@@ -38,6 +51,15 @@ def load_audio(file: str, sr: int = SAMPLE_RATE) -> np.ndarray:
     -------
     A NumPy array containing the audio waveform, in float32 dtype.
     """
+    if _core_decode_enabled():
+        import whisperx_core
+        if hasattr(whisperx_core, "load_audio"):
+            return whisperx_core.load_audio(str(file), sr)
+    return _py_load_audio(file, sr)
+
+
+def _py_load_audio(file: str, sr: int = SAMPLE_RATE) -> np.ndarray:
+    """Subprocess decode (the oracle the C++ ``decode`` stage replaces)."""
     try:
         # Launches a subprocess to decode audio while down-mixing and resampling as necessary.
         # Requires the ffmpeg CLI to be installed.

@@ -2,6 +2,11 @@
 
 > The complete HTTP surface of the Flask backend (`app/server.py`), the contract
 > between the **Svelte SPA** (`app/web/`, via `src/lib/api.ts`) and the server.
+> The TypeScript mirror of every shape below lives in `app/web/src/lib/types.ts`;
+> the SPA reaches the API only through grouped, strongly-typed clients in
+> `app/web/src/lib/api.ts` (`api.sessions`, `api.models`, `api.settings`,
+> `api.onboarding`, `api.backup`) — the raw HTTP verbs are private to that module,
+> so no caller hand-rolls a path or a response type. Keep all three in sync.
 > This is the **transport-layer migration contract** a future C++ HTTP/SSE server
 > must reproduce (see [`cpp-core-spa-architecture.md`](./cpp-core-spa-architecture.md)
 > §3) — the analogue of the session-DB contract in
@@ -275,6 +280,26 @@ to mint a new speaker (a fresh key is allocated). Providing both renames+assigns
 { speaker?: string; name?: string }
 200 → TranscriptPayload
 400 → { error: "Provide a speaker key or a name for a new speaker." }
+       | { error: "Unknown turn." }
+409 → { error: "A speaker named '<name>' already exists." }
+404
+```
+
+### `POST /api/sessions/<session_id>/turns/<turn_index>/split`
+Reassign a **selected passage** inside a turn to another speaker — the edit-mode
+flow (select text → right-click → *Reassign to speaker*). `start`/`end` are
+character offsets (UTF-16 code units, matching the browser's selection) into the
+turn's word-joined text (`Turn.words` joined by a single space); the turn splits
+in three — the head + tail keep the original speaker, the `[start,end)` middle
+moves to `speaker`/`name` (same target rules as `/speaker`: existing key, or a
+`name` to mint one). A partial-word selection snaps outward to whole words. The
+SPA (`session.svelte.ts::splitReassign`) waits for the response — no optimistic
+update — applies the returned `TranscriptPayload`, and toasts any error.
+```ts
+{ start: number; end: number; speaker?: string; name?: string }
+200 → TranscriptPayload
+400 → { error: "Provide a speaker key or a name for a new speaker." }
+       | { error: "Empty or invalid selection." }
        | { error: "Unknown turn." }
 409 → { error: "A speaker named '<name>' already exists." }
 404

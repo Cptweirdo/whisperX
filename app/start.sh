@@ -39,6 +39,44 @@ elif [[ "$OS" == "Linux" ]]; then
 fi
 echo "Platform: $OS $ARCH  ->  ASR backend: $BACKEND"
 
+# --- C++ engine core (docs/cpp-core-handoff.md) -----------------------------
+# Route as much of the pipeline as possible to the native `whisperx_core` module
+# so Python only does orchestration glue + model resolution (HF downloads). The
+# `asr` token swaps faster-whisper for sherpa-onnx Whisper, which in turn lets the
+# decode-once native `run_job` orchestrator drive the whole compute chain
+# (decode -> silero VAD -> ASR -> align -> diarize -> assign) with no per-stage
+# Python re-entry; `db`/`edits`/`writers` move the session store + output writers
+# native too. Every token hasattr/isinstance-guards, so a partial build just
+# degrades that stage back to Python instead of failing.
+#
+# Enabled by default when the audio build is present. Overrides:
+#   WHISPERX_NO_CORE=1        -> force the pure-Python pipeline
+#   WHISPERX_CORE_STAGES=...  -> use your own token set (respected as-is)
+#
+# NB: the sherpa-onnx ASR in this build is **CPU-only** (no CUDA), so on a GPU
+# host the native path is slower than faster-whisper on the GPU. Set
+# WHISPERX_NO_CORE=1 to keep the GPU backend.
+CORE_SO="$(ls "$REPO_ROOT"/build/whisperx_core*.so 2>/dev/null | head -1 || true)"
+if [[ -n "${WHISPERX_NO_CORE:-}" ]]; then
+  echo "C++ core: DISABLED (WHISPERX_NO_CORE set)  ->  pure-Python pipeline"
+elif [[ -n "${WHISPERX_CORE_STAGES:-}" ]]; then
+  echo "C++ core: using preset WHISPERX_CORE_STAGES='${WHISPERX_CORE_STAGES}'"
+  export PYTHONPATH="$REPO_ROOT/build${PYTHONPATH:+:$PYTHONPATH}"
+elif [[ -n "$CORE_SO" ]]; then
+  # Full native set: store + edits + the whole compute chain + the orchestrator.
+  export WHISPERX_CORE_STAGES="db,edits,decode,vad,asr,align,align_onnx,align_driver,assign,diarize,writers,orchestrate"
+  export PYTHONPATH="$REPO_ROOT/build${PYTHONPATH:+:$PYTHONPATH}"
+  echo "C++ core: ENABLED  ->  native run_job orchestrator (ASR = sherpa-onnx, CPU)"
+  echo "          module: $CORE_SO"
+  echo "          (set WHISPERX_NO_CORE=1 to use the GPU faster-whisper path)"
+else
+  echo "C++ core: NOT BUILT  ->  running the pure-Python pipeline." >&2
+  echo "  To build the native path (one-time, needs cmake + ninja + ffmpeg dev libs):" >&2
+  echo "    cmake -S . -B build -G Ninja -DWHISPERX_CORE_AUDIO=ON \\" >&2
+  echo "      -DPython_EXECUTABLE=\"\$(uv run --no-project python -c 'import sys;print(sys.executable)')\"" >&2
+  echo "    cmake --build build" >&2
+fi
+
 # --- ffmpeg (whisperx shells out to it to decode audio; see whisperx/audio.py) ---
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "ffmpeg not found on PATH. Install it:" >&2

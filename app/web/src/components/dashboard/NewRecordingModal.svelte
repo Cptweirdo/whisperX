@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, urls } from "../../lib/api";
   import { openSSE } from "../../lib/sse";
+  import type { SessionDetail } from "../../lib/types";
   import { router } from "../../lib/router.svelte";
   import { sessions } from "../../lib/stores/sessions.svelte";
   import { settings } from "../../lib/stores/settings.svelte";
@@ -23,9 +24,30 @@
   let stageText = $state("Queued…");
   let errorMsg = $state("");
   let sessionId = $state("");
-  let preview = $state<any>(null);
+  let preview = $state<SessionDetail | null>(null);
   let dragOver = $state(false);
   let es: EventSource | null = null;
+  let elapsed = $state(0);
+  let estTotal = $state(0);
+  let timer: ReturnType<typeof setInterval> | null = null;
+
+  function startTimer() {
+    elapsed = 0;
+    estTotal = 0;
+    const t0 = Date.now();
+    stopTimer();
+    timer = setInterval(() => (elapsed = (Date.now() - t0) / 1000), 1000);
+  }
+  function stopTimer() {
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+  function fmtClock(s: number): string {
+    s = Math.round(s);
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m ? `${m}m${r ? ` ${r}s` : ""}` : `${r}s`;
+  }
 
   const languages = $derived(
     settings.data?.languages ?? [{ code: "", label: "Auto-detect" }],
@@ -50,6 +72,7 @@
     preview = null;
     es?.close();
     es = null;
+    stopTimer();
     if (fileInput) fileInput.value = "";
   }
 
@@ -73,6 +96,7 @@
     mode = "processing";
     progress = 0;
     stageText = "Uploading…";
+    startTimer();
     try {
       sessionId = await sessions.create(form, (f) => (progress = Math.round(f * 100)));
     } catch (e: any) {
@@ -92,13 +116,15 @@
       if (d.status === "done") {
         src.close();
         es = null;
-        preview = await api.get(`/sessions/${id}`).catch(() => null);
+        stopTimer();
+        preview = await api.sessions.get(id).catch(() => null);
         mode = "done";
         return;
       }
       if (d.status === "error") {
         src.close();
         es = null;
+        stopTimer();
         mode = "error";
         errorMsg = "Transcription failed.";
         return;
@@ -108,6 +134,7 @@
         if (d.eta) t += ` · ${fmtEta(d.eta)}`;
         stageText = t;
       }
+      if (d.eta) estTotal = Math.max(estTotal, elapsed + d.eta);
     });
   }
 
@@ -118,7 +145,7 @@
 
   async function cancelClose() {
     if (mode === "processing" && sessionId) {
-      await api.post(`/sessions/${sessionId}/delete`).catch(() => {});
+      await api.sessions.remove(sessionId).catch(() => {});
       await sessions.load();
     }
     dialog?.hide();
@@ -205,6 +232,9 @@
     <div style="padding:32px 0;text-align:center">
       <sl-spinner style="font-size:2rem"></sl-spinner>
       <p style="margin-top:16px">{stageText}</p>
+      <p style="margin-top:4px;opacity:0.6;font-variant-numeric:tabular-nums">
+        {fmtClock(elapsed)}{estTotal ? ` / ~${fmtClock(estTotal)}` : ""}
+      </p>
       {#if progress > 0 && progress < 100}
         <div class="rec__progress" style="max-width:320px;margin:12px auto">
           <i style={`width:${progress}%`}></i>

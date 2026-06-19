@@ -1,0 +1,52 @@
+{
+  "words": [
+    {
+      "word": "Concord",
+      "start": 0.598,
+      "end": 1.179,
+      "score": 0.905
+    },
+    {
+      "word": "returned",
+      "start": 1.24,
+      "end": 1.641,
+      "score": 0.947
+    },
+    {
+      "word": "to",
+      "start": 1.681,
+      "end": 1.741,
+      "score": 1.0
+    },
+    {
+      "word": "its",
+      "start": 1.801,
+      "end": 1.901,
+      "score": 0.778
+    },
+    {
+      "word": "place",
+      "start": 1.961,
+      "end": 2.262,
+      "score": 0.873
+    },
+    {
+      "word": "amidst",
+      "start": 2.382,
+      "end": 2.663,
+      "score": 0.888
+    },
+    {
+      "word": "the",
+      "start": 2.743,
+      "end": 2.843,
+      "score": 0.847
+    },
+    {
+      "word": "tents.",
+      "start": 2.884,
+      "end": 3.204,
+      "score": 0.927
+    }
+  ]
+}

@@ -1,0 +1,255 @@
+name: C++ Core
+
+# C++ engine-core migration (docs/cpp-core-handoff.md): build the whisperx_core
+# pybind module + Catch2 tests, run CTest under ASan/UBSan, and prove the Python
+# parity oracle (C++ result == Python reference). Covers Phase 0 (edit_distance)
+# + Phase 1 (the SQLite SessionStore + the file-backed edits/undo sidecars &
+# app/edits.py algorithms: parity / on-disk-compat tests, and a stage-token
+# matrix proving `db` and `edits` compose) + Phase 2A (merge_chunks) + Phase 3A
+# (the forced-alignment Viterbi core + char→word→sentence assembly + the native
+# sentence splitter; golden-replay of the committed emissions, torch-free).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "CMakeLists.txt"
+      - "vcpkg.json"
+      - "core/**"
+      - "adapters/**"
+      - "bindings/**"
+      - ".github/workflows/cpp-core.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "CMakeLists.txt"
+      - "vcpkg.json"
+      - "core/**"
+      - "adapters/**"
+      - "bindings/**"
+      - ".github/workflows/cpp-core.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.11.6"
+          python-version: "3.12"
+
+      # The parity tests import only the built module + pytest (+ pure-stdlib
+      # `app.store`), never `whisperx`, so we skip the heavy project sync
+      # (torch/pyannote) and use an ephemeral env.
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DPython_EXECUTABLE="$(uv run --no-project python -c 'import sys;print(sys.executable)')"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: CTest (ASan/UBSan)
+        run: ctest --test-dir build --output-on-failure
+
+      # numpy is needed by the Phase 3A align golden-replay (test_align_parity);
+      # test_align_facade is torch-gated and skips here (the dep-free lane).
+      - name: Python parity oracle
+        run: PYTHONPATH=build uv run --no-project --with pytest --with numpy pytest bindings/test/ -v
+
+      # The edits/store oracle suite (pure-stdlib app.store/edits/render) must pass
+      # identically with the C++ store off, the `edits` token alone, and both
+      # tokens — proving the strangler flags compose without behaviour drift.
+      - name: Stage-token matrix (edits/store oracle)
+        run: |
+          for stages in "" "edits" "db,edits"; do
+            echo "::group::WHISPERX_CORE_STAGES='$stages'"
+            WHISPERX_CORE_STAGES="$stages" PYTHONPATH=build \
+              uv run --no-project --with pytest pytest tests/test_turn_edits.py -q
+            echo "::endgroup::"
+          done
+
+  # Phase 2B: the heavy lane — in-process libav* decode + ORT silero VAD
+  # (WHISPERX_CORE_AUDIO=ON). System ffmpeg dev libs + a vendored sherpa-onnx
+  # (FetchContent, which brings its own ONNX Runtime). The parity/smoke tests
+  # import only the built module (+ numpy), so no heavy `whisperx` sync. The
+  # sherpa build is the slow step, so build/_deps is cached on the sherpa tag.
+  audio-stage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install build tools + ffmpeg dev libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build \
+            libavformat-dev libavcodec-dev libswresample-dev libavutil-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.11.6"
+          python-version: "3.12"
+
+      # Cache the FetchContent deps (sherpa-onnx source + build + downloaded ORT)
+      # keyed on this file's sherpa tag, so only the first run pays the build.
+      - name: Cache sherpa-onnx build
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: build/_deps
+          key: sherpa-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure (WHISPERX_CORE_AUDIO=ON)
+        run: |
+          cmake -S . -B build -G Ninja -DWHISPERX_CORE_AUDIO=ON \
+            -DPython_EXECUTABLE="$(uv run --no-project python -c 'import sys;print(sys.executable)')"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: CTest (ASan/UBSan — dep-free lib unaffected)
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Decode parity + VAD smoke
+        run: |
+          PYTHONPATH=build uv run --no-project --with pytest --with numpy \
+            pytest bindings/test/test_decode_parity.py \
+                   bindings/test/test_vad_smoke.py -v
+
+      - name: Bench (decode + VAD RTF)
+        run: ./build/bench_audio golden/clips/en_dialog.wav models/silero_vad.onnx
+
+      # Phase 4 / 4a: cache + fetch the sherpa Whisper tiny ONNX (the golden/CI
+      # model) and smoke the native WhisperSherpa path. Torch-free (reads the 16 kHz
+      # mono golden wav via stdlib `wave`) so it stays in this no-`whisperx` lane; the
+      # full WER/CER gate (bindings/test/test_asr_sherpa_parity.py) runs in the
+      # whisperx-installed lane / locally with WHISPERX_SHERPA_WHISPER_DIR set.
+      - name: Cache sherpa Whisper tiny
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: whisper-tiny
+          key: sherpa-whisper-tiny-v1
+      - name: ASR (sherpa Whisper) smoke
+        run: |
+          if [ ! -d whisper-tiny/sherpa-onnx-whisper-tiny ]; then
+            mkdir -p whisper-tiny
+            curl -fsSL https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2 \
+              | tar xj -C whisper-tiny
+          fi
+          WHISPERX_SHERPA_WHISPER_DIR=whisper-tiny/sherpa-onnx-whisper-tiny \
+            PYTHONPATH=build uv run --no-project --with numpy python - <<'PY'
+          import glob, os, wave
+          import numpy as np
+          import whisperx_core as w
+          d = os.environ["WHISPERX_SHERPA_WHISPER_DIR"]
+          enc = sorted(glob.glob(f"{d}/*encoder*.onnx"), key=lambda p: "int8" in p)[0]
+          dec = sorted(glob.glob(f"{d}/*decoder*.onnx"), key=lambda p: "int8" in p)[0]
+          tok = glob.glob(f"{d}/*tokens*.txt")[0]
+          wf = wave.open("golden/clips/en_libri.wav", "rb")
+          pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+          audio = (pcm.astype(np.float32) / 32768.0)
+          m = w.WhisperSherpa(encoder=enc, decoder=dec, tokens=tok, num_threads=2, feature_dim=80)
+          lang = m.detect_language(audio[: 16000 * 30])
+          out = m.transcribe(audio, [(0.0, len(audio) / 16000)], "", "transcribe")
+          text = out[0]["text"].strip()
+          print(f"lang={lang!r} text={text!r}")
+          assert lang == "en", lang
+          assert text, "empty transcription"
+          PY
+
+      # Phase 4 / 4b: cache + fetch the sherpa diarization ONNX (pyannote-seg-3.0 +
+      # wespeaker_en CAM++) and smoke the native SherpaDiarizer path. Torch-free
+      # (reads a 16 kHz golden dialog via stdlib `wave`) so it stays in this
+      # no-`whisperx` lane; the DER/glue A/B gate (test_diarize_sherpa.py) runs in the
+      # whisperx-installed lane / locally with WHISPERX_DIARIZE_ONNX_DIR set.
+      - name: Cache sherpa diarization ONNX
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: diarize-onnx
+          key: sherpa-diarize-onnx-v1
+      - name: Diarization (sherpa) smoke
+        run: |
+          mkdir -p diarize-onnx
+          if [ ! -d diarize-onnx/sherpa-onnx-pyannote-segmentation-3-0 ]; then
+            curl -fsSL https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2 \
+              | tar xj -C diarize-onnx
+          fi
+          if [ ! -f diarize-onnx/wespeaker_en_voxceleb_CAM++.onnx ]; then
+            curl -fsSL -o diarize-onnx/wespeaker_en_voxceleb_CAM++.onnx \
+              https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_CAM++.onnx
+          fi
+          PYTHONPATH=build uv run --no-project --with numpy python - <<'PY'
+          import glob, wave
+          import numpy as np
+          import whisperx_core as w
+          seg = glob.glob("diarize-onnx/sherpa-onnx-pyannote-segmentation-3-0/*.onnx")[0]
+          emb = "diarize-onnx/wespeaker_en_voxceleb_CAM++.onnx"
+          wf = wave.open("golden/clips/en_dialog.wav", "rb")
+          pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+          audio = (pcm.astype(np.float32) / 32768.0)
+          m = w.SherpaDiarizer(segmentation=seg, embedding=emb, num_threads=2)
+          segs = m.diarize(audio, 0)
+          n_spk = len({s["speaker"] for s in segs})
+          print(f"turns={len(segs)} speakers={n_spk} embed_dim={m.embedding_dim()}")
+          assert n_spk >= 2, n_spk
+          assert m.embedding_dim() > 0
+          PY
+
+      # Phase 6: timing gate. The whisper-tiny + diarize-onnx dirs are already
+      # populated above; fetch the one en align ONNX (mirror), then run the native
+      # run_job bench and check per-stage RTF against the committed budget, plus an
+      # RSS-over-N-jobs tail-slope guard (the std::pmr arena decision) under jemalloc.
+      - name: Cache align ONNX (en)
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: align-onnx
+          key: wav2vec2-align-onnx-en-v1
+      - name: Phase 6 bench (run_job RTF + RSS)
+        run: |
+          sudo apt-get install -y libjemalloc2
+          AL=align-onnx/WAV2VEC2_ASR_BASE_960H
+          if [ ! -f "$AL/model.onnx" ]; then
+            mkdir -p "$AL"
+            base=https://huggingface.co/KonstantK/wav2vec2-align-onnx/resolve/main/WAV2VEC2_ASR_BASE_960H
+            curl -fsSL -o "$AL/model.onnx" "$base/model.onnx"
+            curl -fsSL -o "$AL/meta.json"  "$base/meta.json"
+          fi
+          WD=whisper-tiny/sherpa-onnx-whisper-tiny
+          DS=diarize-onnx/sherpa-onnx-pyannote-segmentation-3-0/model.onnx
+          DE=diarize-onnx/wespeaker_en_voxceleb_CAM++.onnx
+          # Per-stage timing on the 60 s dialog (full chain — the budgeted path).
+          ./build/bench_run_job --mode timing --runs 3 --warmup 1 \
+            --json build/stage_rtf.json --clip golden/clips/en_dialog.wav \
+            --silero models/silero_vad.onnx --whisper-dir "$WD" --align-dir "$AL" \
+            --diarize-seg "$DS" --diarize-embed "$DE" --lang en
+          # RSS over many jobs on the short clip (decode+VAD+ASR+align) — the
+          # leak/fragmentation guard; short + diarizer-free so it stays fast/robust.
+          LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 \
+            ./build/bench_run_job --mode rss --runs 40 \
+            --json build/rss.json --clip golden/clips/en_libri.wav \
+            --silero models/silero_vad.onnx --whisper-dir "$WD" --align-dir "$AL" --lang en
+          {
+            echo '### Phase 6 bench'; echo '```json';
+            cat build/stage_rtf.json; cat build/rss.json; echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 bench/check_budget.py build/stage_rtf.json bench/budget.json
+          python3 bench/check_budget.py --rss build/rss.json

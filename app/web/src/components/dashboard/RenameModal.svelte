@@ -24,7 +24,7 @@
     }
     saving = true;
     try {
-      const r = await api.post(`/sessions/${id}/rename`, { name: n });
+      const r = await api.sessions.rename(id, n);
       onsaved?.(id, r.filename);
       dialog?.hide();
     } finally {
